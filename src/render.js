@@ -1,3 +1,5 @@
+import {insideGeometry} from './engine.js';
+
 export const MIN_RENDER_STAGE=5;
 export const RENDER_SIZE_OPTIONS=[1024,1536,2048,3072,4096];
 
@@ -70,3 +72,26 @@ export function detailPreset(name){
 
 export function clamp01(x){return Math.max(0,Math.min(1,Number(x)||0));}
 export function smoothstep(a,b,x){const t=clamp01((x-a)/Math.max(1e-9,b-a));return t*t*(3-2*t);}
+
+/** Keep the geometry API in one place so raster sampling cannot swap arguments. */
+export function renderInsideGeometry(x,y,geometry){
+ return insideGeometry(x,y,geometry);
+}
+
+/** Stable sub-cell texture independent of PNG resolution and pan/zoom state. */
+function noiseHash(x,y){
+ let h=(Math.imul(x,374761393)+Math.imul(y,668265263))|0;
+ h=Math.imul(h^(h>>>13),1274126177);
+ return ((h^(h>>>16))>>>0)/4294967295;
+}
+export function smoothNoise(x,y){
+ const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;
+ const a=fx*fx*(3-2*fx),b=fy*fy*(3-2*fy);
+ const lo=noiseHash(ix,iy)*(1-a)+noiseHash(ix+1,iy)*a;
+ const hi=noiseHash(ix,iy+1)*(1-a)+noiseHash(ix+1,iy+1)*a;
+ return lo*(1-b)+hi*b;
+}
+export function terrainTexture(x,y,scale){
+ const s=Math.max(1e-9,scale);
+ return 0.65*smoothNoise(x/s,y/s)+0.35*smoothNoise(x/(s*.32),y/(s*.32));
+}

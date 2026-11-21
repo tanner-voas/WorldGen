@@ -1,4 +1,4 @@
-# WorldGen v0.1.14
+# WorldGen v0.1.15
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -99,3 +99,13 @@ Fixed the v0.1.12 missing `render.js` deployment module error. Packaging now inc
 ## v0.1.14
 
 Render mode is now a true terrain-render pass rather than a lightly blurred cell map. It synthesizes a continuous raster-style terrain image from the completed world layers, adds relief shading, blends coastlines instead of drawing polygon borders, and can optionally emphasize climate, hydrology, biomes, or vegetation depending on how far generation has progressed. The resulting render opens inside an in-app viewer with drag-to-pan and zoom controls; editing still requires leaving render mode and returning to the normal world-generation interface.
+
+
+## v0.1.15 — Raster reliability and exploration
+
+- Fixed the terrain renderer's reversed world-boundary arguments. v0.1.14 treated every raster sample as outside the world and drew mostly dark water with only the river overlay visible. No saved world data was changed.
+- Added a coordinate-contract regression test for rectangle, circle and ellipse rendering, plus deterministic subcell texture tests.
+- Introduced restrained, seeded sub-polygon surface texture and gently curved river paths while retaining all locked terrain and hydrology data.
+- Kept maximum sampling work within bounded CPU budgets for large PNG exports. Export dimensions stay as requested; higher resolutions may resample the synthesized terrain field until local-detail tiles are available.
+- Improved render exploration with pinch zoom, pointer-centered mouse-wheel zoom, drag-to-pan, fit and zoom buttons, and an expanded map viewing area on phones.
+- Cancel render jobs when the render dialog closes to avoid wasted mobile CPU work. Render remains a non-destructive function, not a layer.

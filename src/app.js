@@ -1,8 +1,8 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
-import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01,smoothstep} from './render.js';
+import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01,smoothstep,renderInsideGeometry,terrainTexture} from './render.js';
 
-const APP_VERSION='0.1.14',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.15',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -121,7 +121,7 @@ const palettes={
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
 let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
 let persistTimer=null,viewportTimer=null,progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
-let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false,renderDraft=null,renderOutputCanvas=null;
+let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false,renderDraft=null,renderOutputCanvas=null,renderTaskId=0;
 // Path2D objects and polygon extents are cached across map pans and zooms.
 let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
 let measureMode=false,measurePoints=[];
@@ -884,23 +884,37 @@ function applyReliefShading(image,heightField,landField,width,height,amount){
   data[o]=Math.max(0,Math.min(255,data[o]*factor));data[o+1]=Math.max(0,Math.min(255,data[o+1]*factor));data[o+2]=Math.max(0,Math.min(255,data[o+2]*factor));
  }
 }
-async function generateRenderImage(settings){
+async function generateRenderImage(settings,taskId){
  const stage=settings.stage,mesh=latestData(2),geometry=geometryData();
  if(!mesh?.cells||!latestData(stage))throw Error('This stage is not ready to render');
  const dims=outputDimensions(geometry.width,geometry.height,settings.longEdge),preset=detailPreset(settings.detail);
  const hostEl=root.querySelector('#wg-render-result');
  if(hostEl)hostEl.innerHTML=`<div class="wg-render-progress"><div>Rendering ${shortNumber(dims.width)} × ${shortNumber(dims.height)} terrain image…</div><progress id="wg-render-progress" max="100" value="0"></progress></div>`;
- const sampleW=Math.max(220,Math.round(dims.width/preset.sampleStep)),sampleH=Math.max(160,Math.round(dims.height/preset.sampleStep));
+ // Bound peak CPU samples on mobile even when exporting a 4096px image.
+ const maxSamples=settings.detail==='ultra'?1250000:settings.detail==='high'?900000:600000;
+ const idealW=Math.max(220,Math.round(dims.width/preset.sampleStep)),idealH=Math.max(160,Math.round(dims.height/preset.sampleStep));
+ const sampleFactor=Math.min(1,Math.sqrt(maxSamples/(idealW*idealH)));
+ const sampleW=Math.max(1,Math.round(idealW*sampleFactor)),sampleH=Math.max(1,Math.round(idealH*sampleFactor));
  const sampleCanvas=document.createElement('canvas');sampleCanvas.width=sampleW;sampleCanvas.height=sampleH;const sctx=sampleCanvas.getContext('2d',{alpha:false});
  const image=sctx.createImageData(sampleW,sampleH),data=image.data,heightField=new Float32Array(sampleW*sampleH),landField=new Float32Array(sampleW*sampleH),state=renderCellStats(stage),progress=root.querySelector('#wg-render-progress');
  const rowsPerChunk=Math.max(6,Math.round(sampleH/28));
  for(let y0=0;y0<sampleH;y0+=rowsPerChunk){
+  if(taskId!==renderTaskId)throw Error('Render cancelled');
   const y1=Math.min(sampleH,y0+rowsPerChunk);
   for(let y=y0;y<y1;y++)for(let x=0;x<sampleW;x++){
    const wx=(x+.5)/sampleW*geometry.width,wy=(y+.5)/sampleH*geometry.height,index=y*sampleW+x,o=index*4;
-   if(!insideGeometry(geometry,wx,wy)){data[o]=8;data[o+1]=40;data[o+2]=55;data[o+3]=255;heightField[index]=-0.35;landField[index]=0;continue;}
-   const sample=weightedSample(state,wx,wy,settings),mapped=terrainColorFromSample(sample,state,settings),rgb=mapped.rgb;
-   data[o]=Math.round(rgb[0]);data[o+1]=Math.round(rgb[1]);data[o+2]=Math.round(rgb[2]);data[o+3]=255;heightField[index]=mapped.surface;landField[index]=mapped.landFrac;
+   if(!renderInsideGeometry(wx,wy,geometry)){data[o]=8;data[o+1]=40;data[o+2]=55;data[o+3]=255;heightField[index]=-0.35;landField[index]=0;continue;}
+   const sample=weightedSample(state,wx,wy,settings);
+   // Stable continuous sub-cell texture; the locked polygon data is untouched.
+   // Keep coast perturbations confined to the shoreline, not whole continents.
+   const detail=terrainTexture(wx,wy,Math.max(1,state.avgRadius*.67))-.5;
+   const nearCoast=1-smoothstep(.08,.4,Math.abs(sample.landFrac-.5));
+   sample.landFrac=clamp01(sample.landFrac+detail*.16*nearCoast*clamp01(settings.blend));
+   sample.elev+=detail*.025*clamp01(settings.relief);
+   const mapped=terrainColorFromSample(sample,state,settings),rgb=mapped.rgb;
+   const tint=(1+detail*.15*smoothstep(.37,.8,mapped.landFrac));
+   data[o]=Math.round(clamp(rgb[0]*tint,0,255));data[o+1]=Math.round(clamp(rgb[1]*tint,0,255));data[o+2]=Math.round(clamp(rgb[2]*tint,0,255));data[o+3]=255;
+   heightField[index]=mapped.surface+detail*.045*clamp01(settings.relief);landField[index]=mapped.landFrac;
   }
   if(progress)progress.value=Math.round(y1/sampleH*70);
   await new Promise(r=>requestAnimationFrame(r));
@@ -912,12 +926,21 @@ async function generateRenderImage(settings){
  fctx.save();geometryClipPath(fctx,geometry,dims.width/geometry.width,dims.height/geometry.height);fctx.clip();fctx.drawImage(sampleCanvas,0,0,dims.width,dims.height);fctx.restore();
  if(stage>=9&&settings.hydro>0&&latestData(9)){
   const hydro=latestData(9),sx=dims.width/geometry.width,sy=dims.height/geometry.height,maxVolume=Math.max(.001,hydro.summary.maxDischarge);
+  // Route each segment as part of a connected cubic spline rather than a
+  // piecewise-straight polygon-centre graph.
+  const up=new Int32Array(mesh.cells.length).fill(-1);
+  for(let i=0;i<mesh.cells.length;i++){
+   const j=hydro.flowTo[i];if(j>=0&&(up[j]<0||hydro.discharge[i]>hydro.discharge[up[j]]))up[j]=i;
+  }
   fctx.save();geometryClipPath(fctx,geometry,sx,sy);fctx.clip();fctx.lineCap='round';fctx.lineJoin='round';
   for(const i of hydro.channels){
    const j=hydro.flowTo[i];if(j<0||hydro.lakeId[i]>=0&&hydro.lakeId[j]===hydro.lakeId[i])continue;
+   const prev=up[i]>=0?mesh.cells[up[i]]:mesh.cells[i],a=mesh.cells[i],b=mesh.cells[j],next=hydro.flowTo[j]>=0?mesh.cells[hydro.flowTo[j]]:b;
    const volume=Math.sqrt(Math.max(0,Math.min(1,hydro.discharge[i]/maxVolume))),width=(.7+3.6*volume*settings.hydro*preset.riverWidth);
-   fctx.strokeStyle='rgba(169,239,245,.42)';fctx.lineWidth=width+1.2;fctx.beginPath();fctx.moveTo(mesh.cells[i].x*sx,mesh.cells[i].y*sy);fctx.lineTo(mesh.cells[j].x*sx,mesh.cells[j].y*sy);fctx.stroke();
-   fctx.strokeStyle='rgba(86,198,223,.92)';fctx.lineWidth=width;fctx.beginPath();fctx.moveTo(mesh.cells[i].x*sx,mesh.cells[i].y*sy);fctx.lineTo(mesh.cells[j].x*sx,mesh.cells[j].y*sy);fctx.stroke();
+   for(const [lineWidth,color] of [[width+1.2,'rgba(169,239,245,.42)'],[width,'rgba(86,198,223,.92)']]){
+    fctx.strokeStyle=color;fctx.lineWidth=lineWidth;fctx.beginPath();fctx.moveTo(a.x*sx,a.y*sy);
+    fctx.bezierCurveTo((a.x+(b.x-prev.x)/6)*sx,(a.y+(b.y-prev.y)/6)*sy,(b.x-(next.x-a.x)/6)*sx,(b.y-(next.y-a.y)/6)*sy,b.x*sx,b.y*sy);fctx.stroke();
+   }
   }
   fctx.restore();
  }
@@ -925,7 +948,7 @@ async function generateRenderImage(settings){
  return finalCanvas;
 }
 function renderViewerMarkup(stage){
- return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-zoom-out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in">+</button><button class="wg-primary" data-action="render-download">Download PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas></div></div><p class="wg-modal-caption">Rendered terrain view from layer ${stage}. Drag to pan, use the zoom controls to inspect detail, and close the dialog to return to the editable world.</p></div>`;
+ return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-regenerate">Settings</button><button class="wg-secondary" data-action="render-zoom-out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in">+</button><button class="wg-primary" data-action="render-download">PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas></div></div><p class="wg-modal-caption">Rendered terrain view from layer ${stage}. Drag to pan, use the zoom controls to inspect detail, and close the dialog to return to the editable world.</p></div>`;
 }
 function applyRenderViewerTransform(viewer){
  const state=viewer?viewer._wgState:null,canvasEl=viewer?.querySelector('#wg-render-canvas');if(!state||!canvasEl)return;
@@ -934,32 +957,74 @@ function applyRenderViewerTransform(viewer){
 function fitRenderViewer(viewer){
  const canvasEl=viewer?.querySelector('#wg-render-canvas'),state=viewer?viewer._wgState:null;if(!viewer||!canvasEl||!state)return;
  const vw=Math.max(1,viewer.clientWidth),vh=Math.max(1,viewer.clientHeight),fit=Math.min(vw/canvasEl.width,vh/canvasEl.height);
- state.minScale=Math.max(.2,fit);state.maxScale=Math.max(6,fit*10);state.scale=fit;state.tx=(vw-canvasEl.width*fit)/2;state.ty=(vh-canvasEl.height*fit)/2;applyRenderViewerTransform(viewer);
+ state.minScale=fit*.7;state.maxScale=Math.max(3,fit*14);state.scale=fit;state.tx=(vw-canvasEl.width*fit)/2;state.ty=(vh-canvasEl.height*fit)/2;applyRenderViewerTransform(viewer);
+}
+function zoomRenderViewerAt(viewer,factor,x,y){
+ const state=viewer?viewer._wgState:null;if(!state)return;
+ const next=clamp(state.scale*factor,state.minScale,state.maxScale),ratio=next/state.scale;
+ state.tx=x-(x-state.tx)*ratio;state.ty=y-(y-state.ty)*ratio;state.scale=next;
+ applyRenderViewerTransform(viewer);
 }
 function nudgeRenderViewer(factor){
- const viewer=root.querySelector('#wg-render-viewer');const canvasEl=viewer?.querySelector('#wg-render-canvas'),state=viewer?viewer._wgState:null;if(!viewer||!canvasEl||!state)return;
- const cx=viewer.clientWidth/2,cy=viewer.clientHeight/2,next=clamp(state.scale*factor,state.minScale*.85,state.maxScale),ratio=next/state.scale;state.tx=cx-(cx-state.tx)*ratio;state.ty=cy-(cy-state.ty)*ratio;state.scale=next;applyRenderViewerTransform(viewer);
+ const viewer=root.querySelector('#wg-render-viewer');if(!viewer)return;
+ zoomRenderViewerAt(viewer,factor,viewer.clientWidth/2,viewer.clientHeight/2);
 }
 function initRenderViewer(viewer){
  const canvasEl=viewer?.querySelector('#wg-render-canvas');if(!viewer||!canvasEl)return;
- viewer._wgState={scale:1,minScale:1,maxScale:8,tx:0,ty:0,dragging:false,lastX:0,lastY:0};
- canvasEl.style.transformOrigin='0 0';canvasEl.style.touchAction='none';
- const state=viewer._wgState;
- viewer.onpointerdown=event=>{state.dragging=true;state.lastX=event.clientX;state.lastY=event.clientY;viewer.setPointerCapture?.(event.pointerId);event.preventDefault();};
- viewer.onpointermove=event=>{if(!state.dragging)return;state.tx+=event.clientX-state.lastX;state.ty+=event.clientY-state.lastY;state.lastX=event.clientX;state.lastY=event.clientY;applyRenderViewerTransform(viewer);event.preventDefault();};
- viewer.onpointerup=viewer.onpointercancel=event=>{state.dragging=false;viewer.releasePointerCapture?.(event.pointerId);};
- viewer.onwheel=event=>{event.preventDefault();nudgeRenderViewer(event.deltaY<0?1.15:1/1.15);};
+ const state={scale:1,minScale:1,maxScale:8,tx:0,ty:0,pointers:new Map(),pinch:null};
+ viewer._wgState=state;canvasEl.style.transformOrigin='0 0';canvasEl.style.touchAction='none';
+ const local=event=>{const r=viewer.getBoundingClientRect();return {x:event.clientX-r.left,y:event.clientY-r.top};};
+ const pinchValues=()=>{const [a,b]=[...state.pointers.values()];return {x:(a.x+b.x)/2,y:(a.y+b.y)/2,dist:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y))};};
+ viewer.onpointerdown=event=>{
+  if(event.pointerType==='mouse'&&event.button!==0)return;
+  state.pointers.set(event.pointerId,local(event));viewer.setPointerCapture?.(event.pointerId);
+  state.pinch=state.pointers.size>=2?pinchValues():null;event.preventDefault();
+ };
+ viewer.onpointermove=event=>{
+  if(!state.pointers.has(event.pointerId))return;
+  const prior=state.pointers.get(event.pointerId),position=local(event);
+  state.pointers.set(event.pointerId,position);
+  if(state.pointers.size>=2){
+   const next=pinchValues(),prev=state.pinch||next;
+   // Anchoring previous midpoint to the new midpoint combines pan and pinch.
+   const factor=clamp(next.dist/prev.dist,.5,2);
+   const newScale=clamp(state.scale*factor,state.minScale,state.maxScale);
+   const ratio=newScale/state.scale;
+   state.tx=next.x-(prev.x-state.tx)*ratio;state.ty=next.y-(prev.y-state.ty)*ratio;
+   state.scale=newScale;state.pinch=next;
+  }else{state.tx+=position.x-prior.x;state.ty+=position.y-prior.y;}
+  applyRenderViewerTransform(viewer);event.preventDefault();
+ };
+ viewer.onpointerup=viewer.onpointercancel=event=>{
+  state.pointers.delete(event.pointerId);
+  state.pinch=state.pointers.size>=2?pinchValues():null;
+  if(viewer.hasPointerCapture?.(event.pointerId))viewer.releasePointerCapture(event.pointerId);
+ };
+ viewer.onwheel=event=>{
+  event.preventDefault();const point=local(event);
+  zoomRenderViewerAt(viewer,event.deltaY<0?1.17:1/1.17,point.x,point.y);
+ };
+ viewer.ondblclick=event=>{const point=local(event);zoomRenderViewerAt(viewer,1.6,point.x,point.y);};
  requestAnimationFrame(()=>fitRenderViewer(viewer));
 }
 async function renderCurrentView(){screenshot();closeModal();}
 async function runRenderGeneration(){
+ const taskId=++renderTaskId;
+ renderOutputCanvas=null;
  try{
-  const canvasOut=await generateRenderImage(renderDraft),result=root.querySelector('#wg-render-result');if(!result)return;
+  const canvasOut=await generateRenderImage({...renderDraft},taskId);
+  if(taskId!==renderTaskId)return;
+  const result=root.querySelector('#wg-render-result');if(!result)return;
   renderOutputCanvas=canvasOut;
   result.innerHTML=renderViewerMarkup(renderDraft.stage);
+  result.closest('.wg-render-dialog')?.classList.add('wg-render-ready');
   const target=result.querySelector('#wg-render-canvas');target.width=canvasOut.width;target.height=canvasOut.height;target.getContext('2d').drawImage(canvasOut,0,0);initRenderViewer(result.querySelector('#wg-render-viewer'));result.dataset.ready='1';
   notice('Rendered terrain map ready');
- }catch(error){const result=root.querySelector('#wg-render-result');if(result)result.innerHTML=`<p class="wg-hint">Render failed: ${escapeHTML(error.message)}</p>`;notice(`Render failed: ${error.message}`,true);}
+ }catch(error){
+  if(taskId!==renderTaskId)return;
+  const result=root.querySelector('#wg-render-result');if(result)result.innerHTML=`<p class="wg-hint">Render failed: ${escapeHTML(error.message)}</p>`;
+  notice(`Render failed: ${error.message}`,true);
+ }
 }
 function downloadRenderedImage(){
  const canvasOut=renderOutputCanvas||root.querySelector('#wg-render-canvas');if(!canvasOut){notice('Generate a render first',true);return;}
@@ -986,7 +1051,7 @@ function modal(html){openModal('World library',html);}
 function showLibrary(){
  modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Render image</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
-function closeModal(){root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
+function closeModal(){renderTaskId++;renderOutputCanvas=null;root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
 function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());upgradeWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
