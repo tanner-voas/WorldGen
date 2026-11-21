@@ -5,6 +5,7 @@
 import {insideGeometry} from './engine.js';
 import {createTerrainSampler,visitTerrainSites} from './render.js';
 import {buildTerrainSiteColors,sampleTerrainColor,terrainAppearanceName} from './terrain-3d-material.js';
+import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const ELEVATION_RENDER_STAGE=4;
@@ -192,18 +193,8 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   vertexData[offset+4]=1/size;
   vertexData[offset+5]=-ddz/size;
  }
- const levels=[];
- for(const step of [1,2,4,8]){
-  const indices=[];
-  for(let y=0;y<rows;y+=step)for(let x=0;x<cols;x+=step){
-   const a=y*(cols+1)+x,b=a+step,c=a+step*(cols+1),d=c+step;
-   // Clip both parts of each square independently. Circular boundaries
-   // approximate the actual mathematical edge at the selected grid LOD.
-   if(inside[a]&&inside[c]&&inside[b])indices.push(a,c,b);
-   if(inside[b]&&inside[c]&&inside[d])indices.push(b,c,d);
-  }
-  levels.push({step,indices:new Uint32Array(indices)});
- }
+ const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth);
+ const uniformLevels=buildUniformTerrainLevels(cols,rows,inside);
  const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,waterMask:options.waterMask});
  const seaY=seaLevel*.73;
  const ocean=new Float32Array(geometry.shape==='rectangle'?
@@ -219,5 +210,5 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
    return arr;
   })());
  onProgress(1);
- return {vertexData,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count};
+ return {vertexData,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count};
 }

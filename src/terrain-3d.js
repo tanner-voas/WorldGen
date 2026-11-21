@@ -1,3 +1,4 @@
+import {lodStepForDistance,adaptiveTileLod} from './terrain-3d-lod.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
  * smooth lighting, water and interactive level-of-detail index buffers.
@@ -25,7 +26,7 @@ export function multiplyMatrices(a,b){
  }
  return out;
 }
-export function meshLod(distance){return distance>18?8:distance>11?4:distance>5?2:1;}
+export function meshLod(distance){return lodStepForDistance(distance);}
 
 const VERTEX=`#version 300 es
 precision highp float;
@@ -191,7 +192,13 @@ export class Terrain3DViewer{
   for(const level of s.levels){
    const buffer=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buffer);
    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,level.indices,gl.STATIC_DRAW);
-   this.levelBuffers.push({buffer,count:level.indices.length,step:level.step});
+   this.levelBuffers.push({buffer,count:level.indices.length,step:level.step,tiles:level.tiles||null});
+  }
+  this.uniformLevelBuffers=[];
+  for(const level of s.uniformLevels||[]){
+   const buffer=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buffer);
+   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,level.indices,gl.STATIC_DRAW);
+   this.uniformLevelBuffers.push({buffer,count:level.indices.length,step:level.step});
   }
   this.waterVAO=gl.createVertexArray();gl.bindVertexArray(this.waterVAO);
   this.waterVBO=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.waterVBO);
@@ -272,11 +279,40 @@ export class Terrain3DViewer{
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
   gl.uniform1f(this.materialLocation,s.materialColors?.length?0.88:0);
-  const selected=meshLod(this.distance);const level=this.levelBuffers.find(b=>b.step===selected)||this.levelBuffers[0];
+  const selected=meshLod(this.distance);
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
-  gl.bindVertexArray(this.terrainVAO);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);
-  gl.drawElements(gl.TRIANGLES,level.count,gl.UNSIGNED_INT,0);
+  gl.bindVertexArray(this.terrainVAO);
+  const tiled=this.levelBuffers,baseline=tiled.find(level=>level.step===1);
+  let selectedTriangles=0,finest=8,coarsest=1;
+  if(baseline?.tiles?.length){
+   const span=Math.max(s.planeWidth/s.cols,s.planeDepth/s.rows)*32;
+   // Determine LOD for each tile before drawing. When every tile requests
+   // the same detail, a single uniform draw is substantially cheaper and
+   // avoids dense stitched boundaries that are not needed in that view.
+   const selectedSteps=baseline.tiles.map(tile=>adaptiveTileLod(eye,tile,span));
+   finest=Math.min(...selectedSteps);coarsest=Math.max(...selectedSteps);
+   const uniform=finest===coarsest?this.uniformLevelBuffers?.find(level=>level.step===finest):null;
+   if(uniform){
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,uniform.buffer);
+    gl.drawElements(gl.TRIANGLES,uniform.count,gl.UNSIGNED_INT,0);
+    selectedTriangles=uniform.count/3;
+   }else{
+    let currentStep=0;
+    for(let i=0;i<baseline.tiles.length;i++){
+     const step=selectedSteps[i],level=tiled.find(row=>row.step===step)||baseline;
+     const range=level.tiles?.[i];if(!range?.count)continue;
+     if(currentStep!==step){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);currentStep=step;}
+     gl.drawElements(gl.TRIANGLES,range.count,gl.UNSIGNED_INT,range.offset*4);
+     selectedTriangles+=range.count/3;
+    }
+   }
+  }else{
+   const level=tiled.find(row=>row.step===selected)||tiled[0];
+   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);
+   gl.drawElements(gl.TRIANGLES,level.count,gl.UNSIGNED_INT,0);
+   selectedTriangles=level.count/3;finest=coarsest=level.step;
+  }
   gl.uniform1i(this.waterLocation,1);
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
   gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
@@ -287,7 +323,9 @@ export class Terrain3DViewer{
    gl.bindVertexArray(water.vao);gl.drawArrays(gl.TRIANGLES,0,water.count);
   }
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);
-  this.onStatus(`${this.label} · LOD ${selected===1?'High':selected===2?'Medium':'Wide'} · ${s.hydrology?.riverSegments||0} river triangles · ${s.hydrology?.lakeCells||0} lake cells`);
+  const detail=finest===coarsest?`LOD ${finest}`:`Adaptive LOD ${finest}–${coarsest}`;
+  const status=`${this.label} · ${detail} · ${selectedTriangles.toLocaleString()} terrain tris · ${s.hydrology?.riverSegments||0} river tris`;
+  if(status!==this.lastDrawStatus){this.lastDrawStatus=status;this.onStatus(status);}
  }
  dispose(){
   if(this.disposed)return;
@@ -301,6 +339,7 @@ export class Terrain3DViewer{
   const gl=this.gl;
   if(gl&&!this.lost){
    for(const b of this.levelBuffers||[])gl.deleteBuffer(b.buffer);
+   for(const b of this.uniformLevelBuffers||[])gl.deleteBuffer(b.buffer);
    for(const water of this.hydroGeometry||[]){gl.deleteBuffer(water.buffer);gl.deleteVertexArray(water.vao);}
    if(this.terrainVBO)gl.deleteBuffer(this.terrainVBO);
    if(this.materialVBO)gl.deleteBuffer(this.materialVBO);

@@ -1,4 +1,4 @@
-# WorldGen v0.1.22
+# WorldGen v0.1.23
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -160,3 +160,8 @@ The 3D viewer now follows the generation stage selected in the world explorer. L
 From layer 8 onward, the existing 3D terrain mesh now receives continuously interpolated environmental colors from the *selected* completed stage. Layers 8–9 use saved climate temperature/moisture; layer 10 additionally uses soil type and fertility; layer 11 adds biome colors; and layer 12 adds vegetation canopy and ground-cover characteristics. The render has one stable visual profile per stage with no extra settings. Layer 9 and later still include the previously implemented river and lake geometry. Levels 4–7 retain their previous elevation-based appearance.
 
 Terrain height, sea level, hydrology, and saved world data are not rewritten. Appearance is calculated in the mesh-generation worker and transferred as an optional RGB vertex buffer. Source fields are blended on the existing 3D mesh; the eventual high-resolution local-detail subgrid remains necessary for realistic fine textures and vegetation geometry.
+
+
+## v0.1.23 — Crack-free adaptive 3D terrain LOD
+
+The 3D viewer now selects terrain mesh detail **per geographical tile**, instead of using one coarse or fine resolution for the entire scene. Each mixed-detail tile includes full-resolution boundary vertices stitched into its internal coarser triangles, preventing cracks at seams when neighboring tiles have different LODs. A single-draw uniform index buffer remains available whenever the whole world requests the same detail, keeping wide views efficient. All levels share one immutable terrain vertex/material buffer, so generation data, elevation interpolation, and saved worlds remain unchanged. The viewer status shows active adaptive LOD and submitted terrain triangle counts.
