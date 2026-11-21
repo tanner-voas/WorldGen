@@ -201,3 +201,21 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-change-key::before{content:"";grid-column:1/-1;height:6px;border-radius:4px;background:linear-gradient(to right,#a54824,#c29788 37.5%,#e4e1d3 50%,#80a9a5 62.5%,#1b7077)}
 .wg-change-key span:nth-child(2){text-align:center}
 .wg-change-key span:last-child{text-align:right}
+
+/* v0.1.19 – standalone GPU terrain viewer; independent of raster render controls. */
+.wg-3d-modal{box-sizing:border-box;width:100%;height:100dvh;max-height:none;border-radius:0;border:0;display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px);overflow:hidden;background:#12252a}
+.wg-3d-modal .wg-modal-heading{flex-shrink:0;padding:0 5px 10px}
+.wg-3d-modal .wg-modal-heading h2{font-size:17px}
+.wg-3d-modal .wg-icon-button{height:40px;width:40px}
+.wg-3d-root{display:flex;flex:1;flex-direction:column;gap:8px;min-height:0}
+.wg-3d-intro{font-size:11px;color:#a9c4b9;padding:0 4px;flex-shrink:0}
+.wg-3d-viewport{position:relative;flex:1;min-height:120px;border-radius:15px;overflow:hidden;background:#0a1b26;border:1px solid #395760}
+.wg-3d-viewport canvas{width:100%;height:100%;display:block;touch-action:none;outline:0}
+.wg-3d-loading{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);padding:13px 17px;max-width:88%;text-align:center;font-size:12px;line-height:1.5;background:#173233e8;border:1px solid #608478;border-radius:12px;color:#eaf1df;pointer-events:none}
+.wg-3d-loading[hidden]{display:none}
+.wg-3d-bar{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-shrink:0}
+.wg-3d-bar button{background:#284940;color:#e4f4eb;border:1px solid #638274;border-radius:10px;min-width:45px;min-height:42px;padding:6px 12px;font-size:12px;font-weight:650}
+.wg-3d-bar button.wg-3d-selected{background:#c4e2b1;color:#183c2c;border-color:#d4e8c8}
+.wg-3d-modes{display:flex;gap:5px;margin-right:auto}
+.wg-3d-foot{flex-shrink:0;display:flex;gap:6px;justify-content:space-between;color:#a3baaf;font-size:10px;min-height:17px;padding:0 3px;flex-wrap:wrap}
+@media(max-width:380px){.wg-3d-bar button{padding-inline:8px;min-width:39px}.wg-3d-foot{font-size:9px}}

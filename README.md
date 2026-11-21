@@ -1,4 +1,4 @@
-# WorldGen v0.1.18
+# WorldGen v0.1.19
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -130,3 +130,14 @@ A module worker samples and shades the terrain. If the browser cannot start the 
 Choose **Elevation change** in the render dialog and select an earlier elevation layer. Comparing layer 7 with layer 6 isolates erosion. Comparing layer 7 with layer 4 includes coastal shaping and landforms as well. Layers 8–12 use layer 7's terrain. Brown indicates a decrease, teal an increase. Both ends of the scale saturate at 0.10 relative elevation. Tap any cell for the saved baseline and signed change.
 
 For other styles, enable **Land contours** to draw lines at a chosen interval above sea level. Every fifth line is heavier. Contours appear in exported PNGs. The viewer's distance scale follows zoom, and a pin keeps the inspected location visible while panning.
+
+
+## v0.1.19 – Elevation-first 3D viewer
+
+The former raster-render entry point has been replaced with a read-only, interactive WebGL2 elevation viewer. It is available at layer 4 (Elevation) and remains available when viewing later stages, but currently displays only the original layer-4 elevation field. It is deliberately **not** a new generation stage and does not modify any world data.
+
+A separate computation worker converts the saved Voronoi elevations to a smoothly interpolated rectangular terrain grid, clipped to the selected world outline. The GPU displays a perspective-lit 3D mesh and a flat reference sea surface at zero height. The ocean datum is provisional until a future 3D coastline renderer is implemented. Mesh-index LODs change automatically as the camera zooms, without a render-settings dialog or re-generating terrain.
+
+Orbit with one finger, pan with two fingers or Pan mode, pinch or use the zoom buttons, and Fit to recenter. The viewer requires WebGL2 and fails with a visible explanation on unsupported browsers. No external libraries/CDNs are required: all modules are included in the standalone and AppLauncher packages. Existing worlds and the v2 save schema remain unchanged.
+
+Later work can extend this renderer with coastlines, post-erosion elevation, rivers, climate materials and local subgrid detail.

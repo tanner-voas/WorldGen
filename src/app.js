@@ -2,8 +2,11 @@ import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgrad
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,renderInsideGeometry,rasterDimensions,comparisonStages,elevationsAt,distanceScale,createTerrainSampler,riverShorePoint} from './render.js';
 import {rasterize} from './raster.js';
+import {Terrain3DViewer} from './terrain-3d.js';
+import {ELEVATION_RENDER_STAGE} from './terrain-3d-model.js';
 
-const APP_VERSION='0.1.18',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.19',DB_NAME='worldgen-v1',KEY='workspace';
+let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -191,7 +194,7 @@ function buildShell(){
     <button class="wg-icon-button wg-home" data-action="home" aria-label="Return to launcher" title="Return to launcher">${host?'⌂':'≡'}</button>
     <div class="wg-headline"><div class="wg-eyebrow">WORLDGEN <span>v${APP_VERSION}</span></div><button class="wg-world-name" data-action="rename" title="Rename world">${escapeHTML(workspace.name)} <span>⌄</span></button></div>
     <button class="wg-icon-button" data-action="save" aria-label="Save checkpoint" title="Save checkpoint">▣</button>
-    <button class="wg-icon-button" data-action="render" aria-label="Render high-resolution map" title="Render high-resolution map">◫</button>
+    <button class="wg-icon-button" data-action="render" aria-label="Explore elevation in 3D" title="Explore elevation in 3D">◫</button>
     <button class="wg-icon-button" data-action="library" aria-label="Open world library" title="World library">☰</button>
    </header>
    <main class="wg-map-area">
@@ -241,6 +244,8 @@ function rebuildUI(){
   html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p><div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
  }else{html+='<p class="wg-hint">Generate and lock the preceding layer to continue.</p>';}
  root.querySelector('#wg-stage-main').innerHTML=html;
+ const renderButton=root.querySelector('[data-action="render"]');
+ if(renderButton){renderButton.disabled=effectiveStage()<ELEVATION_RENDER_STAGE;renderButton.title='Open elevation 3D viewer (layer 4+)';}
  const shown=effectiveStage(),palette=root.querySelector('#wg-palette');
  for(const option of palette.options)option.disabled=paletteStages[option.value]>shown;
  palette.value=workspace.viewMode!=='auto'&&paletteStages[workspace.viewMode]<=shown?workspace.viewMode:'natural';
@@ -1060,9 +1065,46 @@ async function saveCheckpoint(){
 function openModal(title,html,extraClass=''){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal ${extraClass}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><div class="wg-modal-heading"><h2>${escapeHTML(title)}</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
 function modal(html){openModal('World library',html);}
 function showLibrary(){
- modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Render image</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
+ modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Explore 3D elevation</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
+}
+/** v0.1.19: the render command goes straight to the one supported 3D profile.
+ * It reads layer 4 without modifying its saved data or revising later layers. */
+function showElevation3D(){
+ const selected=effectiveStage(),elevation=latestData(ELEVATION_RENDER_STAGE),mesh=latestData(2),geometry=latestData(1);
+ if(selected<ELEVATION_RENDER_STAGE||!elevation||!mesh||!geometry){
+  notice('3D terrain becomes available at layer 4 — Elevation',true);return;
+ }
+ if(currentStage()===ELEVATION_RENDER_STAGE&&(generating||dirty)){
+  notice('Finish elevation generation before opening the 3D terrain viewer',true);return;
+ }
+ releaseRender();
+ openModal('3D terrain · Elevation',`<div class="wg-3d-root">
+  <div class="wg-3d-intro">Read-only GPU terrain · Layer 04${selected>4?' · Earlier elevation shown; later layers not rendered yet':''}</div>
+  <div class="wg-3d-viewport"><canvas id="wg-3d-canvas" aria-label="Interactive 3D elevation terrain"></canvas>
+   <div class="wg-3d-loading" id="wg-3d-loading">Preparing 3D elevation…</div></div>
+  <div class="wg-3d-bar">
+   <div class="wg-3d-modes"><button data-action="3d-orbit" class="wg-3d-selected" aria-pressed="true">Orbit</button><button data-action="3d-pan" aria-pressed="false">Pan</button></div>
+   <button data-action="3d-zoom-out" aria-label="Zoom out">−</button>
+   <button data-action="3d-fit">Fit</button>
+   <button data-action="3d-zoom-in" aria-label="Zoom in">+</button>
+  </div>
+  <div class="wg-3d-foot"><span id="wg-3d-status">Preparing surface…</span><span>Drag to orbit · pinch to zoom / pan</span></div>
+ </div>`,'wg-3d-modal');
+ const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
+ const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
+ terrainViewer=viewer;
+ viewer.initialize(geometry,mesh,elevation.elevations).then(()=>{
+  if(viewer.disposed)return;
+  const loading=root.querySelector('#wg-3d-loading');if(loading)loading.hidden=true;
+ }).catch(error=>{
+  if(viewer.disposed)return;
+  const loading=root.querySelector('#wg-3d-loading');
+  if(loading){loading.hidden=false;loading.textContent=`3D unavailable: ${error.message}`;}
+  if(message)message.textContent='3D setup failed';
+ });
 }
 function releaseRender(){
+ terrainViewer?.dispose();terrainViewer=null;
  renderController?.abort();
  renderController=null;
  if(renderOutputCanvas){renderOutputCanvas.width=renderOutputCanvas.height=1;renderOutputCanvas=null;}
@@ -1075,7 +1117,7 @@ async function handleAction(action,button){
   case 'home':{flushViewport();await flushPersist();if(host?.returnToLauncher)host.returnToLauncher();else showLibrary();break;}
   case 'save':await saveCheckpoint();break;
   case 'library':showLibrary();break;
-  case 'render':showRenderDialog();break;
+  case 'render':showElevation3D();break;
   case 'close-modal':closeModal();break;
   case 'close-inspector':selectedId=null;updateInspector();schedulePaint();break;
   case 'fit':fitMap();break;
@@ -1092,6 +1134,15 @@ async function handleAction(action,button){
   case 'render-zoom-in':nudgeRenderViewer(1.3);break;
   case 'render-zoom-out':nudgeRenderViewer(1/1.3);break;
   case 'render-fit':{const viewer=root.querySelector('#wg-render-viewer');if(viewer)fitRenderViewer(viewer);break;}
+  case '3d-orbit':case '3d-pan':{
+   terrainViewer?.setMode(action==='3d-pan'?'pan':'orbit');
+   root.querySelectorAll('[data-action="3d-orbit"],[data-action="3d-pan"]').forEach(el=>{
+    const active=el.dataset.action===action;el.classList.toggle('wg-3d-selected',active);el.setAttribute('aria-pressed',String(active));
+   });break;
+  }
+  case '3d-fit':terrainViewer?.resetCamera();break;
+  case '3d-zoom-in':terrainViewer?.zoom(.73);break;
+  case '3d-zoom-out':terrainViewer?.zoom(1.37);break;
 
   case 'zoom-in':zoomBy(1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'zoom-out':zoomBy(1/1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
