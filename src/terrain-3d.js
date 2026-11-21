@@ -1,4 +1,5 @@
 import {lodStepForDistance,adaptiveTileLod,tileVisibleInFrustum} from './terrain-3d-lod.js';
+import {cameraRay,pickTerrainRay} from './terrain-3d-focus.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
  * smooth lighting, water and interactive level-of-detail index buffers.
@@ -46,7 +47,7 @@ void main(){
  vElevation=aElevation;
  gl_Position=uCamera*vec4(aPosition,1.0);
 }`;
-const FRAGMENT=`#version 300 es
+export const TERRAIN_FRAGMENT_SHADER=`#version 300 es
 precision highp float;
 in vec3 vNormal;
 in vec3 vMaterial;
@@ -64,6 +65,15 @@ vec3 colorRamp(float h){
  if(h<.42)return mix(vec3(.50,.62,.40),vec3(.57,.55,.40),smoothstep(.14,.42,h));
  if(h<.82)return mix(vec3(.57,.55,.40),vec3(.60,.55,.48),smoothstep(.42,.82,h));
  return mix(vec3(.60,.55,.48),vec3(.91,.93,.92),smoothstep(.82,1.4,h));
+}
+float surfaceHash(vec2 p){
+ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);
+}
+float surfaceNoise(vec2 p){
+ vec2 i=floor(p),f=fract(p);
+ f=f*f*(3.0-2.0*f);
+ return mix(mix(surfaceHash(i),surfaceHash(i+vec2(1.0,0.0)),f.x),
+            mix(surfaceHash(i+vec2(0.0,1.0)),surfaceHash(i+vec2(1.0,1.0)),f.x),f.y);
 }
 void main(){
  vec3 sun=normalize(vec3(-.52,.80,.32));
@@ -91,6 +101,18 @@ void main(){
  vec3 albedo=mix(colorRamp(relativeHeight),vMaterial,uMaterialStrength);
  float exposed=(1.0-smoothstep(.30,.80,n.y))*smoothstep(.02,.7,relativeHeight);
  albedo=mix(albedo,vec3(.48,.46,.42),exposed*.34);
+ // Sub-vertex detail is a stable surface *material* variation, not new
+ // geographic height. Screen-space footprint suppresses high frequencies
+ // when zoomed out, avoiding shimmering on mobile GPUs.
+ vec2 position=vPosition.xz;
+ float footprint=max(length(dFdx(position)),length(dFdy(position)));
+ float broad=(1.0-smoothstep(.35,1.0,footprint*28.0));
+ float fine=(1.0-smoothstep(.35,1.0,footprint*105.0));
+ float grain=0.0;
+ if(broad>.001)grain+=(surfaceNoise(position*28.0)-.5)*broad*.75;
+ if(fine>.001)grain+=(surfaceNoise(position*105.0)-.5)*fine*.35;
+ float roughness=.65+.65*clamp(1.0-n.y,0.0,1.0);
+ albedo*=clamp(1.0+grain*.21*roughness,.80,1.19);
  float ambient=clamp(.88+.12*n.y,.73,1.0);
  fragColor=vec4(albedo*shade*ambient,1.0);
 }`;
@@ -103,7 +125,7 @@ function compile(gl,kind,source){
  return shader;
 }
 function program(gl){
- const vert=compile(gl,gl.VERTEX_SHADER,VERTEX),frag=compile(gl,gl.FRAGMENT_SHADER,FRAGMENT);
+ const vert=compile(gl,gl.VERTEX_SHADER,VERTEX),frag=compile(gl,gl.FRAGMENT_SHADER,TERRAIN_FRAGMENT_SHADER);
  const p=gl.createProgram();gl.attachShader(p,vert);gl.attachShader(p,frag);gl.linkProgram(p);
  gl.deleteShader(vert);gl.deleteShader(frag);
  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){const log=gl.getProgramInfoLog(p);gl.deleteProgram(p);throw Error(`3D program link failed: ${log}`);}
@@ -117,6 +139,7 @@ export class Terrain3DViewer{
   this.disposed=false;this.lost=false;this.worker=null;this.gl=null;this.surface=null;this.label='Elevation';
   this.pitch=.93;this.yaw=-.69;this.distance=7.5;this.target=[0,0,0];this.mode='orbit';
   this.pointers=new Map();this.gesture=null;this.pendingFrame=0;this.resources=[];
+  this.tapStart=null;this.lastTap=null;this.lastFocusTime=0;
   this.onLost=e=>{e.preventDefault();this.lost=true;this.onStatus('Graphics context interrupted');};
   this.onRestored=()=>{this.lost=false;if(this.surface){this._initializeGL();this._uploadSurface();this.drawSoon();}};
   canvas.addEventListener('webglcontextlost',this.onLost);
@@ -125,7 +148,7 @@ export class Terrain3DViewer{
   this.onPointerMove=e=>this.pointerMove(e);
   this.onPointerUp=e=>this.pointerUp(e);
   this.onWheel=e=>{e.preventDefault();this.zoom(Math.exp(e.deltaY*.001));};
-  this.onDoubleTap=e=>{if(e.detail>=2)this.resetCamera();};
+  this.onDoubleTap=e=>{if(e.detail>=2)this.focusAt(e.clientX,e.clientY);};
   canvas.addEventListener('pointerdown',this.onPointerDown);
   canvas.addEventListener('pointermove',this.onPointerMove);
   canvas.addEventListener('pointerup',this.onPointerUp);
@@ -241,11 +264,14 @@ export class Terrain3DViewer{
  pointerDown(e){
   if(this.disposed)return;
   e.preventDefault();this.canvas.setPointerCapture?.(e.pointerId);
+  if(this.pointers.size===0)this.tapStart={x:e.clientX,y:e.clientY,time:performance.now(),type:e.pointerType,moved:false};
+  else{this.tapStart=null;this.lastTap=null;}
   this.pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});this.gesture=null;
  }
  pointerMove(e){
   const previous=this.pointers.get(e.pointerId);if(!previous||this.disposed)return;
   const next={x:e.clientX,y:e.clientY};this.pointers.set(e.pointerId,next);
+  if(this.tapStart&&Math.hypot(e.clientX-this.tapStart.x,e.clientY-this.tapStart.y)>8){this.tapStart.moved=true;this.lastTap=null;}
   if(this.pointers.size===1){
    const dx=next.x-previous.x,dy=next.y-previous.y;
    if(this.mode==='pan')this.pan(dx,dy);
@@ -259,7 +285,33 @@ export class Terrain3DViewer{
    this.gesture={distance,middle};
   }
  }
- pointerUp(e){this.pointers.delete(e.pointerId);this.gesture=null;if(this.canvas.hasPointerCapture?.(e.pointerId))this.canvas.releasePointerCapture(e.pointerId);}
+ pointerUp(e){
+  if(e.type!=='pointercancel'&&this.pointers.size===1&&this.tapStart&&!this.tapStart.moved&&
+     performance.now()-this.tapStart.time<400&&this.tapStart.type!=='mouse'){
+   const now=performance.now(),prior=this.lastTap;
+   if(prior&&now-prior.time<340&&Math.hypot(e.clientX-prior.x,e.clientY-prior.y)<28){
+    this.focusAt(e.clientX,e.clientY);this.lastTap=null;
+   }else this.lastTap={x:e.clientX,y:e.clientY,time:now};
+  }
+  this.pointers.delete(e.pointerId);this.gesture=null;this.tapStart=null;
+  if(this.canvas.hasPointerCapture?.(e.pointerId))this.canvas.releasePointerCapture(e.pointerId);
+ }
+ /** Focus on the first visible terrain surface under a double-tap/click. */
+ focusAt(clientX,clientY){
+  if(!this.surface||this.disposed)return false;
+  const now=performance.now();if(now-this.lastFocusTime<140)return false;
+  const rect=this.canvas.getBoundingClientRect();
+  const x=clientX-rect.left,y=clientY-rect.top;
+  if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>rect.width||y>rect.height)return false;
+  const cp=Math.cos(this.pitch),sp=Math.sin(this.pitch),sy=Math.sin(this.yaw),cy=Math.cos(this.yaw);
+  const eye=[this.target[0]+this.distance*cp*sy,this.target[1]+this.distance*sp,this.target[2]+this.distance*cp*cy];
+  const ray=cameraRay(eye,this.target,x,y,rect.width,rect.height);
+  const point=ray&&pickTerrainRay(this.surface,eye,ray);
+  if(!point)return false;
+  this.target=point;this.distance=clamp(this.distance*.78,.65,32);
+  this.lastFocusTime=now;this.drawSoon();return true;
+ }
+
  drawSoon(){
   if(this.disposed||this.pendingFrame||!this.gl||this.lost||!this.surface)return;
   this.pendingFrame=requestAnimationFrame(()=>{this.pendingFrame=0;this.draw();});

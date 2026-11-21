@@ -1,4 +1,4 @@
-# WorldGen v0.1.24
+# WorldGen v0.1.25
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -173,3 +173,10 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 - Added conservative clip-space visibility checks for mixed-detail terrain tiles, with per-tile elevation bounds. Invisible tiles skip GPU draw calls during close exploration; uniform wide views retain their single-draw fast path.
 - New regression tests verify identical footprint area, strictly upward-facing triangles, monotone coarsening on all three shapes, per-tile vertical containment and culling in the actual 3D draw path.
 - There are no changes to generation layers, serialized worlds, checkpoint compatibility or viewer controls. Edge fidelity costs additional triangles on curved shapes compared with the old (incorrect) coarse silhouette.
+
+
+## v0.1.25 — 3D surface and camera refinement
+
+- The WebGL2 shader adds restrained, deterministic surface-material texture at two spatial frequencies. Screen-space anti-aliasing suppresses detail that is too small to resolve at a distance. This affects appearance only: no invented terrain elevation, geometry changes, or new generator stages.
+- Double-tap a visible terrain location in the 3D viewer to focus and zoom the orbit camera on it; Fit restores the global view. The focus ray checks the current generated mesh and the exact world outline. Mouse double-click is also supported.
+- Worker output includes a compact shape mask for read-only focus picking, with no changes to stored worlds.

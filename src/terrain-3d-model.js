@@ -222,6 +222,6 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
    return arr;
   })());
  onProgress(1);
- return {vertexData,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
+ return {vertexData,insideMask:inside,outline:geometry,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
   minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05};
 }

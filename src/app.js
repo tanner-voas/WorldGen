@@ -6,7 +6,7 @@ import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-material.js';
 
-const APP_VERSION='0.1.23',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.25',DB_NAME='worldgen-v1',KEY='workspace';
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
@@ -1095,7 +1095,7 @@ function showElevation3D(){
    <button data-action="3d-fit">Fit</button>
    <button data-action="3d-zoom-in" aria-label="Zoom in">+</button>
   </div>
-  <div class="wg-3d-foot"><span id="wg-3d-status">Preparing surface…</span><span>Drag to orbit · pinch to zoom / pan</span></div>
+  <div class="wg-3d-foot"><span id="wg-3d-status">Preparing surface…</span><span>Drag to orbit · pinch to zoom / pan · double-tap to focus</span></div>
  </div>`,'wg-3d-modal');
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
  const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
