@@ -1,4 +1,4 @@
-# WorldGen v0.1.17
+# WorldGen v0.1.18
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -124,3 +124,9 @@ Render mode is now a true terrain-render pass rather than a lightly blurred cell
 The render dialog opens on the selected completed layer. Relief uses world-space slopes, isolated islands and lakes retain their influence at their sites, and rivers meet the interpolated shore. Export size sets PNG dimensions. Terrain detail sets the sampling density within a bounded pixel budget.
 
 A module worker samples and shades the terrain. If the browser cannot start the worker, the same renderer runs in short batches on the main thread. Closing the dialog cancels pending work. The viewer refits on rotation and inspects the layer used for the image.
+
+## v0.1.18 terrain comparison and contours
+
+Choose **Elevation change** in the render dialog and select an earlier elevation layer. Comparing layer 7 with layer 6 isolates erosion. Comparing layer 7 with layer 4 includes coastal shaping and landforms as well. Layers 8–12 use layer 7's terrain. Brown indicates a decrease, teal an increase. Both ends of the scale saturate at 0.10 relative elevation. Tap any cell for the saved baseline and signed change.
+
+For other styles, enable **Land contours** to draw lines at a chosen interval above sea level. Every fifth line is heavier. Contours appear in exported PNGs. The viewer's distance scale follows zoom, and a pin keeps the inspected location visible while panning.

@@ -6,6 +6,7 @@ export const RENDER_SIZE_OPTIONS=[1024,1536,2048,3072,4096];
 const MODE_LABELS={
  satellite:'Satellite / terrain',
  relief:'Physical relief',
+ change:'Elevation change',
  climate:'Climate',
  hydrology:'Hydrology',
  biomes:'Biomes',
@@ -20,6 +21,8 @@ export function defaultRenderSettings(stage){
   longEdge:resolved>=11?2048:1536,
   detail:resolved>=11?'high':'standard',
   blend:0.72,
+  contours:0,
+  reference:Math.min(6,resolved-1),
   relief:resolved>=5?0.85:0,
   coast:0.85,
   hydro:resolved>=9?1.05:0,
@@ -38,6 +41,7 @@ export function defaultRenderMode(stage){
 
 export function renderModeOptions(stage){
  const ids=['satellite','relief'];
+ if(stage>=5)ids.push('change');
  if(stage>=8)ids.push('climate');
  if(stage>=9)ids.push('hydrology');
  if(stage>=11)ids.push('biomes');
@@ -180,4 +184,23 @@ export function riverShorePoint(sampler,water,lakeId,dry,wet,textureScale,blend)
  }
  const t=(low+high)/2;
  return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};
+}
+
+export function comparisonStages(stage){
+ return [4,5,6].filter(n=>n<Math.min(stage,7));
+}
+
+// Stages after erosion reuse its terrain. Older coast records can inherit layer 4.
+export function elevationsAt(source,stage){
+ for(let n=Math.min(stage,7);n>=4;n--){
+  if(source[n]?.elevations)return source[n].elevations;
+ }
+ throw Error('Terrain elevations are missing');
+}
+
+export function distanceScale(kmPerPixel,maxPixels){
+ const target=kmPerPixel*maxPixels;
+ const decade=10**Math.floor(Math.log10(target));
+ const distance=(target>=5*decade?5:target>=2*decade?2:1)*decade;
+ return {distance,pixels:distance/kmPerPixel};
 }

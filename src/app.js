@@ -1,9 +1,9 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
-import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,renderInsideGeometry,rasterDimensions,createTerrainSampler,riverShorePoint} from './render.js';
+import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,renderInsideGeometry,rasterDimensions,comparisonStages,elevationsAt,distanceScale,createTerrainSampler,riverShorePoint} from './render.js';
 import {rasterize} from './raster.js';
 
-const APP_VERSION='0.1.17',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.18',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -732,6 +732,7 @@ function blendRenderSettings(next){
  const supported=renderOptionSupport(stage);
  const mixed={...base,...next,stage};
  if(renderDraft&&renderDraft.stage!==stage){
+  if(renderDraft.reference===defaultRenderSettings(renderDraft.stage).reference)mixed.reference=base.reference;
   const previous=renderOptionSupport(renderDraft.stage);
   for(const key of Object.keys(supported))if(supported[key]&&!previous[key])mixed[key]=base[key];
  }
@@ -740,6 +741,7 @@ function blendRenderSettings(next){
  if(!supported.climateTint)mixed.climateTint=0;
  if(!supported.biomeTint)mixed.biomeTint=0;
  if(!supported.vegetationTint)mixed.vegetationTint=0;
+ if(!comparisonStages(stage).includes(mixed.reference))mixed.reference=base.reference;
  mixed.longEdge=RENDER_SIZE_OPTIONS.includes(Number(mixed.longEdge))?Number(mixed.longEdge):base.longEdge;
  return mixed;
 }
@@ -755,11 +757,12 @@ function showRenderDialog(stage=effectiveStage()){
   <div class="wg-render-controls">
    <label class="wg-render-field"><span>Render from layer</span><select data-render-setting="stage">${choices.map(n=>`<option value="${n}" ${n===renderDraft.stage?'selected':''}>${String(n).padStart(2,'0')} · ${escapeHTML(stageText(n))}</option>`).join('')}</select></label>
    <label class="wg-render-field"><span>Render style</span><select data-render-setting="mode">${modeOptions.map(([id,label])=>`<option value="${id}" ${id===renderDraft.mode?'selected':''}>${escapeHTML(label)}</option>`).join('')}</select></label>
+   ${renderDraft.mode==='change'?`<label class="wg-render-field"><span>Compare with layer</span><select data-render-setting="reference">${comparisonStages(renderDraft.stage).map(n=>`<option value="${n}" ${n===renderDraft.reference?'selected':''}>${n} · ${escapeHTML(stageText(n))}</option>`).join('')}</select></label>`:`<label class="wg-render-field"><span>Land contours · relative elevation</span><select data-render-setting="contours">${[0,.05,.1,.2].map(n=>`<option value="${n}" ${n===renderDraft.contours?'selected':''}>${n?'Every '+n:'Off'}</option>`).join('')}</select></label>`}
    <label class="wg-render-field"><span>Longest edge (px)</span><select data-render-setting="longEdge">${RENDER_SIZE_OPTIONS.map(px=>`<option value="${px}" ${px===renderDraft.longEdge?'selected':''}>${shortNumber(px)} px</option>`).join('')}</select></label>
    <label class="wg-render-field"><span>Terrain detail</span><select data-render-setting="detail"><option value="preview" ${renderDraft.detail==='preview'?'selected':''}>Preview</option><option value="standard" ${renderDraft.detail==='standard'?'selected':''}>Standard</option><option value="high" ${renderDraft.detail==='high'?'selected':''}>High</option><option value="ultra" ${renderDraft.detail==='ultra'?'selected':''}>Ultra</option></select></label>
    <label class="wg-render-field"><span>Boundary blending <output>${Math.round(renderDraft.blend*100)}%</output></span><input type="range" min="0.25" max="1.25" step="0.05" value="${renderDraft.blend}" data-render-setting="blend"></label>
-   <label class="wg-render-field"><span>Relief shading <output>${Math.round(renderDraft.relief*100)}%</output></span><input type="range" min="0" max="1.6" step="0.05" value="${renderDraft.relief}" data-render-setting="relief"></label>
-   ${supports.hydro?`<label class="wg-render-field"><span>River and lake emphasis <output>${Math.round(renderDraft.hydro*100)}%</output></span><input type="range" min="0" max="1.6" step="0.05" value="${renderDraft.hydro}" data-render-setting="hydro"></label>`:''}
+   ${renderDraft.mode!=='change'?`<label class="wg-render-field"><span>Relief shading <output>${Math.round(renderDraft.relief*100)}%</output></span><input type="range" min="0" max="1.6" step="0.05" value="${renderDraft.relief}" data-render-setting="relief"></label>`:''}
+   ${supports.hydro&&renderDraft.mode!=='change'?`<label class="wg-render-field"><span>River and lake emphasis <output>${Math.round(renderDraft.hydro*100)}%</output></span><input type="range" min="0" max="1.6" step="0.05" value="${renderDraft.hydro}" data-render-setting="hydro"></label>`:''}
    ${showTints&&supports.climateTint?`<label class="wg-render-field"><span>Climate tint <output>${Math.round(renderDraft.climateTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.climateTint}" data-render-setting="climateTint"></label>`:''}
    ${showTints&&supports.biomeTint?`<label class="wg-render-field"><span>Biome tint <output>${Math.round(renderDraft.biomeTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.biomeTint}" data-render-setting="biomeTint"></label>`:''}
    ${showTints&&supports.vegetationTint?`<label class="wg-render-field"><span>Vegetation tint <output>${Math.round(renderDraft.vegetationTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.vegetationTint}" data-render-setting="vegetationTint"></label>`:''}
@@ -784,9 +787,14 @@ function parseRenderColor(value){
  const nums=normalized.match(/\d+(?:\.\d+)?/g)?.map(Number)||[0,0,0];
  return nums.slice(0,3);
 }
-function renderCellStats(stage){
- const mesh=latestData(2),coasts=stage>=5?latestData(5):null,landforms=stage>=6?latestData(6):null,erosion=stage>=7?latestData(7):null,climate=stage>=8?latestData(8):null,hydrology=stage>=9?latestData(9):null,soils=stage>=10?latestData(10):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null;
- const elevations=(erosion?.elevations)||(landforms?.elevations)||(coasts?.elevations)||(latestData(4)?.elevations)||new Float32Array(mesh.cells.length);
+function renderCellStats(stage,settings,source){
+ if(settings.mode==='change'){
+  const target=elevationsAt(source,stage),baseline=elevationsAt(source,settings.reference);
+  return {mesh:source[2],deltas:Float64Array.from(target,(z,i)=>z-baseline[i])};
+ }
+ const geometry=source[1],mesh=source[2],coasts=source[5],climate=source[8];
+ const hydrology=source[9],soils=source[10],biomes=source[11],vegetation=source[12];
+ const elevations=elevationsAt(source,stage);
  const water=coasts?.water||Array(mesh.cells.length).fill(false),seaLevel=coasts?.seaLevel??0;
  let minWater=seaLevel,maxLand=seaLevel;
  for(let i=0;i<mesh.cells.length;i++)if(water[i])minWater=Math.min(minWater,elevations[i]);else maxLand=Math.max(maxLand,elevations[i]);
@@ -794,7 +802,7 @@ function renderCellStats(stage){
  if(!Number.isFinite(maxLand)||maxLand<=seaLevel)maxLand=seaLevel+.8;
  const biomeRgb=biomes?mesh.cells.map((_,i)=>parseRenderColor(colorForCell(i,stage,'biomes'))):null;
  const vegetationRgb=vegetation?mesh.cells.map((_,i)=>parseRenderColor(colorForCell(i,stage,'vegetation'))):null;
- const avgArea=(mesh.areaKm2||geometryData().width*geometryData().height)/Math.max(1,mesh.cells.length);
+ const avgArea=(mesh.areaKm2||geometry.width*geometry.height)/Math.max(1,mesh.cells.length);
  return {
   mesh,elevations,water,seaLevel,minWater,maxLand,biomeRgb,vegetationRgb,
   avgRadius:Math.sqrt(avgArea/Math.PI),
@@ -835,15 +843,18 @@ async function renderPixels(job,signal,progress){
   signal.throwIfAborted();
  });
 }
-async function generateRenderImage(settings,signal){
- const stage=settings.stage,mesh=latestData(2),geometry=geometryData(),hydro=stage>=9?latestData(9):null;
- if(!mesh?.cells||!latestData(stage))throw Error('This stage is not ready to render');
+function renderSource(stage){
+ return Array.from({length:stage+1},(_,n)=>latestData(n));
+}
+async function generateRenderImage(settings,signal,source=renderSource(settings.stage)){
+ const stage=settings.stage,mesh=source[2],geometry=source[1],hydro=source[9];
+ if(!mesh?.cells||!source[stage])throw Error('This stage is not ready to render');
  const dims=outputDimensions(geometry.width,geometry.height,settings.longEdge),preset=detailPreset(settings.detail);
  const hostEl=root.querySelector('#wg-render-result');
  if(hostEl)hostEl.innerHTML=`<div class="wg-render-progress"><div>Rendering ${shortNumber(dims.width)} × ${shortNumber(dims.height)} terrain image…</div><progress id="wg-render-progress" max="100" value="0"></progress></div>`;
  const {width,height}=rasterDimensions(dims,settings.detail);
  const progress=root.querySelector('#wg-render-progress');
- const job={state:renderCellStats(stage),settings,geometry,width,height};
+ const job={state:renderCellStats(stage,settings,source),settings,geometry,width,height};
  const pixels=await renderPixels(job,signal,fraction=>{if(progress)progress.value=95*fraction;});
  signal.throwIfAborted();
  const sampleCanvas=document.createElement('canvas');
@@ -853,7 +864,7 @@ async function generateRenderImage(settings,signal){
  fctx.fillStyle='#0b2836';fctx.fillRect(0,0,dims.width,dims.height);fctx.imageSmoothingEnabled=true;fctx.imageSmoothingQuality='high';
  fctx.save();geometryClipPath(fctx,geometry,dims.width/geometry.width,dims.height/geometry.height);fctx.clip();fctx.drawImage(sampleCanvas,0,0,dims.width,dims.height);fctx.restore();
  sampleCanvas.width=sampleCanvas.height=1;
- if(settings.hydro>0&&hydro){
+ if(settings.mode!=='change'&&settings.hydro>0&&hydro){
   const sx=dims.width/geometry.width,sy=dims.height/geometry.height,maxVolume=Math.max(.001,hydro.summary.maxDischarge);
   // Route each segment as part of a connected cubic spline rather than a
   // piecewise-straight polygon-centre graph.
@@ -885,11 +896,25 @@ async function generateRenderImage(settings,signal){
  if(progress)progress.value=100;
  return finalCanvas;
 }
-function renderViewerMarkup(stage){
- return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-regenerate">Settings</button><button class="wg-secondary" data-action="render-zoom-out" aria-label="Zoom out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in" aria-label="Zoom in">+</button><button class="wg-primary" data-action="render-download">PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas><div id="wg-render-inspect" class="wg-render-inspect" hidden></div></div></div><p class="wg-modal-caption">Rendered terrain view from layer ${stage}. Drag to pan, use the zoom controls to inspect detail, and close the dialog to return to the editable world.</p></div>`;
+function renderViewerMarkup(settings){
+ const {stage,mode,reference,contours}=settings;
+ const caption=mode==='change'
+  ?`Elevation change · layer ${stage} minus layer ${reference}. Tap to inspect the original cell values.`
+  :`${renderModeOptions(stage).find(([id])=>id===mode)[1]} · layer ${stage}${contours?' · contours every '+contours+' above sea level':''}. Tap a location to inspect its cell.`;
+ return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-regenerate">Settings</button><button class="wg-secondary" data-action="render-zoom-out" aria-label="Zoom out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in" aria-label="Zoom in">+</button><button class="wg-primary" data-action="render-download">PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas><div class="wg-render-scale"></div><div class="wg-render-pin" hidden></div><div id="wg-render-inspect" class="wg-render-inspect" hidden></div></div></div>${mode==='change'?'<div class="wg-change-key" aria-label="Relative elevation change"><span>−0.10 or less</span><span>0</span><span>+0.10 or more</span></div>':''}<p class="wg-modal-caption">${caption}</p></div>`;
 }
 function applyRenderViewerTransform(viewer){
  const state=viewer?viewer._wgState:null,canvasEl=viewer?.querySelector('#wg-render-canvas');if(!state||!canvasEl)return;
+ const kmPerPixel=state.source[1].width/(canvasEl.width*state.scale);
+ const bar=viewer.querySelector('.wg-render-scale');
+ const scale=distanceScale(kmPerPixel,Math.min(110,viewer.clientWidth*.3)||1);
+ bar.style.width=scale.pixels+'px';
+ bar.textContent=scale.distance<1?Number((scale.distance*1000).toPrecision(4))+' m':shortNumber(scale.distance)+' km';
+ if(state.pin){
+  const pin=viewer.querySelector('.wg-render-pin');
+  pin.style.left=state.tx+state.pin.x*state.scale+'px';
+  pin.style.top=state.ty+state.pin.y*state.scale+'px';
+ }
  canvasEl.style.transform=`translate(${state.tx}px,${state.ty}px) scale(${state.scale})`;
 }
 function fitRenderViewer(viewer){
@@ -911,25 +936,34 @@ function nudgeRenderViewer(factor){
 function inspectRenderedCoordinate(viewer,screenX,screenY){
  const canvasEl=viewer?.querySelector('#wg-render-canvas'),state=viewer?viewer._wgState:null,panel=viewer?.querySelector('#wg-render-inspect');
  if(!canvasEl||!state||!panel)return;
+ const pin=viewer.querySelector('.wg-render-pin');
+ panel.hidden=pin.hidden=true;
+ state.pin=null;
  const pixelX=(screenX-state.tx)/state.scale,pixelY=(screenY-state.ty)/state.scale;
- if(pixelX<0||pixelY<0||pixelX>canvasEl.width||pixelY>canvasEl.height){panel.hidden=true;return;}
+ if(pixelX<0||pixelY<0||pixelX>canvasEl.width||pixelY>canvasEl.height)return;
  const source=state.source,geometry=source[1],wx=pixelX/canvasEl.width*geometry.width,wy=pixelY/canvasEl.height*geometry.height;
- if(!renderInsideGeometry(wx,wy,geometry)){panel.hidden=true;return;}
+ if(!renderInsideGeometry(wx,wy,geometry))return;
  const mesh=source[2],id=cellAtPoint(prepareGeometry(mesh).spatial,wx,wy);
- if(id===null){panel.hidden=true;return;}
- const stage=source.length-1,coasts=source[5],hydro=stage>=9?source[9]:null,climate=stage>=8?source[8]:null,biomes=stage>=11?source[11]:null,vegetation=stage>=12?source[12]:null,erosion=stage>=7?source[7]:null,landforms=stage>=6?source[6]:null;
- const elev=(erosion?.elevations?.[id]??landforms?.elevations?.[id]??coasts?.elevations?.[id]??source[4]?.elevations?.[id]);
+ if(id===null)return;
+ const stage=source.length-1,coasts=source[5],hydro=source[9],climate=source[8],biomes=source[11],vegetation=source[12];
+ const elev=elevationsAt(source,stage)[id];
  const kind=coasts?.water?.[id]?'Ocean':hydro&&hydro.lakeId[id]>=0?'Lake':'Land';
  const lines=[`Cell ${id+1} · ${kind}`,`${Math.round(wx)} km E, ${Math.round(wy)} km S`];
  if(Number.isFinite(elev))lines.push(`Relative elevation ${elev.toFixed(3)}`);
  if(climate)lines.push(`${climate.meanTemp[id].toFixed(1)} °C · ${Math.round(climate.precipitation[id])} mm/year`);
  if(biomes)lines.push(BIOME_NAMES[biomes.biome[id]]||'Biome');
  if(vegetation)lines.push(VEGETATION_NAMES[vegetation.coverClass[id]]||'Vegetation');
+ if(state.settings.mode==='change'){
+  const ref=state.settings.reference,before=elevationsAt(source,ref)[id],delta=elev-before;
+  lines.push(`Layer ${ref}: ${before.toFixed(4)} · Change ${delta>=0?'+':''}${delta.toFixed(4)}`);
+ }
+ state.pin={x:pixelX,y:pixelY};pin.hidden=false;
+ applyRenderViewerTransform(viewer);
  panel.textContent=lines.join('  •  ');panel.hidden=false;
 }
-function initRenderViewer(viewer,source){
+function initRenderViewer(viewer,source,settings){
  const canvasEl=viewer?.querySelector('#wg-render-canvas');if(!viewer||!canvasEl)return;
- const state={source,scale:1,minScale:1,maxScale:8,tx:0,ty:0,pointers:new Map(),pinch:null,tapStart:null,tapMoved:false,wasPinching:false};
+ const state={source,settings,scale:1,minScale:1,maxScale:8,tx:0,ty:0,pointers:new Map(),pinch:null,tapStart:null,tapMoved:false,wasPinching:false};
  viewer._wgState=state;canvasEl.style.transformOrigin='0 0';canvasEl.style.touchAction='none';
  const local=event=>{const r=viewer.getBoundingClientRect();return {x:event.clientX-r.left,y:event.clientY-r.top};};
  const pinchValues=()=>{const [a,b]=[...state.pointers.values()];return {x:(a.x+b.x)/2,y:(a.y+b.y)/2,dist:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y))};};
@@ -982,19 +1016,19 @@ async function runRenderGeneration(){
  const controller=new AbortController();
  renderController=controller;
  const settings={...renderDraft};
- const source=Array.from({length:settings.stage+1},(_,stage)=>latestData(stage));
+ const source=renderSource(settings.stage);
  const dialog=root.querySelector('.wg-render-dialog');
  dialog.querySelectorAll('input,select,.wg-actions button').forEach(el=>el.disabled=true);
  try{
-  const canvasOut=await generateRenderImage(settings,controller.signal);
+  const canvasOut=await generateRenderImage(settings,controller.signal,source);
   if(controller.signal.aborted)return;
   const result=root.querySelector('#wg-render-result');if(!result)return;
   renderOutputCanvas=canvasOut;
-  result.innerHTML=renderViewerMarkup(settings.stage);
+  result.innerHTML=renderViewerMarkup(settings);
   result.closest('.wg-render-dialog')?.classList.add('wg-render-ready');
   // Reparent the actual output canvas: don't allocate another full-size GPU/CPU bitmap.
   canvasOut.id='wg-render-canvas';result.querySelector('#wg-render-canvas').replaceWith(canvasOut);
-  initRenderViewer(result.querySelector('#wg-render-viewer'),source);result.dataset.ready='1';
+  initRenderViewer(result.querySelector('#wg-render-viewer'),source,settings);result.dataset.ready='1';
   notice('Rendered terrain map ready');
  }catch(error){
   if(controller.signal.aborted)return;
@@ -1004,7 +1038,7 @@ async function runRenderGeneration(){
 }
 function downloadRenderedImage(){
  const canvasOut=renderOutputCanvas||root.querySelector('#wg-render-canvas');if(!canvasOut){notice('Generate a render first',true);return;}
- const filename=`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${renderDraft.stage}-render.png`;
+ const filename=`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${renderDraft.stage}-${renderDraft.mode}${renderDraft.mode==='change'?'-from-'+renderDraft.reference:''}-render.png`;
  canvasOut.toBlob(blob=>{if(!blob){notice('PNG export failed',true);return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);notice('Rendered PNG downloaded');},'image/png');
 }
 async function saveCheckpoint(){
@@ -1117,7 +1151,7 @@ function bindEvents(){
   }
   if(el.dataset?.renderSetting){
    const key=el.dataset.renderSetting;
-   const value=el.type==='range'||el.type==='number'?Number(el.value):el.value;
+   const value=el.type==='range'||el.type==='number'||['reference','contours'].includes(key)?Number(el.value):el.value;
    if(key==='stage'){showRenderDialog(Number(value));return;}
    renderDraft=blendRenderSettings({...renderDraft,[key]:value});
    if(key==='mode'){showRenderDialog(renderDraft.stage);return;}

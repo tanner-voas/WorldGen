@@ -194,3 +194,10 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 /* v0.1.16: compact, read-only inspection of a rendered location. */
 .wg-render-inspect{position:absolute;z-index:2;left:9px;right:9px;bottom:9px;padding:9px 11px;border:1px solid #719487b5;border-radius:10px;background:#142d30e8;color:#e6f4e8;font-size:11px;line-height:1.5;pointer-events:none;backdrop-filter:blur(8px);overflow-wrap:anywhere}
 .wg-render-inspect[hidden]{display:none}
+
+.wg-render-scale{position:absolute;top:9px;left:10px;box-sizing:border-box;color:white;text-align:center;white-space:nowrap;font:600 11px/1.5 system-ui;border:solid currentColor;border-width:0 1px 2px;background:#11232bbf;pointer-events:none}
+.wg-render-pin{position:absolute;width:12px;height:12px;box-sizing:border-box;transform:translate(-50%,-50%);border:2px solid white;border-radius:50%;box-shadow:0 0 0 1.5px #172c35;pointer-events:none}
+.wg-change-key{display:grid;grid-template-columns:1fr 1fr 1fr;align-self:center;width:min(100%,320px);color:#e1ebe3;font-size:11px;font-variant-numeric:tabular-nums}
+.wg-change-key::before{content:"";grid-column:1/-1;height:6px;border-radius:4px;background:linear-gradient(to right,#a54824,#c29788 37.5%,#e4e1d3 50%,#80a9a5 62.5%,#1b7077)}
+.wg-change-key span:nth-child(2){text-align:center}
+.wg-change-key span:last-child{text-align:right}

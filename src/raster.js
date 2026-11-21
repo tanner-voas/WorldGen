@@ -87,30 +87,71 @@ function shadeRow(data,surface,land,width,height,y,gainX,gainY){
  }
 }
 
+// The two ramps share a fixed magnitude scale so different comparisons can
+// be read together. The square root keeps small erosion changes visible.
+function writeChangePixel(data,offset,state,x,y){
+ let sum=0,value=0;
+ visitTerrainSites(state.sampler,x,y,(i,w)=>{sum+=w;value+=state.deltas[i]*w;});
+ const owner=sum<1e-8?cellAtPoint(state.spatial,x,y):null;
+ const delta=owner!==null?state.deltas[owner]:sum>0?value/sum:0;
+ const color=delta<0?[165,72,36]:[27,112,119];
+ const t=Math.sqrt(clamp01(Math.abs(delta)/.1));
+ const neutral=[228,225,211];
+ for(let c=0;c<3;c++)data[offset+c]=neutral[c]+(color[c]-neutral[c])*t;
+}
+
+function contourRow(data,heights,width,height,y,interval){
+ for(let x=0;x<width;x++){
+  const i=y*width+x,z=heights[i];
+  if(!Number.isFinite(z))continue;
+  // Estimate the elevation footprint of a sample. A flat plateau exactly
+  // on a contour should stay flat, and unresolved steep slopes should fade.
+  const left=heights[y*width+Math.max(0,x-1)],right=heights[y*width+Math.min(width-1,x+1)];
+  const up=heights[Math.max(0,y-1)*width+x],down=heights[Math.min(height-1,y+1)*width+x];
+  const dx=(Number.isFinite(right)?right:z)-(Number.isFinite(left)?left:z);
+  const dy=(Number.isFinite(down)?down:z)-(Number.isFinite(up)?up:z);
+  const footprint=.5*Math.hypot(dx,dy);
+  if(footprint<1e-7)continue;
+  const level=Math.round(z/interval);
+  const dist=Math.abs(z-level*interval)/footprint;
+  const indexLine=level%5===0;
+  const ink=(indexLine?.58:.37)*(1-smoothstep(.1,indexLine?1.15:.9,dist))*(1-smoothstep(.4,1,footprint/interval));
+  for(let c=0;c<3;c++)data[4*i+c]*=1-ink;
+ }
+}
+
 export async function rasterize({state,settings,geometry,width,height},checkpoint){
  state={...state,sampler:createTerrainSampler(state.mesh,settings.blend),spatial:buildCellIndex(state.mesh)};
  const data=new Uint8ClampedArray(width*height*4);
- const relief=settings.relief>0;
+ const change=settings.mode==='change';
+ const relief=!change&&settings.relief>0;
+ const contours=!change&&settings.contours>0?new Float32Array(width*height):null;
  const surface=relief?new Float32Array(width*height):null;
  const land=relief?new Float32Array(width*height):null;
  const stepX=geometry.width/width,stepY=geometry.height/height;
- const gain=state.avgRadius*settings.relief*.5;
- const textureScale=Math.max(1,state.avgRadius*.67);
+ const gain=relief?state.avgRadius*settings.relief*.5:0;
+ const textureScale=change?0:Math.max(1,state.avgRadius*.67);
  let deadline=performance.now()+12;
- const total=height*(relief?2:1);
+ const total=height*(relief||contours?2:1);
  for(let row=0;row<total;row++){
-  if(row>=height)shadeRow(data,surface,land,width,height,row-height,gain/stepX,gain/stepY);
+  if(row>=height){
+   if(relief)shadeRow(data,surface,land,width,height,row-height,gain/stepX,gain/stepY);
+   if(contours)contourRow(data,contours,width,height,row-height,settings.contours);
+  }
   else for(let x=0;x<width;x++){
    const wx=(x+.5)*stepX,wy=(row+.5)*stepY,index=row*width+x,o=index*4;
    data[o+3]=255;
    if(!renderInsideGeometry(wx,wy,geometry)){
     data[o]=11;data[o+1]=40;data[o+2]=54;
     if(relief)surface[index]=NaN;
+    if(contours)contours[index]=NaN;
     continue;
    }
+   if(change){writeChangePixel(data,o,state,wx,wy);continue;}
    const sample=weightedSample(state,wx,wy);
    const detail=terrainTexture(wx,wy,textureScale)-.5;
    sample.landFrac=coastCoverage(sample.landFrac,detail,settings.blend);
+   if(contours)contours[index]=sample.landFrac>=.5&&sample.lake<.5?sample.elev-state.seaLevel:NaN;
    const mapped=terrainColorFromSample(sample,state,settings);
    const tint=1+detail*.15*smoothstep(.37,.8,mapped.landFrac);
    for(let c=0;c<3;c++)data[o+c]=mapped.rgb[c]*tint;

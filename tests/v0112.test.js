@@ -4,7 +4,7 @@ import {MIN_RENDER_STAGE,defaultRenderSettings,renderModeOptions,renderOptionSup
 
 test('rendering activates from layer 5 and uses terrain-oriented stage options',()=>{
  assert.equal(MIN_RENDER_STAGE,5);
- assert.deepEqual(renderModeOptions(5).map(x=>x[0]),['satellite','relief']);
+ assert.deepEqual(renderModeOptions(5).map(x=>x[0]),['satellite','relief','change']);
  assert.ok(renderModeOptions(9).some(([id])=>id==='hydrology'));
  assert.ok(renderModeOptions(11).some(([id])=>id==='biomes'));
  assert.ok(renderModeOptions(12).some(([id])=>id==='vegetation'));

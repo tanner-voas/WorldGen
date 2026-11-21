@@ -47,3 +47,27 @@ test('sample budgets preserve portrait/landscape symmetry and thin dimensions',(
   }
  }
 });
+
+test('change pixels preserve sign, neutral and symmetric saturation',async()=>{
+ async function color(delta){
+  const deltas=cells.map(()=>delta);
+  const data=await rasterize({...job,state:{mesh,deltas},settings:{...settings,mode:'change'}},()=>{});
+  return Array.from(data.slice(4*100,4*100+3));
+ }
+ assert.deepEqual(await color(0),[228,225,211]);
+ assert.deepEqual(await color(-.1),[165,72,36]);
+ assert.deepEqual(await color(.1),[27,112,119]);
+ assert.deepEqual(await color(.5),await color(.1));
+});
+
+test('contours darken land slopes and leave open water and flat plateaus clear',async()=>{
+ const rendered=(z,water,contours)=>rasterize({...job,state:{...state,elevations:z,water},settings:{...settings,contours}},()=>{});
+ const land=cells.map(()=>false),sea=cells.map(()=>true);
+ const rising=cells.map(c=>c.x*.2);
+ const base=await rendered(rising,land,0),lines=await rendered(rising,land,.1);
+ assert.ok(lines.some((v,i)=>v<base[i]));
+ assert.ok(lines.every((v,i)=>v<=base[i]));
+ assert.deepEqual(await rendered(rising,sea,.1),await rendered(rising,sea,0));
+ const flat=cells.map(()=>.2);
+ assert.deepEqual(await rendered(flat,land,.1),await rendered(flat,land,0));
+});
