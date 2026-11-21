@@ -14,7 +14,7 @@ function makeWorld(count=350){
 }
 
 test('v0.1.1 adds a fifth deterministic and coastline-safe landscape layer',()=>{
- const w=makeWorld();assert.equal(IMPLEMENTED,5);
+ const w=makeWorld();assert.ok(IMPLEMENTED>=5);
  const mesh=w.locked[0].data,heights=w.locked[2].data,coasts=w.locked[3].data,land=w.locked[4].data;
  assert.equal(land.classes.length,mesh.cells.length);
  assert.equal(land.ruggedness.length,mesh.cells.length);

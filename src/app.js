@@ -1,6 +1,6 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,WORLD_WIDTH,WORLD_HEIGHT,LANDFORM_NAMES,cellArea,landAreaFraction} from './engine.js';
 
-const APP_VERSION='0.1.2',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.3',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -21,10 +21,11 @@ const OPTIONS={
   2:[['plates','Plates','range',3,50,1],['continental','Continental ratio','range',0.1,0.9,0.05],['motion','Plate motion','range',0,2,0.05]],
   3:[['uplift','Uplift strength','range',0,1.6,0.05],['roughness','Surface roughness','range',0,1.4,0.05],['continentalHeight','Crust elevation','range',0.05,0.8,0.025]],
   4:[['land','Land coverage target','range',0.1,0.85,0.01]],
-  5:[['ridge','Ridge strength','range',0,1.6,0.05],['detail','Terrain variation','range',0,1.6,0.05],['valleys','Valley incision','range',0,1.6,0.05],['volcanism','Volcanic activity','range',0,1,0.025]]
+  5:[['ridge','Ridge strength','range',0,1.6,0.05],['detail','Terrain variation','range',0,1.6,0.05],['valleys','Valley incision','range',0,1.6,0.05],['volcanism','Volcanic activity','range',0,1,0.025]],
+  6:[['rainfall','Approx. rainfall','range',0,1.6,0.05],['hydraulic','Water erosion','range',0,1.6,0.05],['thermal','Slope weathering','range',0,1.6,0.05],['hardness','Rock resistance','range',0,1,0.05],['iterations','Erosion passes','range',1,40,1]]
 };
 const palettes={
-  natural:'Natural',geometry:'Cell geometry',plates:'Tectonic plates',height:'Elevation',coast:'Land / sea',landforms:'Landforms'
+  natural:'Natural',geometry:'Cell geometry',plates:'Tectonic plates',height:'Elevation',coast:'Land / sea',landforms:'Landforms',erosion:'Erosion / deposition',flow:'Drainage flow'
 };
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
 let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
@@ -99,7 +100,7 @@ function buildShell(){
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
     <div class="wg-map-buttons"><button data-action="fit" aria-label="Fit world to view" title="Fit entire world">⤢</button><button data-action="zoom-in" aria-label="Zoom in">+</button><button data-action="zoom-out" aria-label="Zoom out">−</button><button data-action="locate-cell" aria-label="Go to cell number" title="Go to cell number">⌖</button><button data-action="measure" aria-label="Measure distance" aria-pressed="false" title="Measure two-point distance">↔</button></div>
     <div class="wg-display-bar"><label for="wg-palette" class="wg-screen-reader-only">Map display</label><select id="wg-palette" aria-label="Map display mode">${Object.entries(palettes).map(([id,name])=>`<option value="${id}">${name}</option>`).join('')}</select><button class="wg-overlay-trigger" data-action="toggle-overlays" aria-expanded="false">Overlays</button></div>
-    <div class="wg-overlays" id="wg-overlays" hidden><label><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label><input id="wg-coast-borders" type="checkbox"> Coastlines</label><div id="wg-legend" class="wg-legend"></div></div>
+    <div class="wg-overlays" id="wg-overlays" hidden><label><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label><input id="wg-coast-borders" type="checkbox"> Coastlines</label><label><input id="wg-flow" type="checkbox"> Drainage channels (layer 6)</label><details class="wg-legend-details"><summary>Map legend</summary><div id="wg-legend" class="wg-legend"></div></details></div>
     <div class="wg-map-scale" id="wg-map-scale">World width: 2,048 units</div>
     <div class="wg-measure-readout" id="wg-measure-readout" aria-live="polite" hidden></div>
     <div class="wg-map-nav"><button data-action="prev-stage" aria-label="Previous completed stage">‹</button><span id="wg-map-layer">Layer 01</span><button data-action="next-stage" aria-label="Next completed stage">›</button></div>
@@ -132,6 +133,7 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].map(settingRow).join('')}<div class="wg-seed-row"><label for="wg-seed">Random seed</label><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div></div>`;
+  if(stage===6)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Rainfall is preliminary; full climate and rivers are separate future layers. Locked coastlines remain fixed.</p>';
   html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
  }else if(row){
   html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p><div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
@@ -141,9 +143,11 @@ function rebuildUI(){
  root.querySelector('#wg-edges').checked=workspace.showEdges;
  root.querySelector('#wg-plate-borders').checked=!!workspace.showPlateBorders;
  root.querySelector('#wg-coast-borders').checked=!!workspace.showCoastBorders;
+ root.querySelector('#wg-flow').checked=!!workspace.showFlow;
  root.querySelector('#worldgen-root').classList.toggle('wg-explore',!!workspace.exploreMode);
  root.querySelector('.wg-explore-toggle').textContent=workspace.exploreMode?'Show settings':'Expand map';
- root.querySelector('#wg-map-layer').textContent=`${String(stage).padStart(2,'0')} · ${stageText(stage)}`;
+ const shown=effectiveStage();
+ root.querySelector('#wg-map-layer').textContent=shown===stage?`${String(stage).padStart(2,'0')} · ${stageText(stage)}`:shown>0?`${String(shown).padStart(2,'0')} · ${stageText(shown)} (last ready)`:'Generating first map…';
  root.querySelector('[data-action="prev-stage"]').disabled=stage<=1;
  root.querySelector('[data-action="next-stage"]').disabled=stage>=Math.min(IMPLEMENTED,currentStage())||!latestData(stage+1);
  updateLegend();updateMeasurement();showBusy(generating);updateInspector();schedulePaint();
@@ -159,6 +163,7 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
  case 3:return `${data.elevations.length} elevation samples with plate-boundary uplift.`;
  case 4:{const area=data.landAreaFraction??landAreaFraction(latestData(1),data.water);return `${Math.round((area??data.landFraction)*100)}% of map area is above sea level (${Math.round(data.landFraction*100)}% of cells).`;}
   case 5:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
+  case 6:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)}.`;
  default:return '';
 }}
 function nextSeed(){return Math.floor(Math.random()*0xffffffff);}
@@ -246,21 +251,25 @@ function borderSegments(mesh,labels){
 function drawSegments(segments,color,width){ctx.beginPath();for(const [x1,y1,x2,y2] of segments){ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);}ctx.strokeStyle=color;ctx.lineWidth=width/view.scale;ctx.stroke();}
 
 function colorForCell(i,stage,display){
- const mesh=latestData(1)||workspace.working.data,plates=latestData(2),heights=latestData(3),coasts=latestData(4),landforms=latestData(5);
- const elev=(stage>=5?landforms?.elevations[i]:undefined)??heights?.elevations[i]??0;
+ const mesh=latestData(1)||workspace.working.data,plates=latestData(2),heights=latestData(3),coasts=latestData(4),landforms=latestData(5),erosion=latestData(6);
+ const elev=(stage>=6?erosion?.elevations[i]:undefined)??(stage>=5?landforms?.elevations[i]:undefined)??heights?.elevations[i]??0;
  if(display==='geometry'||stage===1){const h=((i*137.508)%360);return `hsl(${150+(h%55)},${18+(i%4)*2}%,${36+(i%7)*3}%)`;}
  if((display==='plates'||stage===2)&&plates){const owner=plates.owners[i],plate=plates.plates[owner],h=(owner*137.508+22)%360;return `hsl(${h},${plate.continental?32:42}%,${plate.continental?49:34}%)`;}
  if(display==='landforms'&&stage>=5&&landforms)return landformColors[landforms.classes[i]]||'#6e9d6d';
+ if(display==='erosion'&&stage>=6&&erosion){const delta=elev-landforms.elevations[i];return delta<-.004?gradient(Math.min(1,-delta/.15),[[0,[105,111,105]],[1,[190,98,65]]]):delta>.004?gradient(Math.min(1,delta/.15),[[0,[105,111,105]],[1,[67,163,151]]]):'#78827b';}
+ if(display==='flow'&&stage>=6&&erosion){if(coasts.water[i])return '#245773';const volume=erosion.discharge[i]/Math.max(1,erosion.summary.maxDischarge);return gradient(Math.pow(volume,.28),[[0,[104,115,100]],[.3,[115,145,132]],[1,[74,175,216]]]);}
  if((display==='height'||stage===3)&&heights)return gradient((elev+1.5)/3,heightColors);
  if((display==='coast'||stage>=4)&&coasts&&heights){const sea=coasts.seaLevel;return coasts.water[i]?gradient(clamp(.36+(elev-sea)*.7,0,1),[[0,[24,54,74]],[1,[61,116,146]]]):gradient(clamp((elev-sea)*1.6,0,1),landColors);}
  return 'rgb(54,99,83)';
 }
 function displayMode(stage){const mode=workspace.viewMode;return mode==='auto'||mode==='natural'?'auto':mode;}
 function updateLegend(){
- const stage=effectiveStage(),mode=displayMode(stage),selected=mode==='auto'?stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':'landforms':mode;
- const actual=(selected==='plates'&&stage<2)||(selected==='height'&&stage<3)||(selected==='coast'&&stage<4)||(selected==='landforms'&&stage<5)?stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':'landforms':selected;
+ const stage=effectiveStage(),mode=displayMode(stage),selected=mode==='auto'?stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':stage===5?'landforms':'coast':mode;
+ const actual=(selected==='plates'&&stage<2)||(selected==='height'&&stage<3)||(selected==='coast'&&stage<4)||(selected==='landforms'&&stage<5)||((selected==='erosion'||selected==='flow')&&stage<6)?stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':'landforms':selected;
  const el=root.querySelector('#wg-legend');if(!el)return;
- if(actual==='landforms')el.innerHTML='<strong>Landform types</strong>'+LANDFORM_NAMES.map((name,i)=>`<span><i style="background:${landformColors[i]}"></i>${name}</span>`).join('');
+ if(actual==='erosion')el.innerHTML='<strong>Terrain height change</strong><span><i style="background:#be6241"></i>Material removed</span><span><i style="background:#43a397"></i>Net deposition</span><span><i style="background:#78827b"></i>Little change</span>';
+ else if(actual==='flow')el.innerHTML='<strong>Runoff accumulation</strong><p>Blue indicates greater estimated downhill water flow. Optional channel lines trace the strongest drainage routes.</p>';
+ else if(actual==='landforms')el.innerHTML='<strong>Landform types</strong>'+LANDFORM_NAMES.map((name,i)=>`<span><i style="background:${landformColors[i]}"></i>${name}</span>`).join('');
  else if(actual==='coast')el.innerHTML='<strong>Land / sea</strong><span><i style="background:#4487a2"></i>Water</span><span><i style="background:#799570"></i>Land</span>';
  else if(actual==='plates')el.innerHTML='<strong>Tectonic plates</strong><p>Colors distinguish neighboring plate territories; use plate boundaries to trace edges.</p>';
  else if(actual==='height')el.innerHTML='<strong>Relative elevation</strong><div class="wg-height-ramp"></div><p>Ocean depths → lowlands → mountain elevations</p>';
@@ -273,10 +282,10 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
  if(!mesh?.cells)return;
  ctx.save();ctx.setTransform(dpr*view.scale,0,0,dpr*view.scale,dpr*view.x,dpr*view.y);
  const explicit=displayMode(stage);
- const mode=explicit==='auto'?(stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':'landforms'):explicit;
+ const mode=explicit==='auto'?(stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':stage===5?'landforms':'coast'):explicit;
  // Hide overlays that require layers which do not exist at the selected stage.
  const fallback=stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':'landforms';
- const allowed=(mode==='plates'&&stage<2)||(mode==='height'&&stage<3)||(mode==='coast'&&stage<4)||(mode==='landforms'&&stage<5)?fallback:mode;
+ const allowed=(mode==='plates'&&stage<2)||(mode==='height'&&stage<3)||(mode==='coast'&&stage<4)||(mode==='landforms'&&stage<5)||((mode==='erosion'||mode==='flow')&&stage<6)?fallback:mode;
  const stroke=workspace.showEdges,points=mesh.cells,geometry=prepareGeometry(mesh),record=stageRecord(stage)?.data;
  if(colorCache.mesh!==mesh||colorCache.record!==record||colorCache.stage!==stage||colorCache.mode!==allowed){
   colorCache={mesh,record,stage,mode:allowed,colors:points.map((_,i)=>colorForCell(i,stage,allowed))};
@@ -297,6 +306,13 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
    const coasts=latestData(4);
    if(borderCache.mesh!==mesh||borderCache.coasts!==coasts){borderCache.mesh=mesh;borderCache.coasts=coasts;borderCache.coastLines=borderSegments(mesh,coasts.water);}
    drawSegments(borderCache.coastLines,'rgba(229,244,239,.93)',2.2);
+  }
+  // Use the same cell graph as the erosion solver; these are approximate
+  // center-to-center drainage paths, not finalized river geometry.
+  if(stage>=6&&(workspace.showFlow||allowed==='flow')&&latestData(6)){
+   const flow=latestData(6);ctx.strokeStyle='rgba(130,226,247,.9)';ctx.lineCap='round';ctx.lineWidth=2.0/view.scale;ctx.beginPath();
+   for(const i of flow.channels){const j=flow.flowTo[i];if(j<0)continue;ctx.moveTo(points[i].x,points[i].y);ctx.lineTo(points[j].x,points[j].y);}
+   ctx.stroke();
   }
   if(selectedId!==null&&points[selectedId]){
   ctx.strokeStyle='#f8d47e';ctx.lineWidth=3/view.scale;ctx.stroke(geometry.paths[selectedId]);
@@ -326,9 +342,10 @@ function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!p
  const c=(latestData(1)||workspace.working.data)?.cells?.[selectedId];if(!c){panel.hidden=true;return;}
  const stage=effectiveStage(),plate=latestData(2),elevation=latestData(3),sea=latestData(4),details=[`Position ${Math.round(c.x)}, ${Math.round(c.y)}`,`${c.neighbors.length} neighboring cells`];
  if(stage>=2&&plate){const p=plate.plates[plate.owners[selectedId]];details.push(`Plate ${p.id+1} · ${p.continental?'continental':'oceanic'} crust`);}
- if(stage>=3&&elevation)details.push(`Relative elevation: ${(stage>=5&&latestData(5)?latestData(5).elevations[selectedId]:elevation.elevations[selectedId]).toFixed(3)}`);
+ if(stage>=3&&elevation)details.push(`Relative elevation: ${(stage>=6&&latestData(6)?latestData(6).elevations[selectedId]:stage>=5&&latestData(5)?latestData(5).elevations[selectedId]:elevation.elevations[selectedId]).toFixed(3)}`);
  if(stage>=4&&sea)details.push(sea.water[selectedId]?'Ocean cell':'Land cell');
  if(stage>=5&&latestData(5)){const l=latestData(5);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
+ if(stage>=6&&latestData(6)){const e=latestData(6);details.push(`Eroded depth: ${e.erosionDepth[selectedId].toFixed(4)}`);details.push(`Deposited depth: ${e.deposition[selectedId].toFixed(4)}`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
  details.push(`Cell area: ${shortNumber(Math.round(cellArea(c)))} sq. units`);
  panel.hidden=false;panel.innerHTML=`<button class="wg-inspector-close" data-action="close-inspector" aria-label="Close inspection">×</button><strong>Cell ${selectedId+1}</strong>${details.map(s=>`<span>${escapeHTML(s)}</span>`).join('')}`;
 }
@@ -390,8 +407,8 @@ async function exportAll(){
 }
 function availableThrough(){return workspace.locked.length+(workspace.working.data?1:0);}
 async function saveCheckpoint(){
- const stage=Math.min(viewStage(),availableThrough());
- if(!stage){notice('Generate at least one layer to create a checkpoint',true);return;}
+ const stage=viewStage();
+ if(!latestData(stage)){notice('This layer has no preview yet. Finish generating it or select an earlier completed layer.',true);return;}
  let world;
  try{world=worldThroughStage(stage);}catch(error){notice(error.message,true);return;}
  const proposed=prompt('Checkpoint name',`${workspace.name} — through layer ${stage}`);if(proposed===null)return;
@@ -461,6 +478,7 @@ function bindEvents(){
   if(el.id==='wg-edges'){workspace.showEdges=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-coast-borders'){workspace.showCoastBorders=el.checked;void persist();schedulePaint();}
+  if(el.id==='wg-flow'){workspace.showFlow=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;void persist();updateLegend();schedulePaint();}
   if(el.id==='wg-seed'){workspace.working.settings.seed=clamp(Number(el.value)||0,0,0xffffffff);dirty=true;void persist();showBusy(generating);scheduleGeneration(40);}
   if(el.id==='wg-import')void handleImport(el.files?.[0]);
