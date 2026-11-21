@@ -1,4 +1,4 @@
-# WorldGen v0.1.6
+# WorldGen v0.1.7
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -19,7 +19,9 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 
 8. **Climate** — deterministic, notional-latitude temperature, prevailing-wind rain shadows, annual precipitation, moisture index, and January/July temperatures. Coastal proximity moderates seasonal temperature swings; the model does not simulate global atmospheric circulation. Climate map overlays and per-cell inspection show all fields. Earlier locked erosion runoff remains preliminary and is not silently recomputed.
 
-Future stages: hydrology, soils, biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
+9. **Hydrology** — priority-flood drainage over the locked erosion elevations, with annual climate-driven runoff, infiltration, temperature-based evapotranspiration, river threshold and approximate topographic lakes. Each non-ocean cell has an acyclic outlet route; catchment area and annual flow are available for inspection. Rivers are center-to-center lines on the Voronoi graph, not high-resolution river geometry. Lake occupancy requires natural closed topographic basins and may be absent from some worlds. This layer does not modify the locked coasts, erosion or climate.
+
+Future stages: soils, biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
 ## Parameter controls
 
@@ -33,7 +35,7 @@ v0.1.5 also fixes the JavaScript `ReferenceError: Can't find variable: stored` s
 
 ## Navigation, saving and compatibility
 
-Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion/climate modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
+Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion/climate/hydrology modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
 
 Automatic caching and named checkpoints preserve all generated layers, parameters, seeds and data. A checkpoint saved through layer N contains every layer 1–N; revising a locked layer creates a new working branch after confirmation. Exports are complete JSON records; keep an external copy because mobile browser storage may be evicted.
 
@@ -41,7 +43,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.5 → v0.1.6 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.6 → v0.1.7 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test

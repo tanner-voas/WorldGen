@@ -13,7 +13,7 @@ function worldWithClimate(shape=shapes[0],count=270){
 }
 function distanceToRect(x,y,mesh){return Math.min(x,mesh.width-x,y,mesh.height-y);}
 test('stage 8 is climate; its weather arrays are deterministic and respect earlier locks',()=>{
- assert.equal(IMPLEMENTED,8);
+ assert.ok(IMPLEMENTED>=8);
  const world=worldWithClimate(),before=JSON.stringify(world.locked.slice(0,7));
  const c=world.locked[7].data,mesh=world.locked[1].data;
  const rebuilt=generateStage(8,world.locked.slice(0,7),DEFAULTS[8]);

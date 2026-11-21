@@ -1,4 +1,4 @@
-// WorldGen v0.1.6 — continental setback and first climate pass.
+// WorldGen v0.1.7 — climate-driven river networks and depression-aware lakes.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -10,13 +10,13 @@ export const STAGES=[
   ['Landforms','Mountains, valleys, geology and fine terrain variation'],
   ['Erosion','Downhill runoff, sediment transport and thermal weathering'],
   ['Climate','Seasonal temperature, precipitation, ocean moderation and orographic rain shadows'],
-  ['Hydrology','Future: drainage, lakes and rivers'],
+  ['Hydrology','Climate-driven runoff, connected rivers, inland lakes and drainage basins'],
   ['Soils','Future: regolith and groundwater'],
   ['Biomes','Future: environmental classification'],
   ['Habitats','Future: vegetation and habitats'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=8;
+export const IMPLEMENTED=9;
 export const MAX_CELLS=5000;
 export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
@@ -27,7 +27,8 @@ export const DEFAULTS={
   5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,setbackStrength:1.15,setbackWidth:10,seed:141421},
   6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
   7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607},
- 8:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829}
+ 8:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829},
+ 9:{runoffScale:1,infiltration:0.32,evaporation:0.52,riverThreshold:4,lakeDepth:0.008,minLakeCells:1,seed:314160}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
@@ -583,6 +584,109 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
   summary:{avgTemp:+(totalTemp/totalArea).toFixed(1),avgRain:+(totalRain/totalArea).toFixed(1),minTemp,maxTemp}};
 }
 
+/** Priority-flood hydrology. Elevations are immutable. Water moves along a
+ * directed forest rooted at the ocean; parents are always visited before their
+ * children, including within level-filled depressions. Unlike a naive local
+ * steepest-downhill pass, this cannot create drainage cycles or stranded sinks.
+ * Filled heights approximate spill levels; cell-resolution lakes are candidates
+ * for retained water, not a transient fluid dynamics simulation.
+ */
+class MinHeap {
+ constructor(){this.a=[];}
+ push(height,index){const a=this.a;let i=a.length;a.push([height,index]);while(i>0){const j=(i-1)>>1;if(a[j][0]<height||(a[j][0]===height&&a[j][1]<=index))break;a[i]=a[j];i=j;}a[i]=[height,index];}
+ pop(){const a=this.a,top=a[0],last=a.pop();if(a.length){let i=0;while(2*i+1<a.length){let j=2*i+1;if(j+1<a.length&&(a[j+1][0]<a[j][0]||(a[j+1][0]===a[j][0]&&a[j+1][1]<a[j][1])))j++;if(last[0]<a[j][0]||(last[0]===a[j][0]&&last[1]<=a[j][1]))break;a[i]=a[j];i=j;}a[i]=last;}return top;}
+ get length(){return this.a.length;}
+}
+export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgress=null){
+ const cells=mesh?.cells,n=cells?.length||0;
+ if(!n||coasts?.water?.length!==n||erosion?.elevations?.length!==n||climate?.precipitation?.length!==n||climate?.meanTemp?.length!==n||climate?.moisture?.length!==n)throw Error('Hydrology requires matching coast, erosion and climate layers');
+ const sea=coasts.seaLevel,water=coasts.water,heights=erosion.elevations,areas=cells.map(cellArea);
+ const scale=clamp(Number(settings.runoffScale),0.1,2.5),infiltration=clamp(Number(settings.infiltration),0,0.95),evaporation=clamp(Number(settings.evaporation),0,1.5);
+ const riverThreshold=clamp(Number(settings.riverThreshold),2,120),lakeMinDepth=clamp(Number(settings.lakeDepth),.002,.3),minLakeCells=clamp(Math.round(Number(settings.minLakeCells)),1,15);
+ const seed=Number(settings.seed)|0;
+ const spill=new Float64Array(n),flowTo=new Array(n).fill(-1),seen=new Uint8Array(n),order=[],heap=new MinHeap();
+ let coastalOutlets=0;
+ for(let i=0;i<n;i++)if(water[i]){seen[i]=1;spill[i]=sea;heap.push(sea,i);coastalOutlets++;}
+ // Unusual imported or explicitly all-land test graphs still get an outlet.
+ if(!heap.length){let low=0;for(let i=1;i<n;i++)if(heights[i]<heights[low])low=i;seen[low]=1;spill[low]=heights[low];heap.push(spill[low],low);}
+ let visited=0;
+ while(true){
+  while(heap.length){
+   const [h,i]=heap.pop();order.push(i);visited++;
+   for(const j of cells[i].neighbors){
+    if(seen[j])continue;seen[j]=1;flowTo[j]=i;
+    spill[j]=Math.max(heights[j],h);heap.push(spill[j],j);
+   }
+  }
+  if(visited===n)break;
+  // Defensively handle disconnected graphs; do not strand portions of a world.
+  let low=-1;for(let i=0;i<n;i++)if(!seen[i]&&(low<0||heights[i]<heights[low]))low=i;
+  if(low<0)break;seen[low]=1;spill[low]=heights[low];heap.push(spill[low],low);
+ }
+ onProgress?.(.30);
+ const localRunoff=new Array(n),discharge=new Float64Array(n),catchmentArea=new Float64Array(n);
+ for(let i=0;i<n;i++){
+  catchmentArea[i]=water[i]?0:areas[i];
+  if(water[i]){localRunoff[i]=0;continue;}
+  const temp=Math.max(0,climate.meanTemp[i]);
+  // A deliberately simple annual water balance: rainfall minus infiltration
+  // and temperature-dependent evapotranspiration. Units are km³/year.
+  const evapMm=evaporation*(85+temp*13);
+  const retention=clamp(.94+.12*noise(cells[i].x/350,cells[i].y/350,seed+53),.82,1.06);
+  const availableMm=Math.max(0,climate.precipitation[i]*scale*retention*(1-infiltration)-evapMm);
+  const volume=availableMm*areas[i]*1e-6;
+  localRunoff[i]=+volume.toFixed(6);discharge[i]=volume;
+ }
+ // Reverse flood order: children before parents, so accumulation is exact
+ // even when the terrain contains a flat depression or multiple spill paths.
+ for(let k=order.length-1;k>=0;k--){const i=order[k],j=flowTo[i];if(j<0)continue;
+  discharge[j]+=discharge[i];catchmentArea[j]+=catchmentArea[i];
+ }
+ onProgress?.(.60);
+ const meanArea=areas.reduce((sum,a)=>sum+a,0)/n;
+ const channels=[];let totalRunoff=0,riverCount=0,maxDischarge=0;
+ for(let i=0;i<n;i++){
+  if(!water[i]){totalRunoff+=localRunoff[i];maxDischarge=Math.max(maxDischarge,discharge[i]);
+   if(flowTo[i]>=0&&catchmentArea[i]>=riverThreshold*meanArea&&discharge[i]>=riverThreshold*meanArea*.00012){channels.push(i);riverCount++;}
+  }
+ }
+ const candidate=new Uint8Array(n),lakeId=new Array(n).fill(-1),lakeDepth=new Array(n).fill(0),lakeLevel=new Array(n).fill(null);
+ for(let i=0;i<n;i++)if(!water[i]){
+  const depth=Math.max(0,spill[i]-heights[i]);
+  // The moisture gate suppresses permanent lakes in the most arid basins.
+  if(depth>=lakeMinDepth&&climate.moisture[i]>=.12&&localRunoff[i]>0)candidate[i]=1;
+ }
+ const lakes=[];
+ for(let i=0;i<n;i++){
+  if(!candidate[i]||lakeId[i]!==-1)continue;
+  const group=[i];lakeId[i]=-2;
+  for(let k=0;k<group.length;k++)for(const j of cells[group[k]].neighbors){
+   if(!candidate[j]||lakeId[j]!==-1||Math.abs(spill[group[k]]-spill[j])>.0002)continue;
+   lakeId[j]=-2;group.push(j);
+  }
+  if(group.length<minLakeCells){for(const j of group)lakeId[j]=-1;continue;}
+  const id=lakes.length,areaKm2=group.reduce((a,j)=>a+areas[j],0),maxDepth=Math.max(...group.map(j=>spill[j]-heights[j]));
+  // The surface of a flood-filled depression is a common local spill level.
+  const level=spill[group[0]];
+  for(const j of group){lakeId[j]=id;lakeDepth[j]=+(spill[j]-heights[j]).toFixed(4);lakeLevel[j]=+level.toFixed(4);}
+  lakes.push({id,cells:group,areaKm2:+areaKm2.toFixed(2),level:+level.toFixed(4),maxDepth:+maxDepth.toFixed(4)});
+ }
+ onProgress?.(.84);
+ // Identify drainage outlet for every non-ocean cell. Ocean cells are their own
+ // terminal outlets. The connected forest enables efficient downstream tracing.
+ const outlet=new Array(n).fill(-1);
+ for(const i of order){const j=flowTo[i];outlet[i]=j<0?i:outlet[j];}
+ const result={
+  flowTo,catchmentArea:Array.from(catchmentArea,x=>+x.toFixed(2)),
+  localRunoff,discharge:Array.from(discharge,x=>+x.toFixed(6)),
+  spillElevation:Array.from(spill,x=>+x.toFixed(4)),
+  lakeId,lakeDepth,lakeLevel,lakes,channels,outlet,
+  summary:{rivers:riverCount,lakes:lakes.length,lakeAreaKm2:+lakes.reduce((a,l)=>a+l.areaKm2,0).toFixed(2),coastalOutlets,
+   maxDischarge:+maxDischarge.toFixed(3),annualRunoffKm3:+totalRunoff.toFixed(3)}
+ };
+ onProgress?.(1);return result;
+}
+
 export function generateStage(stage,locked,settings,onProgress=null){
  const geometry=locked[0]?.data,mesh=locked[1]?.data;
  if(stage===1)return generateGeometry(settings);
@@ -593,6 +697,7 @@ export function generateStage(stage,locked,settings,onProgress=null){
  if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[2].data,locked[3].data,locked[4].data,settings);}
  if(stage===7){if(!locked[5]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[4].data,locked[5].data,settings,onProgress);}
  if(stage===8){if(!locked[6]?.data)throw Error('Erosion layer required');return generateClimate(mesh,locked[4].data,locked[6].data,settings,onProgress);}
+ if(stage===9){if(!locked[7]?.data)throw Error('Climate layer required');return generateHydrology(mesh,locked[4].data,locked[6].data,locked[7].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
@@ -648,7 +753,28 @@ export function validateWorld(world){
    for(const [key,[min,max]] of Object.entries(bounded))if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(x=>!Number.isFinite(x)||x<min||x>max))throw Error(`Invalid climate data: ${key}`);
    if(!d.summary||!Number.isFinite(d.summary.avgTemp)||!Number.isFinite(d.summary.avgRain)||!Number.isFinite(d.summary.minTemp)||!Number.isFinite(d.summary.maxTemp))throw Error('Invalid climate summary');
   }
- }
+
+  if(record.stage===9){
+   const lengths=['flowTo','catchmentArea','localRunoff','discharge','spillElevation','lakeId','lakeDepth','lakeLevel','outlet'];
+   if(lengths.some(k=>!Array.isArray(d[k])||d[k].length!==n)||!Array.isArray(d.channels)||!Array.isArray(d.lakes)||!d.summary)throw Error('Invalid hydrology arrays');
+   if(d.flowTo.some((j,i)=>!Number.isInteger(j)||j< -1||j>=n||j===i||(j>=0&&!mesh.cells[i].neighbors.includes(j))))throw Error('Invalid hydrology routes');
+   for(const key of ['catchmentArea','localRunoff','discharge','lakeDepth'])if(d[key].some(x=>!Number.isFinite(x)||x<0))throw Error(`Invalid hydrology ${key}`);
+   if(d.spillElevation.some(x=>!Number.isFinite(x)||Math.abs(x)>2)||d.lakeLevel.some(x=>x!==null&&(!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid hydrology levels');
+   if(d.outlet.some(x=>!Number.isInteger(x)||x<0||x>=n)||d.lakeId.some(x=>!Number.isInteger(x)||x< -1||x>=d.lakes.length))throw Error('Invalid hydrology ids');
+   if(d.channels.some(x=>!Number.isInteger(x)||x<0||x>=n||records.find(r=>r.stage===5)?.data?.water?.[x]))throw Error('Invalid hydrology channels');
+   const seenLakes=new Set();
+   for(let id=0;id<d.lakes.length;id++){const lake=d.lakes[id];
+    if(lake.id!==id||!Array.isArray(lake.cells)||!lake.cells.length||!Number.isFinite(lake.areaKm2)||lake.areaKm2<=0||!Number.isFinite(lake.level)||!Number.isFinite(lake.maxDepth)||lake.cells.some(j=>!Number.isInteger(j)||j<0||j>=n||d.lakeId[j]!==id||seenLakes.has(j)))throw Error('Invalid hydrology lakes');
+    for(const j of lake.cells)seenLakes.add(j);
+   }
+   if(d.lakeId.some((id,j)=>(id>=0)!==seenLakes.has(j)))throw Error('Invalid hydrology lake membership');
+   for(const key of ['rivers','lakes','lakeAreaKm2','coastalOutlets','maxDischarge','annualRunoffKm3'])if(!Number.isFinite(d.summary[key])||d.summary[key]<0)throw Error('Invalid hydrology summary');
+   // Route validation also detects nonlocal cycles in untrusted imports.
+   const state=new Uint8Array(n);for(let i=0;i<n;i++){let j=i,path=[];while(j>=0&&state[j]===0){state[j]=1;path.push(j);j=d.flowTo[j];}
+    if(j>=0&&state[j]===1)throw Error('Invalid hydrology drainage cycle');
+    for(const k of path)state[k]=2;
+   }
+  } }
  return world;
 }
 const INPUT_RANGES={
@@ -659,7 +785,8 @@ const INPUT_RANGES={
  5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5],setbackStrength:[0,1.8],setbackWidth:[2,18]},
  6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
  7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]},
- 8:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]}
+ 8:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]},
+ 9:{runoffScale:[0.1,2.5],infiltration:[0,0.95],evaporation:[0,1.5],riverThreshold:[2,120],lakeDepth:[0.002,0.3],minLakeCells:[1,15]}
 };
 /** Convert 0.1.0–0.1.3 saves into complete layer-1 geometry + shifted layers.
  * Do not regenerate any locked content; existing 2048 × 1024 data is still km-space. */
@@ -710,7 +837,7 @@ export function upgradeWorld(world){
   }
   for(const [key,[min,max]] of Object.entries(INPUT_RANGES[stage])){
    next[key]=clamp(Number(next[key]),min,max);
-   if(['relaxation','plates','iterations'].includes(key))next[key]=Math.round(next[key]);
+   if(['relaxation','plates','iterations','minLakeCells'].includes(key))next[key]=Math.round(next[key]);
   }
   if(stage===2){
    const geometry=world.locked[0]?.data||generateGeometry(DEFAULTS[1]);
@@ -719,7 +846,7 @@ export function upgradeWorld(world){
   if(stage!==1){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
   world.working.settings=next;
  }
- if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july'].includes(world.viewMode))world.viewMode='auto';
+ if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds'].includes(world.viewMode))world.viewMode='auto';
  world.exploreMode=!!world.exploreMode;
  world.showEdges=world.showEdges!==false;
  world.showPlateBorders=!!world.showPlateBorders;
