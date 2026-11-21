@@ -26,7 +26,7 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-edge-toggle{display:flex;align-items:center;gap:5px;padding:0 8px;font-size:11px;white-space:nowrap}
 .wg-edge-toggle input{accent-color:#b4e0ad;width:14px;height:14px}
 .wg-map-scale{position:absolute;bottom:10px;left:10px;pointer-events:none;background:#12262ac9;border-radius:8px;padding:5px 8px;color:#b4cfc7;font-size:10px;font-variant-numeric:tabular-nums}
-.wg-inspector{position:absolute;bottom:40px;left:12px;right:12px;max-width:330px;padding:13px 15px 12px;border:1px solid #74917ba6;border-radius:14px;background:#173530ee;box-shadow:0 12px 32px #071b22ad;backdrop-filter:blur(10px);pointer-events:auto}
+.wg-inspector{position:absolute;bottom:40px;left:12px;right:12px;max-width:330px;max-height:min(480px,calc(100% - 96px));overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:13px 15px 12px;border:1px solid #74917ba6;border-radius:14px;background:#173530ee;box-shadow:0 12px 32px #071b22ad;backdrop-filter:blur(10px);pointer-events:auto}
 .wg-inspector[hidden]{display:none}
 .wg-inspector strong{font-size:14px;display:block;margin:0 0 6px;color:#e7f5de}
 .wg-inspector span{display:block;color:#b2d4c6;font-size:11px;margin:3px 0}

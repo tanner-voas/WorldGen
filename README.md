@@ -1,4 +1,4 @@
-# WorldGen v0.1.10
+# WorldGen v0.1.11
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -25,7 +25,9 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 
 11. **Biomes** — potential natural environments derived from the locked climate, soil, topography, rivers and lakes. The classification distinguishes cold, temperate, tropical, mountain, dryland and wetland environments. Independent settings adjust effective biome temperature, rainfall response, forest moisture threshold, wetland threshold, alpine summer threshold and smooth regional variation without rewriting earlier climate or terrain. Additional Voronoi-scale maps visualize ecological productivity potential, tree-cover potential, drought stress, the thermal growing season and biome transitions. This is environmental suitability, not vegetation growth or animal-population simulation.
 
-Future stages: habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
+12. **Vegetation and habitats** — deterministic, Voronoi-scale canopy and ground cover, biomass index, estimated vegetation height, riparian influence, and structural habitat classes. Density, maturity, disturbance, riverside boost, and spatial patchiness are adjustable. This is a static vegetation snapshot, not a population, ecological succession, or wildlife simulation. Previous biomes, climate, soils and rivers remain immutable.
+
+Future stage: local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
 ## Parameter controls
 
@@ -55,7 +57,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.9 → v0.1.10 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.10 → v0.1.11 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test
@@ -74,3 +76,11 @@ The existing GitHub Action notifies AppLauncher to advance the pinned WorldGen s
 - Automated tests cover deterministic generation, three world shapes, controls, complete checkpoint/save validation and corrupted import rejection.
 
 Future work includes adaptive polygon batching for much larger worlds, higher-resolution terrain tiles, GPU compute, spherical topology, depth, population, ecology, and societal simulations.
+
+## v0.1.11 vegetation and habitats pass
+
+- Layer 12 converts ecological potential into a deterministic static vegetation snapshot. Five controls tune density, maturity, disturbance, riparian growth, and low-frequency patchiness. All existing slider, number-entry, stepper, and help behavior applies.
+- New map modes display vegetation cover, habitat classes, canopy, ground vegetation, biomass index, structural complexity, and riparian influence. Cell inspection shows each measurement.
+- River and lakeshore effects propagate across only a few mesh neighbors. Oceans and lakes have no vegetation; permanent snow/ice remains bare. None of the earlier locked layers are modified.
+- Stage-12 named checkpoints store all twelve layers. Earlier WorldGen saves (including v0.1.10 stage-11 worlds) are compatible without a schema migration, and the layer can be generated from those saved projects.
+- The model is a spatial approximation. It does not model species, animal populations, yearly growth, wildfire chronology, or true physical biomass units.

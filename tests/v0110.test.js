@@ -18,7 +18,7 @@ function getBiome(w, settings={}){
 }
 
 test('stage 11 is a deterministic, self-contained biome classification with immutable dependencies',()=>{
- assert.equal(IMPLEMENTED,11);
+ assert.equal(IMPLEMENTED,12);
  const w=worldAt();const previous=JSON.stringify(w.locked);
  const a=getBiome(w),b=getBiome(w);
  assert.deepEqual(a,b);

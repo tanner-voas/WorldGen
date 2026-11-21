@@ -1,4 +1,4 @@
-// WorldGen v0.1.10 — biome classification and ecological potential.
+// WorldGen v0.1.11 — vegetation, cover, and habitat structure.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -13,12 +13,13 @@ export const STAGES=[
   ['Hydrology','Climate-driven runoff, connected rivers, inland lakes and drainage basins'],
   ['Soils','Surface depth, texture, organic matter, permeability and groundwater potential'],
   ['Biomes','Climate- and soil-driven natural environments, ecological potential and transitions'],
-  ['Habitats','Future: vegetation and habitats'],
+  ['Vegetation & habitats','Potential vegetation cover and structural habitat mosaic'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=11;
+export const IMPLEMENTED=12;
 export const SOIL_NAMES=['Open water','Exposed rock','Thin upland','Coarse / sandy','Loam','Clay-rich','Organic wetland','Volcanic','Arid mineral','Cold / tundra'];
 export const BIOME_NAMES=['Ocean','Freshwater lake','Permanent snow / ice','Tundra','Boreal forest','Temperate rainforest','Temperate forest','Temperate grassland','Dry steppe','Desert / barren','Dry shrubland','Tropical rainforest','Tropical seasonal forest','Savanna','Alpine','Wetland','Montane forest'];
+export const VEGETATION_NAMES=['Ocean','Freshwater','Bare / ice','Sparse tundra','Grassland','Shrubland','Open woodland','Closed forest','Wet forest','Wetland vegetation','Riparian corridor','Alpine meadow','Desert scrub'];
 export const MAX_CELLS=5000;
 export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
@@ -32,7 +33,8 @@ export const DEFAULTS={
  8:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829},
  9:{runoffScale:1,infiltration:0.32,evaporation:0.52,riverThreshold:4,lakeDepth:0.008,minLakeCells:1,seed:314160},
  10:{weathering:1,organicInput:1,alluvialInput:1,permeabilityBias:1,groundwaterRecharge:1,seed:173206},
- 11:{temperatureShift:0,rainfallResponse:1,forestThreshold:.90,wetlandThreshold:.65,alpineLimit:9,patchVariation:.12,seed:271830}
+ 11:{temperatureShift:0,rainfallResponse:1,forestThreshold:.90,wetlandThreshold:.65,alpineLimit:9,patchVariation:.12,seed:271830},
+ 12:{vegetationDensity:1,maturity:.8,disturbance:.16,riparianStrength:.65,patchiness:.16,seed:271831}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
@@ -846,6 +848,104 @@ export function generateBiomes(mesh,coasts,landforms,erosion,climate,hydrology,s
    meanGrowingMonths:+(monthsSum/Math.max(1,landArea)).toFixed(2)}};
 }
 
+
+/** Voronoi-scale potential vegetation: a static landscape snapshot, not a
+ * time-stepped growth model. Earlier environmental suitability is immutable.
+ * Climate, soils, waterways, and biome data are read but never mutated.
+ * Neighbor-propagated riparian influence is intentionally local (3 hops),
+ * and low-frequency patch noise avoids cell-by-cell random speckling.
+ */
+export function generateVegetation(mesh,coasts,climate,hydrology,soils,biomes,settings,onProgress=null){
+ const cells=mesh?.cells,n=cells?.length||0;
+ if(!n||coasts?.water?.length!==n||climate?.precipitation?.length!==n||climate?.meanTemp?.length!==n
+  ||hydrology?.lakeId?.length!==n||!Array.isArray(hydrology?.channels)
+  ||soils?.fertility?.length!==n||soils?.groundwater?.length!==n
+  ||biomes?.biome?.length!==n||biomes?.treePotential?.length!==n
+  ||biomes?.productivity?.length!==n||biomes?.ecotone?.length!==n)
+  throw Error('Vegetation requires completed matching coast, climate, hydrology, soil and biome layers');
+ const density=clamp(Number(settings.vegetationDensity),.2,1.8);
+ const maturity=clamp(Number(settings.maturity),0,1);
+ const disturbance=clamp(Number(settings.disturbance),0,1);
+ const riparianStrength=clamp(Number(settings.riparianStrength),0,1.5);
+ const patchiness=clamp(Number(settings.patchiness),0,.45);
+ const seed=Number(settings.seed)|0;
+ const influence=new Array(n).fill(0);
+ // Rivers and shores are sources; propagate a decaying local influence.
+ // Propagation never crosses oceans or jumps across non-neighbor polygons.
+ for(const i of hydrology.channels)if(i>=0&&i<n&&!coasts.water[i]&&hydrology.lakeId[i]<0)influence[i]=1;
+ for(let i=0;i<n;i++)if(!coasts.water[i]&&hydrology.lakeId[i]<0
+   &&cells[i].neighbors.some(j=>hydrology.lakeId[j]>=0))influence[i]=1;
+ for(let step=0;step<3;step++){
+  const next=influence.slice();
+  for(let i=0;i<n;i++)if(!coasts.water[i]&&hydrology.lakeId[i]<0){
+   for(const j of cells[i].neighbors)if(!coasts.water[j]&&hydrology.lakeId[j]<0)
+    next[i]=Math.max(next[i],influence[j]*.53);
+  }
+  for(let i=0;i<n;i++)influence[i]=next[i];
+ }
+ onProgress?.(.12);
+ const coverClass=new Array(n),canopyCover=new Array(n),groundCover=new Array(n);
+ const biomass=new Array(n),heightM=new Array(n),habitatComplexity=new Array(n),riparian=new Array(n);
+ const counts=new Array(VEGETATION_NAMES.length).fill(0);
+ const areaKm2ByClass=new Array(VEGETATION_NAMES.length).fill(0);
+ let landCells=0,landArea=0,canopySum=0,groundSum=0,biomassSum=0,heightSum=0;
+ const spacing=Math.sqrt((mesh.areaKm2||mesh.width*mesh.height)/n);
+ for(let i=0;i<n;i++){
+  const c=cells[i],biome=biomes.biome[i],area=cellArea(c);
+  let kind=0,canopy=0,ground=0,mass=0,height=0,rip=0,complexity=0;
+  if(coasts.water[i])kind=0;
+  else if(hydrology.lakeId[i]>=0)kind=1;
+  else{
+   const patch=1+patchiness*fbm(c.x/(spacing*5),c.y/(spacing*5),seed+219,4);
+   const vigor=clamp(density*patch,0,2);
+   rip=clamp(influence[i],0,1);
+   const fertile=clamp(.6+.4*soils.fertility[i],0,1);
+   const ripGain=1+rip*riparianStrength*(.18+.24*soils.groundwater[i]);
+   canopy=clamp(biomes.treePotential[i]*vigor*(.45+.55*maturity)*(1-disturbance*.62)*ripGain,0,1);
+   ground=clamp(biomes.productivity[i]*vigor*(.75+.25*maturity)*(1-disturbance*.28)
+      *fertile*(1+.35*rip*riparianStrength)*(1-.22*canopy),0,1);
+   // Ground vegetation and woody material are distinct contributions;
+   // this index is not tonnes of carbon or an ecological population count.
+   mass=clamp((.76*canopy+.24*ground)*(.42+.58*maturity)*(1-.38*disturbance),0,1);
+   height=clamp(canopy*(11+25*maturity)*(1-disturbance*.35)+ground*(.15+1.1*maturity),0,40);
+   if(biome===2){canopy=0;ground=0;mass=0;height=0;} // Permanent ice is unvegetated.
+   if(biome===2)kind=2; // Snow or ice remains unvegetated.
+   else if(biome===15&&ground>.06)kind=9;
+   else if(canopy>.64)kind=([5,11,12].includes(biome)||biomes.productivity[i]>.72)?8:7;
+   else if(canopy>.23)kind=6;
+   else if(rip>.52&&ground>.18)kind=10;
+   else if(biome===14&&ground>.06)kind=11;
+   else if(biome===3&&ground>.03)kind=3;
+   else if(biome===9&&ground>.015)kind=12;
+   else if(ground>.35)kind=4;
+   else if(ground>.065||canopy>.035)kind=5;
+   else kind=2;
+   // Structural complexity can be high at ecotones, among mixed growth,
+   // and in vegetated river corridors; it is potential habitat only.
+   const mixture=1-Math.abs(canopy-ground);
+   complexity=clamp(.28*ground+.28*canopy+.18*mixture*Math.max(canopy,ground)
+      +.14*biomes.ecotone[i]+.12*rip*Math.max(canopy,ground),0,1);
+   landCells++;landArea+=area;
+   canopySum+=canopy*area;groundSum+=ground*area;biomassSum+=mass*area;heightSum+=height*area;
+  }
+  coverClass[i]=kind;counts[kind]++;areaKm2ByClass[kind]+=area;
+  canopyCover[i]=+canopy.toFixed(4);groundCover[i]=+ground.toFixed(4);
+  biomass[i]=+mass.toFixed(4);heightM[i]=+height.toFixed(2);
+  habitatComplexity[i]=+complexity.toFixed(4);riparian[i]=+rip.toFixed(4);
+  if(i%128===0)onProgress?.(.12+.88*i/n);
+ }
+ onProgress?.(1);
+ const forestArea=[7,8].reduce((sum,k)=>sum+areaKm2ByClass[k],0);
+ const vegetatedArea=areaKm2ByClass.reduce((sum,area,k)=>sum+(k>2?area:0),0);
+ return {coverClass,canopyCover,groundCover,biomass,heightM,habitatComplexity,riparian,counts,
+  areaKm2ByClass:areaKm2ByClass.map(x=>+x.toFixed(2)),
+  summary:{landCells,forestAreaKm2:+forestArea.toFixed(2),vegetatedAreaKm2:+vegetatedArea.toFixed(2),
+   meanCanopy:+(canopySum/Math.max(landArea,1)).toFixed(4),
+   meanGroundCover:+(groundSum/Math.max(landArea,1)).toFixed(4),
+   meanBiomass:+(biomassSum/Math.max(landArea,1)).toFixed(4),
+   meanHeightM:+(heightSum/Math.max(landArea,1)).toFixed(2)}};
+}
+
 export function generateStage(stage,locked,settings,onProgress=null){
  const geometry=locked[0]?.data,mesh=locked[1]?.data;
  if(stage===1)return generateGeometry(settings);
@@ -859,6 +959,7 @@ export function generateStage(stage,locked,settings,onProgress=null){
  if(stage===9){if(!locked[7]?.data)throw Error('Climate layer required');return generateHydrology(mesh,locked[4].data,locked[6].data,locked[7].data,settings,onProgress);}
  if(stage===10){if(!locked[8]?.data)throw Error('Hydrology layer required');return generateSoils(mesh,locked[2].data,locked[5].data,locked[4].data,locked[6].data,locked[7].data,locked[8].data,settings,onProgress);}
  if(stage===11){if(!locked[9]?.data)throw Error('Soil layer required');return generateBiomes(mesh,locked[4].data,locked[5].data,locked[6].data,locked[7].data,locked[8].data,locked[9].data,settings,onProgress);}
+ if(stage===12){if(!locked[10]?.data)throw Error('Biome layer required');return generateVegetation(mesh,locked[4].data,locked[7].data,locked[8].data,locked[9].data,locked[10].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
@@ -948,6 +1049,26 @@ export function validateWorld(world){
    if(!d.summary||d.summary.landCells!==n-expected[0]||d.summary.deepSoilCells<0||d.summary.deepSoilCells>d.summary.landCells||d.summary.highFertilityCells<0||d.summary.highFertilityCells>d.summary.landCells)throw Error('Invalid soil summary');
    for(const [key,max] of [['meanDepthM',7],['meanFertility',1],['meanGroundwater',1],['highFertilityAreaKm2',mesh.areaKm2*1.001]])if(!Number.isFinite(d.summary[key])||d.summary[key]<0||d.summary[key]>max)throw Error(`Invalid soil summary ${key}`);
   }
+  if(record.stage===12){
+   if(!Array.isArray(d.coverClass)||d.coverClass.length!==n||d.coverClass.some(v=>!Number.isInteger(v)||v<0||v>=VEGETATION_NAMES.length))throw Error('Invalid vegetation classes');
+   for(const key of ['canopyCover','groundCover','biomass','habitatComplexity','riparian'])
+    if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(v=>!Number.isFinite(v)||v<0||v>1))throw Error(`Invalid vegetation field: ${key}`);
+   if(!Array.isArray(d.heightM)||d.heightM.length!==n||d.heightM.some(v=>!Number.isFinite(v)||v<0||v>40))throw Error('Invalid vegetation height');
+   const actual=Array.from({length:VEGETATION_NAMES.length},(_,k)=>d.coverClass.filter(v=>v===k).length);
+   if(!Array.isArray(d.counts)||d.counts.length!==actual.length||d.counts.some((v,k)=>v!==actual[k]))throw Error('Invalid vegetation totals');
+   if(!Array.isArray(d.areaKm2ByClass)||d.areaKm2ByClass.length!==actual.length||d.areaKm2ByClass.some(v=>!Number.isFinite(v)||v<0||v>mesh.areaKm2*1.001))throw Error('Invalid vegetation areas');
+   const coast=records.find(r=>r.stage===5)?.data,hyd=records.find(r=>r.stage===9)?.data;
+   if(!coast||!hyd||d.coverClass.some((v,i)=>coast.water[i]?v!==0:hyd.lakeId[i]>=0?v!==1:v<2))throw Error('Vegetation water mask mismatch');
+   for(let i=0;i<n;i++)if(d.coverClass[i]<2&&['canopyCover','groundCover','biomass','heightM','habitatComplexity','riparian'].some(key=>d[key][i]!==0))throw Error('Vegetation assigned to water');
+   const areaError=Math.abs(d.areaKm2ByClass.reduce((a,b)=>a+b,0)-(mesh.areaKm2||mesh.width*mesh.height));
+   if(areaError>Math.max(1,mesh.areaKm2)*.015)throw Error('Invalid vegetation area total');
+   const summary=d.summary;
+   if(!summary||summary.landCells!==n-actual[0]-actual[1])throw Error('Invalid vegetation land counts');
+   for(const [key,maximum] of [['forestAreaKm2',mesh.areaKm2*1.001],['vegetatedAreaKm2',mesh.areaKm2*1.001],['meanCanopy',1],['meanGroundCover',1],['meanBiomass',1],['meanHeightM',40]])
+    if(!Number.isFinite(summary[key])||summary[key]<0||summary[key]>maximum)throw Error(`Invalid vegetation summary ${key}`);
+   if(Math.abs(summary.forestAreaKm2-(d.areaKm2ByClass[7]+d.areaKm2ByClass[8]))>.05||
+    Math.abs(summary.vegetatedAreaKm2-d.areaKm2ByClass.slice(3).reduce((a,b)=>a+b,0))>.1)throw Error('Vegetation area summary mismatch');
+  }
   if(record.stage===11){
    if(!Array.isArray(d.biome)||d.biome.length!==n||d.biome.some(k=>!Number.isInteger(k)||k<0||k>=BIOME_NAMES.length))throw Error('Invalid biome classes');
    const fields=['treePotential','productivity','waterStress','ecotone'];
@@ -984,7 +1105,8 @@ const INPUT_RANGES={
  8:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]},
  9:{runoffScale:[0.1,2.5],infiltration:[0,0.95],evaporation:[0,1.5],riverThreshold:[2,120],lakeDepth:[0.002,0.3],minLakeCells:[1,15]},
  10:{weathering:[0,2],organicInput:[0,2],alluvialInput:[0,2],permeabilityBias:[0.25,2],groundwaterRecharge:[0,2]},
- 11:{temperatureShift:[-12,12],rainfallResponse:[.4,1.8],forestThreshold:[.45,1.8],wetlandThreshold:[.4,.95],alpineLimit:[0,16],patchVariation:[0,.4]}
+ 11:{temperatureShift:[-12,12],rainfallResponse:[.4,1.8],forestThreshold:[.45,1.8],wetlandThreshold:[.4,.95],alpineLimit:[0,16],patchVariation:[0,.4]},
+ 12:{vegetationDensity:[.2,1.8],maturity:[0,1],disturbance:[0,1],riparianStrength:[0,1.5],patchiness:[0,.45]}
 };
 /** Convert 0.1.0–0.1.3 saves into complete layer-1 geometry + shifted layers.
  * Do not regenerate any locked content; existing 2048 × 1024 data is still km-space. */
@@ -1044,7 +1166,7 @@ export function upgradeWorld(world){
   if(stage!==1){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
   world.working.settings=next;
  }
- if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds','soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion','biomes','productivity','treePotential','waterStress','growingSeason','ecotones'].includes(world.viewMode))world.viewMode='auto';
+ if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds','soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion','biomes','productivity','treePotential','waterStress','growingSeason','ecotones','vegetation','canopyCover','groundCover','biomass','habitatComplexity','habitats','riparian'].includes(world.viewMode))world.viewMode='auto';
  world.exploreMode=!!world.exploreMode;
  world.showEdges=world.showEdges!==false;
  world.showPlateBorders=!!world.showPlateBorders;
