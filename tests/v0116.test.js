@@ -44,7 +44,7 @@ test('spatial sampler works on very long, thin maps and sparse site layouts',()=
 
 test('render uses continuous sampler and directly mounts its output bitmap',()=>{
  const code=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
- assert.match(code,/visitTerrainSites\(state\.sampler,wx,wy,collect\)/);
+ assert.match(readFileSync(new URL('../src/raster.js',import.meta.url),'utf8'),/visitTerrainSites\(state\.sampler,wx,wy,collect\)/);
  assert.doesNotMatch(code,/buildRenderNeighborhoods\(mesh/);
  assert.match(code,/replaceWith\(canvasOut\)/);
  assert.match(code,/inspectRenderedCoordinate\(viewer/);

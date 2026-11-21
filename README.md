@@ -1,4 +1,4 @@
-# WorldGen v0.1.16
+# WorldGen v0.1.17
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -118,3 +118,9 @@ Render mode is now a true terrain-render pass rather than a lightly blurred cell
 - Reuses the completed full-resolution canvas directly in the viewer instead of duplicating it, reducing peak render-preview memory use.
 - Render stage selection resets appropriately when changing worlds and is clamped to available completed stages.
 - No new generation layer or save-schema change. Existing worlds remain compatible.
+
+## v0.1.17 renderer
+
+The render dialog opens on the selected completed layer. Relief uses world-space slopes, isolated islands and lakes retain their influence at their sites, and rivers meet the interpolated shore. Export size sets PNG dimensions. Terrain detail sets the sampling density within a bounded pixel budget.
+
+A module worker samples and shades the terrain. If the browser cannot start the worker, the same renderer runs in short batches on the main thread. Closing the dialog cancels pending work. The viewer refits on rotation and inspects the layer used for the image.

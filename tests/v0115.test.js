@@ -16,7 +16,7 @@ test('raster clipping uses world-coordinate-first geometry signature for every o
 });
 
 test('raster renderer calls the checked coordinate wrapper rather than the reversed signature',()=>{
- const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const source=readFileSync(new URL('../src/raster.js',import.meta.url),'utf8');
  assert.match(source,/if\(!renderInsideGeometry\(wx,wy,geometry\)\)/);
  assert.doesNotMatch(source,/insideGeometry\(geometry,wx,wy\)/);
 });

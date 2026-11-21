@@ -135,10 +135,49 @@ export function visitTerrainSites(sampler,x,y,visitor){
    const c=mesh.cells[i],qx=x-c.x,qy=y-c.y,d2=qx*qx+qy*qy;
    if(d2>=radius2)continue;
    const t=1-d2/radius2;
-   const weight=t*t*t;
+   // Anchor isolated islands, lakes and summits at their own sites.
+   const weight=t*t*t/Math.max(1e-8,d2/radius2);
    visitor(i,weight);
    count++;
   }
  }
  return count;
+}
+
+export function rasterDimensions(output,detail){
+ const budget=detail==='ultra'?1250000:detail==='high'?900000:600000;
+ // Thin worlds may have only a handful of pixels across their short axis.
+ // Keep those pixels when the total sample count still fits the budget.
+ const target=Math.max(1/detailPreset(detail).sampleStep,16/Math.min(output.width,output.height));
+ const scale=Math.min(1,target,Math.sqrt(budget/(output.width*output.height)));
+ return {width:Math.max(1,Math.floor(output.width*scale)),height:Math.max(1,Math.floor(output.height*scale))};
+}
+
+// Use the same shoreline in the terrain pixels and at river mouths.
+export function coastCoverage(fraction,texture,blend){
+ const nearCoast=1-smoothstep(.08,.4,Math.abs(fraction-.5));
+ return clamp01(fraction+texture*.16*nearCoast*clamp01(blend));
+}
+
+export function riverShorePoint(sampler,water,lakeId,dry,wet,textureScale,blend){
+ const a=sampler.mesh.cells[dry],b=sampler.mesh.cells[wet];
+ let low=0,high=1;
+ for(let pass=0;pass<10;pass++){
+  const t=(low+high)/2,x=a.x+(b.x-a.x)*t,y=a.y+(b.y-a.y)*t;
+  let sum=0,land=0,lake=0;
+  visitTerrainSites(sampler,x,y,(i,w)=>{
+   sum+=w;
+   if(!water[i])land+=w;
+   if(lakeId[i]>=0)lake+=w;
+  });
+  // In an empty sampling disk the Voronoi bisector is the shoreline.
+  let isDry=t<.5;
+  if(sum>1e-8){
+   const coverage=coastCoverage(land/sum,terrainTexture(x,y,textureScale)-.5,blend);
+   isDry=coverage>=.5&&lake/sum<.5;
+  }
+  if(isDry)low=t;else high=t;
+ }
+ const t=(low+high)/2;
+ return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};
 }
