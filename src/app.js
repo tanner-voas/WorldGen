@@ -2,7 +2,7 @@ import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgrad
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01} from './render.js';
 
-const APP_VERSION='0.1.12',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.13',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');

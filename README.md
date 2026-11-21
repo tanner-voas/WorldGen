@@ -89,3 +89,8 @@ Future work includes adaptive polygon batching for much larger worlds, higher-re
 ## v0.1.12
 
 WorldGen now includes a stage-aware static render mode that can generate higher-resolution blended map images from any completed layer 5+ world state without changing the generation pipeline.
+
+
+## v0.1.13
+
+Fixed the v0.1.12 missing `render.js` deployment module error. Packaging now includes every source JS/CSS module and fails the build if a relative import is absent.
