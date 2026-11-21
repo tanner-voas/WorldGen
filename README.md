@@ -1,4 +1,4 @@
-# WorldGen v0.1.23
+# WorldGen v0.1.24
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -165,3 +165,11 @@ Terrain height, sea level, hydrology, and saved world data are not rewritten. Ap
 ## v0.1.23 — Crack-free adaptive 3D terrain LOD
 
 The 3D viewer now selects terrain mesh detail **per geographical tile**, instead of using one coarse or fine resolution for the entire scene. Each mixed-detail tile includes full-resolution boundary vertices stitched into its internal coarser triangles, preventing cracks at seams when neighboring tiles have different LODs. A single-draw uniform index buffer remains available whenever the whole world requests the same detail, keeping wide views efficient. All levels share one immutable terrain vertex/material buffer, so generation data, elevation interpolation, and saved worlds remain unchanged. The viewer status shows active adaptive LOD and submitted terrain triangle counts.
+
+
+## v0.1.24 — Shape-stable LOD and conservative 3D culling
+
+- Fixed the LOD outline problem for circular and elliptical worlds: coarse uniform meshes previously discarded extra boundary triangles, making terrain appear to shrink when zoomed out. An 8-cell boundary collar now preserves the exact same triangulated footprint at all four LODs in both uniform and adaptive draw paths. The collar also preserves internal cutouts if masks gain them later.
+- Added conservative clip-space visibility checks for mixed-detail terrain tiles, with per-tile elevation bounds. Invisible tiles skip GPU draw calls during close exploration; uniform wide views retain their single-draw fast path.
+- New regression tests verify identical footprint area, strictly upward-facing triangles, monotone coarsening on all three shapes, per-tile vertical containment and culling in the actual 3D draw path.
+- There are no changes to generation layers, serialized worlds, checkpoint compatibility or viewer controls. Edge fidelity costs additional triangles on curved shapes compared with the old (incorrect) coarse silhouette.

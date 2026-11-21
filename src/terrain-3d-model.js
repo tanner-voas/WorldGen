@@ -160,6 +160,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  const count=(cols+1)*(rows+1),vertexData=new Float32Array(count*7);
  // Position(3) + normal(3) + elevation(1), interleaved for one GPU buffer.
  const raw=new Float32Array(count),inside=new Uint8Array(count);
+ let minY=Infinity,maxY=-Infinity;
  const sampler=createTerrainSampler(mesh,.72);
  const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
  const materialColors=sourceColors?new Float32Array(count*3):null;
@@ -171,6 +172,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   for(let x=0;x<=cols;x++){
    const wx=geometry.width*x/cols,idx=y*(cols+1)+x,offset=idx*7;
    raw[idx]=sampleElevation(sampler,elevations,wx,wy);
+   minY=Math.min(minY,raw[idx]*.73);maxY=Math.max(maxY,raw[idx]*.73);
    if(materialColors)materialColors.set(sampleTerrainColor(sampler,sourceColors,wx,wy),idx*3);
    inside[idx]=insideGeometry(wx,wy,geometry)?1:0;
    vertexData[offset]=(x/cols-.5)*planeWidth;
@@ -194,6 +196,16 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   vertexData[offset+5]=-ddz/size;
  }
  const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth);
+ // Per-tile height bounds enable safe frustum culling of mixed-detail terrain
+ // without using the global mountain range for every otherwise-flat tile.
+ for(const tile of levels[0].tiles){
+  let min=Infinity,max=-Infinity;
+  for(let yy=tile.y0;yy<=tile.y1;yy++)for(let xx=tile.x0;xx<=tile.x1;xx++){
+   const value=raw[yy*(cols+1)+xx]*.73;
+   min=Math.min(min,value);max=Math.max(max,value);
+  }
+  tile.minY=min-.06;tile.maxY=max+.06;
+ }
  const uniformLevels=buildUniformTerrainLevels(cols,rows,inside);
  const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,waterMask:options.waterMask});
  const seaY=seaLevel*.73;
@@ -210,5 +222,6 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
    return arr;
   })());
  onProgress(1);
- return {vertexData,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count};
+ return {vertexData,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
+  minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05};
 }

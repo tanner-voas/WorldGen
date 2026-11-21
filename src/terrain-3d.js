@@ -1,4 +1,4 @@
-import {lodStepForDistance,adaptiveTileLod} from './terrain-3d-lod.js';
+import {lodStepForDistance,adaptiveTileLod,tileVisibleInFrustum} from './terrain-3d-lod.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
  * smooth lighting, water and interactive level-of-detail index buffers.
@@ -300,6 +300,10 @@ export class Terrain3DViewer{
    }else{
     let currentStep=0;
     for(let i=0;i<baseline.tiles.length;i++){
+     const tile=baseline.tiles[i];
+     // The full elevation range makes this culling conservative even when a
+     // tile contains steep mountains. Invisible tiles need no GPU draw call.
+     if(!tileVisibleInFrustum(camera,tile,s))continue;
      const step=selectedSteps[i],level=tiled.find(row=>row.step===step)||baseline;
      const range=level.tiles?.[i];if(!range?.count)continue;
      if(currentStep!==step){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);currentStep=step;}

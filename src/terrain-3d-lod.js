@@ -11,6 +11,23 @@ export function lodStepForDistance(distance){
  return distance>18?8:distance>11?4:distance>5?2:1;
 }
 
+/** Prefix sum of excluded grid vertices. A coarse triangle must never bridge a
+ * map-outline hole: when even one grid vertex inside its footprint is
+ * excluded, preserve the original 1-cell triangles in that region. This also
+ * guarantees identical terrain coverage for every LOD on shaped worlds. */
+function outlineMask(cols,rows,inside){
+ const stride=cols+2,prefix=new Uint32Array(stride*(rows+2));
+ for(let y=0;y<=rows;y++)for(let x=0;x<=cols;x++){
+  const n=(inside[y*(cols+1)+x]===0)?1:0;
+  const i=(y+1)*stride+x+1;
+  prefix[i]=n+prefix[i-1]+prefix[i-stride]-prefix[i-stride-1];
+ }
+ return (x0,y0,x1,y1)=>{
+  const l=x0,t=y0,r=x1+1,b=y1+1;
+  return prefix[b*stride+r]-prefix[t*stride+r]-prefix[b*stride+l]+prefix[t*stride+l]>0;
+ };
+}
+
 function tileDescriptors(cols,rows,tileSize){
  const tiles=[];
  for(let y0=0;y0<rows;y0+=tileSize)for(let x0=0;x0<cols;x0+=tileSize){
@@ -32,6 +49,8 @@ export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDept
  }
  const tiles=tileDescriptors(cols,rows,tileSize);
  const index=(x,y)=>y*(cols+1)+x;
+ const crossesOutline=outlineMask(cols,rows,inside);
+ const outlineCollar=(x,y)=>{const bx=Math.floor(x/8)*8,by=Math.floor(y/8)*8;return crossesOutline(bx,by,bx+8,by+8);};
  const levels=[];
  for(const step of TERRAIN_LOD_STEPS){
   const indices=[],ranges=[];
@@ -43,9 +62,13 @@ export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDept
    for(let y=tile.y0;y<tile.y1;y+=step)for(let x=tile.x0;x<tile.x1;x+=step){
     const east=x+step,south=y+step;
     // Fine mesh: two upward-facing triangles per original grid square.
-    if(step===1){
-     triangle(index(x,y),index(x,south),index(east,y));
-     triangle(index(east,y),index(x,south),index(east,south));
+    if(step===1||outlineCollar(x,y)){
+     // The fine path also handles partially clipped cells. Coarser masks
+     // would otherwise drop the outline inward as the camera zooms out.
+     for(let yy=y;yy<south;yy++)for(let xx=x;xx<east;xx++){
+      triangle(index(xx,yy),index(xx,yy+1),index(xx+1,yy));
+      triangle(index(xx+1,yy),index(xx,yy+1),index(xx+1,yy+1));
+     }
      continue;
     }
     const onTop=y===tile.y0,onBottom=south===tile.y1;
@@ -96,14 +119,58 @@ export function adaptiveTileLod(eye,tile,span=0){
 export function buildUniformTerrainLevels(cols,rows,inside){
  const result=[];
  const index=(x,y)=>y*(cols+1)+x;
+ const crossesOutline=outlineMask(cols,rows,inside);
+ const outlineCollar=(x,y)=>{const bx=Math.floor(x/8)*8,by=Math.floor(y/8)*8;return crossesOutline(bx,by,bx+8,by+8);};
  for(const step of TERRAIN_LOD_STEPS){
   const indices=[];
   for(let y=0;y<rows;y+=step)for(let x=0;x<cols;x+=step){
    const a=index(x,y),b=index(x+step,y),c=index(x,y+step),d=index(x+step,y+step);
-   if(inside[a]&&inside[b]&&inside[c])indices.push(a,c,b);
-   if(inside[b]&&inside[c]&&inside[d])indices.push(b,c,d);
+   if(step>1&&outlineCollar(x,y)){
+    // The uniform far-view path must preserve the same shaped coastline as
+    // the adaptive tiles; otherwise zooming changes the world's silhouette.
+    for(let yy=y;yy<y+step;yy++)for(let xx=x;xx<x+step;xx++){
+     const q=index(xx,yy),r=index(xx+1,yy),t=index(xx,yy+1),u=index(xx+1,yy+1);
+     if(inside[q]&&inside[t]&&inside[r])indices.push(q,t,r);
+     if(inside[r]&&inside[t]&&inside[u])indices.push(r,t,u);
+    }
+   }else{
+    if(inside[a]&&inside[b]&&inside[c])indices.push(a,c,b);
+    if(inside[b]&&inside[c]&&inside[d])indices.push(b,c,d);
+   }
   }
   result.push({step,indices:new Uint32Array(indices)});
  }
  return result;
+}
+
+/** Conservative clip-space test for mixed-LOD draw calls. A tile is rejected
+ * only when its entire height-bounded box lies outside one expanded frustum
+ * plane. If it crosses the near plane (or the data is incomplete), it is kept
+ * rather than risking a visible hole. Clip margin tolerates relief and camera
+ * motion between frames without popping along the screen edge. */
+export function tileVisibleInFrustum(camera,tile,surface,margin=1.18){
+ if(!camera||camera.length!==16||!surface||!tile||
+    !(Number.isFinite(tile.minY??surface.minY)&&Number.isFinite(tile.maxY??surface.maxY))||
+    !Number.isFinite(surface.planeWidth)||!Number.isFinite(surface.planeDepth)||
+    !Number.isFinite(surface.cols)||!Number.isFinite(surface.rows)||
+    surface.cols<=0||surface.rows<=0)return true;
+ const x0=(tile.x0/surface.cols-.5)*surface.planeWidth;
+ const x1=(tile.x1/surface.cols-.5)*surface.planeWidth;
+ const z0=(tile.y0/surface.rows-.5)*surface.planeDepth;
+ const z1=(tile.y1/surface.rows-.5)*surface.planeDepth;
+ const points=[];
+ const minY=tile.minY??surface.minY,maxY=tile.maxY??surface.maxY;
+ for(const x of [x0,x1])for(const y of [minY,maxY])for(const z of [z0,z1]){
+  const clip=[camera[0]*x+camera[4]*y+camera[8]*z+camera[12],
+   camera[1]*x+camera[5]*y+camera[9]*z+camera[13],
+   camera[2]*x+camera[6]*y+camera[10]*z+camera[14],
+   camera[3]*x+camera[7]*y+camera[11]*z+camera[15]];
+  if(!clip.every(Number.isFinite)||clip[3]<=0)return true;
+  points.push(clip);
+ }
+ return !(
+  points.every(p=>p[0]<-p[3]*margin)||points.every(p=>p[0]>p[3]*margin)||
+  points.every(p=>p[1]<-p[3]*margin)||points.every(p=>p[1]>p[3]*margin)||
+  points.every(p=>p[2]>p[3]*margin)
+ );
 }
