@@ -226,13 +226,14 @@ function pointerMove(event){if(!movePointers.has(event.pointerId))return;const n
 }
 function pointerEnd(event){if(!movePointers.has(event.pointerId))return;const position=canvasPoint(event);movePointers.delete(event.pointerId);if(!movePointers.size){if(!panMoved&&gesture?.kind==='pan'){selectedId=pickCell(position.x,position.y);updateInspector();schedulePaint();}gesture=null;}else{gesture={kind:'pan',origin:[...movePointers.values()][0]};panMoved=true;}}
 function downloadText(text,name){const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);}
-async function doExport(){const full=structuredClone(workspace);full.exportedAt=new Date().toISOString();downloadText(JSON.stringify(full),`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-stage${workspace.locked.length}-worldgen.json`);notice('Complete world file exported');}
-function snapshotName(){return `${workspace.name} — through layer ${workspace.locked.length}`;}
+async function doExport(){const full=structuredClone(workspace);full.exportedAt=new Date().toISOString();const through=workspace.locked.length+(workspace.working.data?1:0);downloadText(JSON.stringify(full),`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-stage${through}-worldgen.json`);notice('Complete world file exported');}
+function snapshotStage(){return workspace.locked.length+(workspace.working.data?1:0);}
+function snapshotName(){return `${workspace.name} — through layer ${snapshotStage()}`;}
 async function saveCheckpoint(){
- if(!workspace.locked.length){notice('Lock at least one layer to create a checkpoint',true);return;}
+ if(!snapshotStage()){notice('Generate at least one layer to create a checkpoint',true);return;}
  const proposed=prompt('Checkpoint name',snapshotName());if(proposed===null)return;
  const name=proposed.trim().slice(0,100)||snapshotName();
- const snap={id:`save-${Date.now()}-${Math.round(Math.random()*10000)}`,name,created:new Date().toISOString(),stage:workspace.locked.length,world:structuredClone(workspace)};
+ const snap={id:`save-${Date.now()}-${Math.round(Math.random()*10000)}`,name,created:new Date().toISOString(),stage:snapshotStage(),world:structuredClone(workspace)};
  snapshots.unshift(snap);try{await saveSnapshots();notice(`Checkpoint saved: ${name}`);}catch(error){snapshots=snapshots.filter(s=>s.id!==snap.id);throw Error(`Checkpoint could not be saved: ${error.message}`);}
 }
 function modal(html){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal" role="dialog" aria-modal="true" aria-label="World library"><div class="wg-modal-heading"><h2>World library</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}

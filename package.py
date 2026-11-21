@@ -20,6 +20,7 @@ def main():
         shutil.copy2(ROOT/'src'/name,STANDALONE/name)
     for name in ['index.html','manifest.webmanifest','standalone-boot.js']:
         shutil.copy2(ROOT/name,STANDALONE/name)
+    shutil.copytree(ROOT/'icons',STANDALONE/'icons')
     items=[p for p in sorted(STANDALONE.rglob('*')) if p.is_file()]
     digest=hashlib.sha256()
     for item in items:

@@ -13,7 +13,7 @@ Working generation stages: (1) Voronoi geometry with adjustable cell count, dist
 
 The map supports drag, pinch zoom, mouse wheel, fit-to-screen, selectable map modes, a mesh overlay, cell inspection, and viewing earlier locked layers. Generation and viewport rendering are independent. Settings trigger regeneration of only the current stage; a layer must be locked before the next one becomes editable. Revising an earlier stage requires explicit confirmation and removes later stages from the working branch.
 
-State auto-saves to IndexedDB under `worldgen-v1`. Named checkpoints contain complete states through their locked layer. Export/import uses standalone, human-readable JSON **including all generated geometry and field data**, not just seeds. Export is strongly recommended for external backups because browser data can be evicted. No external services or accounts are required.
+State auto-saves to IndexedDB under `worldgen-v1`. Named checkpoints contain complete states through all locked layers **and any generated working layer** (for example, saving a layer-4 preview includes layers 1–4 even before locking layer 4). Export/import uses standalone, human-readable JSON **including all generated geometry and field data**, not just seeds. Export is strongly recommended for external backups because browser data can be evicted. No external services or accounts are required.
 
 ## AppLauncher contract
 
