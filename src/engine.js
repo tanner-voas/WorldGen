@@ -1,7 +1,8 @@
-// WorldGen v0.1.3 — deterministic geometry / geology engine; no browser globals.
-export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=1;
+// WorldGen v0.1.4 — parameterized world geometry and deterministic landscape engine.
+export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
+  ['World geometry','Define the 2D world shape and its physical size in kilometers'],
   ['Voronoi mesh','Spatial cells and topology'],
   ['Tectonic plates','Plate territories and relative motion'],
   ['Elevation','Crust, collision uplift and terrain noise'],
@@ -15,17 +16,56 @@ export const STAGES=[
   ['Habitats','Future: vegetation and habitats'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=6;
+export const IMPLEMENTED=7;
+export const MAX_CELLS=5000;
 export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
-  1:{count:900,distribution:'jittered',jitter:0.74,relaxation:1,seed:271828},
-  2:{plates:15,continental:0.42,motion:0.7,seed:314159},
-  3:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
-  4:{land:0.38,seed:141421},
-  5:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
-  6:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607}
+  1:{shape:'rectangle',width:2048,height:1024,radius:750,radiusX:1100,radiusY:600},
+  2:{averageArea:2300,distribution:'jittered',jitter:0.74,relaxation:1,seed:271828},
+  3:{plates:15,continental:0.42,motion:0.7,seed:314159},
+  4:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
+  5:{land:0.38,seed:141421},
+  6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
+  7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/** Width/height and physical area are recorded in kilometers and square kilometers.
+ * This layer is intentionally planar; no globe, depth, or vertical projection yet. */
+export function generateGeometry(settings){
+ const shape=settings.shape;
+ if(!['rectangle','circle','ellipse'].includes(shape))throw Error('Unsupported world shape');
+ const dimension=(key)=>{const n=Number(settings[key]);if(!Number.isFinite(n)||n<50||n>20000)throw Error(`${key} must be 50–20,000 km`);return n;};
+ let width,height,areaKm2,radiusX,radiusY;
+ if(shape==='rectangle'){
+  width=dimension('width');height=dimension('height');areaKm2=width*height;
+ }else{
+  radiusX=dimension(shape==='circle'?'radius':'radiusX');
+  radiusY=shape==='circle'?radiusX:dimension('radiusY');
+  width=radiusX*2;height=radiusY*2;areaKm2=Math.PI*radiusX*radiusY;
+ }
+ return {shape,width,height,areaKm2,radiusX:radiusX??null,radiusY:radiusY??null,unit:'km',depth:0};
+}
+export function insideGeometry(x,y,g){
+ if(x<0||y<0||x>g.width||y>g.height)return false;
+ if(g.shape==='rectangle')return true;
+ return ((x-g.width/2)/(g.width/2))**2+((y-g.height/2)/(g.height/2))**2<=1+1e-5;
+}
+function boundaryPolygon(g){
+ if(g.shape==='rectangle')return [[0,0],[g.width,0],[g.width,g.height],[0,g.height]];
+ const segments=128,points=[];
+ for(let j=0;j<segments;j++){
+  const angle=j*2*Math.PI/segments;
+  points.push([g.width/2+Math.cos(angle)*g.width/2,g.height/2+Math.sin(angle)*g.height/2]);
+ }
+ return points;
+}
+export function meshTargetCount(geometry,averageArea){
+ const area=Number(averageArea);
+ if(!Number.isFinite(area)||area<=0)throw Error('Average polygon area must be positive');
+ return clamp(Math.round(geometry.areaKm2/area),100,MAX_CELLS);
+}
+
 /** Polygon area in world-square units, independent of site density. */
 export function cellArea(cell){
  const p=cell.poly;let sum=0;
@@ -48,36 +88,47 @@ function noise(x,y,s){const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;co
 function fbm(x,y,seed,octaves=5){let sum=0,amp=0.55,total=0,frequency=1;for(let k=0;k<octaves;k++){sum+=noise(x*frequency,y*frequency,seed+k*1013)*amp;total+=amp;frequency*=2;amp*=0.48;}return sum/total;}
 function clip(poly,nx,ny,c){const next=[];if(!poly.length)return next;let prev=poly[poly.length-1],dp=nx*prev[0]+ny*prev[1]-c;for(const cur of poly){const dc=nx*cur[0]+ny*cur[1]-c;if((dp<=0)!==(dc<=0)){const t=dp/(dp-dc);next.push([prev[0]+t*(cur[0]-prev[0]),prev[1]+t*(cur[1]-prev[1])]);}if(dc<=0)next.push(cur);prev=cur;dp=dc;}return next;}
 function centroid(poly){let a=0,cx=0,cy=0;for(let k=0;k<poly.length;k++){const p=poly[k],q=poly[(k+1)%poly.length],f=p[0]*q[1]-q[0]*p[1];a+=f;cx+=(p[0]+q[0])*f;cy+=(p[1]+q[1])*f;}return Math.abs(a)<1e-8?null:[cx/(3*a),cy/(3*a)];}
-function initialSites(settings){const rand=random(settings.seed),n=clamp(Math.round(settings.count),100,3200),sites=[];
- const columns=Math.round(Math.sqrt(n*WORLD_WIDTH/WORLD_HEIGHT)),rows=Math.ceil(n/columns),stepX=WORLD_WIDTH/columns,stepY=WORLD_HEIGHT/rows;
- if(settings.distribution==='random'){
-  const grid=new Map(),dist=Math.sqrt(WORLD_WIDTH*WORLD_HEIGHT/n)*0.48,sz=dist;
-  for(let i=0;i<n;i++){
-   let x=0,y=0,found=false;
-   for(let attempt=0;attempt<35;attempt++){
-    x=rand()*WORLD_WIDTH;y=rand()*WORLD_HEIGHT;const ix=Math.floor(x/sz),iy=Math.floor(y/sz);let good=true;
-    for(let xx=ix-1;xx<=ix+1;xx++)for(let yy=iy-1;yy<=iy+1;yy++)for(const p of grid.get(`${xx},${yy}`)||[]){if((p[0]-x)**2+(p[1]-y)**2<dist*dist)good=false;}
-    if(good){found=true;const key=`${ix},${iy}`;if(!grid.has(key))grid.set(key,[]);grid.get(key).push([x,y]);break;}
-   }
-   if(!found){const ix=Math.floor(x/sz),iy=Math.floor(y/sz),key=`${ix},${iy}`;if(!grid.has(key))grid.set(key,[]);grid.get(key).push([x,y]);}
-   sites.push([x,y]);
-  }
- }else{
-  const jitter=clamp(+settings.jitter,0,1.7);
-  for(let row=0;row<rows;row++)for(let col=0;col<columns&&sites.length<n;col++){
-   let x=(col+0.5+(rand()-0.5)*jitter)*stepX,y=(row+0.5+(rand()-0.5)*jitter)*stepY;
+function initialSites(settings,geometry){
+ const rand=random(settings.seed),n=meshTargetCount(geometry,settings.averageArea),sites=[];
+ const {width,height}=geometry,coverage=geometry.areaKm2/(width*height);
+ const columns=Math.max(1,Math.round(Math.sqrt(n*width/height/coverage))),rows=Math.ceil(n/columns/coverage);
+ const stepX=width/columns,stepY=height/rows;
+ const jitter=clamp(Number(settings.jitter),0,1.7);
+ if(settings.distribution!=='random'){
+  const candidates=[];
+  for(let row=0;row<rows;row++)for(let col=0;col<columns;col++){
+   let x=(col+.5+(rand()-.5)*jitter)*stepX,y=(row+.5+(rand()-.5)*jitter)*stepY;
    if(settings.distribution==='clustered'){
-    const drift=fbm(x/330,y/330,settings.seed,3)*stepX*1.15;
-    x+=drift;y+=fbm(x/310,y/310,settings.seed+31,3)*stepY*1.15;
+    const drift=fbm(x/(width*.17),y/(height*.32),settings.seed,3)*stepX*1.15;
+    x+=drift;y+=fbm(x/(width*.15),y/(height*.3),settings.seed+31,3)*stepY*1.15;
    }
-   sites.push([clamp(x,0.001,WORLD_WIDTH-0.001),clamp(y,0.001,WORLD_HEIGHT-0.001)]);
+   x=clamp(x,.001,width-.001);y=clamp(y,.001,height-.001);
+   if(insideGeometry(x,y,geometry))candidates.push([x,y]);
   }
+  // Shuffle before truncation: avoid bias towards the top-left edge.
+  for(let i=candidates.length-1;i>0;i--){const j=Math.floor(rand()*(i+1));[candidates[i],candidates[j]]=[candidates[j],candidates[i]];}
+  sites.push(...candidates.slice(0,n));
+ }
+ const distance=Math.sqrt(geometry.areaKm2/n)*.43,cellSize=distance,grid=new Map();
+ for(const p of sites){const ix=Math.floor(p[0]/cellSize),iy=Math.floor(p[1]/cellSize),key=`${ix},${iy}`;if(!grid.has(key))grid.set(key,[]);grid.get(key).push(p);}
+ // Fill gaps or generate a blue-noise-like random distribution.
+ while(sites.length<n){
+  let best=null;
+  for(let tries=0;tries<55;tries++){
+   const x=rand()*width,y=rand()*height;if(!insideGeometry(x,y,geometry))continue;
+   const ix=Math.floor(x/cellSize),iy=Math.floor(y/cellSize);let good=true;
+   for(let xx=ix-1;xx<=ix+1;xx++)for(let yy=iy-1;yy<=iy+1;yy++)for(const p of grid.get(`${xx},${yy}`)||[])if((p[0]-x)**2+(p[1]-y)**2<distance**2)good=false;
+   best=[x,y];if(good)break;
+  }
+  if(!best)continue;
+  const [x,y]=best,key=`${Math.floor(x/cellSize)},${Math.floor(y/cellSize)}`;
+  if(!grid.has(key))grid.set(key,[]);grid.get(key).push(best);sites.push(best);
  }
  return sites;
 }
-function cellPolygons(sites,onProgress=null){
- const n=sites.length,spacing=Math.sqrt(WORLD_WIDTH*WORLD_HEIGHT/n),sz=spacing*1.25;
- const nx=Math.ceil(WORLD_WIDTH/sz),ny=Math.ceil(WORLD_HEIGHT/sz),buckets=new Map();
+function cellPolygons(sites,geometry,onProgress=null){
+ const {width,height}=geometry,n=sites.length,spacing=Math.sqrt(geometry.areaKm2/n),sz=spacing*1.25;
+ const nx=Math.ceil(width/sz),ny=Math.ceil(height/sz),buckets=new Map();
  function bucketIndex(ix,iy){return iy*nx+ix;}
  for(let i=0;i<n;i++){const p=sites[i],ix=clamp(Math.floor(p[0]/sz),0,nx-1),iy=clamp(Math.floor(p[1]/sz),0,ny-1),k=bucketIndex(ix,iy);if(!buckets.has(k))buckets.set(k,[]);buckets.get(k).push(i);}
  const result=new Array(n),adj=new Array(n);
@@ -90,21 +141,21 @@ function cellPolygons(sites,onProgress=null){
   }
   addNearby(spacing*3.2);
   candidates.sort((a,b)=>(sites[a][0]-x)**2+(sites[a][1]-y)**2-((sites[b][0]-x)**2+(sites[b][1]-y)**2));
-  let poly=[[0,0],[WORLD_WIDTH,0],[WORLD_WIDTH,WORLD_HEIGHT],[0,WORLD_HEIGHT]];
+  let poly=boundaryPolygon(geometry);
   const processed=new Set();
   function apply(){for(const k of candidates){if(processed.has(k))continue;processed.add(k);const [px,py]=sites[k],dx=px-x,dy=py-y;poly=clip(poly,dx,dy,(px*px+py*py-x*x-y*y)*0.5);if(!poly.length)break;}}
   apply();
   let maxRadius=0;for(const p of poly)maxRadius=Math.max(maxRadius,Math.hypot(p[0]-x,p[1]-y));
   // Any site farther than twice the provisional cell radius cannot bisect its cell.
   // This bound gives exact Voronoi cells even for sparse/clustered distributions.
-  addNearby(Math.min(Math.hypot(WORLD_WIDTH,WORLD_HEIGHT)*2,maxRadius*2+0.01));apply();
+  addNearby(Math.min(Math.hypot(width,height)*2,maxRadius*2+0.01));apply();
   result[i]=poly;
   // An edge's midpoint lies on a shared bisector (unless it borders the map).
   // Find the nearest competing site to derive a symmetric topology graph.
   const neighbors=new Set();
   for(let j=0;j<poly.length;j++){
    const a=poly[j],b=poly[(j+1)%poly.length],mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2;
-   if((mx<1e-6&&Math.abs(a[0]-b[0])<1e-6)||(mx>WORLD_WIDTH-1e-6&&Math.abs(a[0]-b[0])<1e-6)||(my<1e-6&&Math.abs(a[1]-b[1])<1e-6)||(my>WORLD_HEIGHT-1e-6&&Math.abs(a[1]-b[1])<1e-6))continue;
+   if((mx<1e-6&&Math.abs(a[0]-b[0])<1e-6)||(mx>width-1e-6&&Math.abs(a[0]-b[0])<1e-6)||(my<1e-6&&Math.abs(a[1]-b[1])<1e-6)||(my>height-1e-6&&Math.abs(a[1]-b[1])<1e-6))continue;
    let best=-1,score=Infinity;
    for(const k of processed){const dd=(sites[k][0]-mx)**2+(sites[k][1]-my)**2;if(dd<score){score=dd;best=k;}}
    if(best>=0)neighbors.add(best);
@@ -116,23 +167,23 @@ function cellPolygons(sites,onProgress=null){
  for(const row of adj)row.sort((a,b)=>a-b);
  return {polygons:result,neighbors:adj};
 }
-export function generateMesh(settings,onProgress=null){let sites=initialSites(settings),geo;
+export function generateMesh(settings,onProgress=null,geometry=generateGeometry(DEFAULTS[1])){let sites=initialSites(settings,geometry),geo;
  const passes=clamp(Math.round(settings.relaxation),0,3);
  for(let t=0;t<=passes;t++){
-  geo=cellPolygons(sites,onProgress?fraction=>onProgress((t+fraction)/(passes+1)):null);
+  geo=cellPolygons(sites,geometry,onProgress?fraction=>onProgress((t+fraction)/(passes+1)):null);
   if(t===passes)break;
-  sites=sites.map((p,i)=>{const c=centroid(geo.polygons[i]);return c?[clamp(c[0],0.001,WORLD_WIDTH-0.001),clamp(c[1],0.001,WORLD_HEIGHT-0.001)]:p;});
+  sites=sites.map((p,i)=>{const c=centroid(geo.polygons[i]);return c?[clamp(c[0],0.001,geometry.width-0.001),clamp(c[1],0.001,geometry.height-0.001)]:p;});
  }
  onProgress?.(1);
  const cells=sites.map((p,i)=>({x:+p[0].toFixed(4),y:+p[1].toFixed(4),poly:geo.polygons[i].flat().map(z=>+z.toFixed(4)),neighbors:geo.neighbors[i]}));
- return {width:WORLD_WIDTH,height:WORLD_HEIGHT,cells};
+ return {width:geometry.width,height:geometry.height,shape:geometry.shape,areaKm2:geometry.areaKm2,cells};
 }
 function farSeeds(cells,count,seed){const rng=random(seed),chosen=[Math.floor(rng()*cells.length)];let distances=cells.map(c=>(c.x-cells[chosen[0]].x)**2+(c.y-cells[chosen[0]].y)**2);
  for(let j=1;j<count;j++){let best=0,bestScore=-1;for(let i=0;i<cells.length;i++){const score=distances[i]*(0.65+0.7*hash2(i,j,seed));if(score>bestScore){bestScore=score;best=i;}}chosen.push(best);for(let i=0;i<cells.length;i++)distances[i]=Math.min(distances[i],(cells[i].x-cells[best].x)**2+(cells[i].y-cells[best].y)**2);}
  return chosen;
 }
 export function generatePlates(mesh,settings){const rng=random(settings.seed),cells=mesh.cells,pCount=clamp(Math.round(settings.plates),3,50),seeds=farSeeds(cells,pCount,settings.seed),plates=seeds.map((index,id)=>{const theta=rng()*Math.PI*2;return {id,x:cells[index].x,y:cells[index].y,continental:rng()<settings.continental,vx:Math.cos(theta)*settings.motion,vy:Math.sin(theta)*settings.motion};});
- const owners=cells.map(c=>{let chosen=0,min=Infinity;for(const plate of plates){const dx=(c.x-plate.x)/WORLD_WIDTH,dy=(c.y-plate.y)/WORLD_HEIGHT,d=dx*dx+dy*dy;if(d<min){min=d;chosen=plate.id;}}return chosen;});
+ const owners=cells.map(c=>{let chosen=0,min=Infinity;for(const plate of plates){const dx=(c.x-plate.x)/mesh.width,dy=(c.y-plate.y)/mesh.height,d=dx*dx+dy*dy;if(d<min){min=d;chosen=plate.id;}}return chosen;});
  return {plates,owners};
 }
 export function generateElevation(mesh,plateData,settings){const cells=mesh.cells,{plates,owners}=plateData,base=new Float32Array(cells.length),boundary=new Float32Array(cells.length),frontier=[];
@@ -277,7 +328,7 @@ function downhillFlow(cells,heights,water){
 export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
  const cells=mesh.cells,n=cells.length,base=landforms.elevations,water=coasts.water,sea=coasts.seaLevel;
  if(!Array.isArray(base)||base.length!==n||water.length!==n)throw Error('Erosion requires matching landforms and coastlines');
- const heights=base.slice(),areas=cells.map(cellArea),areaMean=(WORLD_WIDTH*WORLD_HEIGHT)/n;
+ const heights=base.slice(),areas=cells.map(cellArea),areaMean=(mesh.areaKm2||mesh.width*mesh.height)/n;
  const rain=clamp(Number(settings.rainfall),0,1.6),hydraulic=clamp(Number(settings.hydraulic),0,1.6);
  const thermal=clamp(Number(settings.thermal),0,1.6),hardness=clamp(Number(settings.hardness),0,1);
  const steps=clamp(Math.round(Number(settings.iterations)||1),1,40),seed=settings.seed|0;
@@ -349,13 +400,14 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
    maxDischarge:+Math.max(0,...discharge).toFixed(2)}};
 }
 export function generateStage(stage,locked,settings,onProgress=null){
- const mesh=locked[0]?.data;
- if(stage===1)return generateMesh(settings,onProgress);
- if(stage===2){if(!mesh)throw Error('Voronoi mesh required');return generatePlates(mesh,settings);}
- if(stage===3){if(!locked[1]?.data)throw Error('Tectonic layer required');return generateElevation(mesh,locked[1].data,settings);}
- if(stage===4){if(!locked[2]?.data)throw Error('Elevation layer required');return generateCoasts(locked[2].data,settings,mesh);}
- if(stage===5){if(!locked[3]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[1].data,locked[2].data,locked[3].data,settings);}
- if(stage===6){if(!locked[4]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[3].data,locked[4].data,settings,onProgress);}
+ const geometry=locked[0]?.data,mesh=locked[1]?.data;
+ if(stage===1)return generateGeometry(settings);
+ if(stage===2){if(!geometry)throw Error('World geometry required');return generateMesh(settings,onProgress,geometry);}
+ if(stage===3){if(!mesh)throw Error('Voronoi mesh required');return generatePlates(mesh,settings);}
+ if(stage===4){if(!locked[2]?.data)throw Error('Tectonic layer required');return generateElevation(mesh,locked[2].data,settings);}
+ if(stage===5){if(!locked[3]?.data)throw Error('Elevation layer required');return generateCoasts(locked[3].data,settings,mesh);}
+ if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[2].data,locked[3].data,locked[4].data,settings);}
+ if(stage===7){if(!locked[5]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[4].data,locked[5].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
@@ -367,28 +419,36 @@ export function validateWorld(world){
  for(let i=0;i<world.locked.length;i++)if(world.locked[i]?.stage!==i+1||!world.locked[i]?.data)throw Error('Save has missing or unordered layers');
  if(!world.working||!Number.isInteger(world.working.stage)||world.working.stage<1||world.working.stage>IMPLEMENTED+1)throw Error('Save has invalid working layer');
  if(world.working.stage!==world.locked.length+1)throw Error('Save has inconsistent layer progression');
- const records=[...world.locked];
- if(world.working.data)records.push(world.working);
- const mesh=records.find(r=>r.stage===1)?.data;
+ const records=[...world.locked];if(world.working.data)records.push(world.working);
+ const geom=records.find(r=>r.stage===1)?.data;
+ if(geom){
+  let check;
+  try{check=generateGeometry(geom.shape==='circle'?{shape:'circle',radius:geom.radiusX}:geom.shape==='ellipse'?{shape:'ellipse',radiusX:geom.radiusX,radiusY:geom.radiusY}:{shape:'rectangle',width:geom.width,height:geom.height});}
+  catch{throw Error('Invalid world geometry');}
+  if(Math.abs(check.width-geom.width)>1e-6||Math.abs(check.height-geom.height)>1e-6||Math.abs(check.areaKm2-geom.areaKm2)>Math.max(1,check.areaKm2)*1e-7)throw Error('Inconsistent world geometry');
+ }
+ const mesh=records.find(r=>r.stage===2)?.data;
  if(mesh){
-  if(!Array.isArray(mesh.cells)||mesh.cells.length<1||mesh.cells.length>3200)throw Error('Invalid world mesh size');
+  if(!geom||!Array.isArray(mesh.cells)||mesh.cells.length<1||mesh.cells.length>MAX_CELLS||mesh.width!==geom.width||mesh.height!==geom.height)throw Error('Invalid world mesh size');
+  if(mesh.shape!==geom.shape)throw Error('Mesh geometry mismatch');
   for(const c of mesh.cells){
-   if(!Number.isFinite(c.x)||!Number.isFinite(c.y)||c.x<0||c.x>WORLD_WIDTH||c.y<0||c.y>WORLD_HEIGHT)throw Error('Invalid mesh site');
-   if(!Array.isArray(c.poly)||c.poly.length<6||c.poly.length>256||c.poly.length%2)throw Error('Invalid polygon');
+   if(!Number.isFinite(c.x)||!Number.isFinite(c.y)||!insideGeometry(c.x,c.y,geom))throw Error('Invalid mesh site');
+   if(!Array.isArray(c.poly)||c.poly.length<6||c.poly.length>512||c.poly.length%2)throw Error('Invalid polygon');
    if(!Array.isArray(c.neighbors)||c.neighbors.length>80||c.neighbors.some(j=>!Number.isInteger(j)||j<0||j>=mesh.cells.length))throw Error('Invalid mesh neighbors');
-   if(c.poly.some((v,i)=>!Number.isFinite(v)||v<-.01||v>(i%2?WORLD_HEIGHT:WORLD_WIDTH)+.01))throw Error('Invalid polygon coordinates');
+   if(c.poly.some((v,i)=>!Number.isFinite(v)||v<-.01||v>(i%2?geom.height:geom.width)+.01))throw Error('Invalid polygon coordinates');
+   for(let k=0;k<c.poly.length;k+=2)if(!insideGeometry(c.poly[k],c.poly[k+1],geom))throw Error('Polygon extends outside world shape');
   }
  }
  const n=mesh?.cells.length;
  for(const record of records){
-  if(record.stage===1)continue;
+  if(record.stage<=2)continue;
   if(!n)throw Error('Missing base mesh for a generated layer');
   const d=record.data;
-  if(record.stage===2&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))throw Error('Invalid plate data');
-  if((record.stage===3||record.stage===5||record.stage===6)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
-  if(record.stage===4&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)))throw Error('Invalid coast data');
-  if(record.stage===5&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
-  if(record.stage===6){
+  if(record.stage===3&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))throw Error('Invalid plate data');
+  if((record.stage===4||record.stage===6||record.stage===7)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
+  if(record.stage===5&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)))throw Error('Invalid coast data');
+  if(record.stage===6&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
+  if(record.stage===7){
    if(!Array.isArray(d.erosionDepth)||!Array.isArray(d.deposition)||!Array.isArray(d.flowTo)||!Array.isArray(d.discharge)||!Array.isArray(d.channels)
     ||[d.erosionDepth,d.deposition,d.flowTo,d.discharge].some(a=>a.length!==n)
     ||d.erosionDepth.some(x=>!Number.isFinite(x)||x<0||x>3)
@@ -401,35 +461,71 @@ export function validateWorld(world){
  }
  return world;
 }
-
-/** Upgrade incomplete settings in older saves without rewriting locked data.
- * In v0.1.0, stage 5 was only a placeholder and had no parameter defaults.
- */
 const INPUT_RANGES={
-  1:{count:[100,3200],jitter:[0,1.7],relaxation:[0,3]},
-  2:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
-  3:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
-  4:{land:[0.1,0.85]},
-  5:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
-  6:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]}
+ 1:{width:[50,20000],height:[50,20000],radius:[50,20000],radiusX:[50,20000],radiusY:[50,20000]},
+ 2:{jitter:[0,1.7],relaxation:[0,3]},
+ 3:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
+ 4:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
+ 5:{land:[0.1,0.85]},
+ 6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
+ 7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]}
 };
+/** Convert 0.1.0–0.1.3 saves into complete layer-1 geometry + shifted layers.
+ * Do not regenerate any locked content; existing 2048 × 1024 data is still km-space. */
+function migrateLegacyWorld(world){
+ if(world.schema!==1)throw Error('Unsupported or invalid world save');
+ // Validate the old stage ordering before migration.
+ if(!Array.isArray(world.locked)||world.locked.length>6||!world.working||world.working.stage!==world.locked.length+1||typeof world.name!=='string')throw Error('Invalid legacy world save');
+ for(let i=0;i<world.locked.length;i++)if(world.locked[i]?.stage!==i+1||!world.locked[i].data)throw Error('Invalid legacy layer order');
+ const rectangle=generateGeometry(DEFAULTS[1]);
+ const first={stage:1,settings:{...DEFAULTS[1]},data:rectangle,lockedAt:world.created||new Date().toISOString()};
+ const previous=[...world.locked];
+ for(const record of previous){
+  if(record.stage===1){
+   const count=record.data.cells?.length||record.settings?.count||900;
+   record.settings={...record.settings,averageArea:rectangle.areaKm2/count};
+   delete record.settings.count;
+   record.data={...record.data,width:rectangle.width,height:rectangle.height,shape:rectangle.shape,areaKm2:rectangle.areaKm2};
+  }
+  record.stage++;
+ }
+ world.locked=[first,...previous];
+ const oldWorking=world.working;
+ if(oldWorking.stage===1){
+  const count=Number(oldWorking.settings?.count)||oldWorking.data?.cells?.length||900;
+  const generatedCount=Number(oldWorking.dataSettings?.count)||oldWorking.data?.cells?.length||count;
+  oldWorking.settings={...DEFAULTS[2],...oldWorking.settings,averageArea:rectangle.areaKm2/count};
+  delete oldWorking.settings.count;
+  if(oldWorking.data)oldWorking.data={...oldWorking.data,width:rectangle.width,height:rectangle.height,shape:rectangle.shape,areaKm2:rectangle.areaKm2};
+  if(oldWorking.dataSettings){oldWorking.dataSettings={...oldWorking.dataSettings,averageArea:rectangle.areaKm2/generatedCount};delete oldWorking.dataSettings.count;}
+ }
+ oldWorking.stage++;
+ world.viewStage=Math.max(1,Math.min(8,(Number(world.viewStage)||1)+1));
+ // An empty legacy world starts at new layer 1 instead of inventing a locked shape.
+ if(previous.length===0&&!oldWorking.data){world.locked=[];world.working={stage:1,settings:{...DEFAULTS[1]},data:rectangle,dataSettings:{...DEFAULTS[1]}};world.viewStage=1;}
+ world.schema=SCHEMA_VERSION;
+ return world;
+}
 export function upgradeWorld(world){
+ if(world?.schema===1)migrateLegacyWorld(world);
  validateWorld(world);
  const stage=world.working.stage;
  if(stage<=IMPLEMENTED){
-  const defaults=DEFAULTS[stage];
-  const current=world.working.settings||{};
-  const next={...defaults,...current};
+  const defaults=stage===2?{...DEFAULTS[2],averageArea:(world.locked[0]?.data?.areaKm2||generateGeometry(DEFAULTS[1]).areaKm2)/1200}:DEFAULTS[stage],current=world.working.settings||{},next={...defaults,...current};
   for(const [key,baseline] of Object.entries(defaults)){
    if(typeof baseline==='number'&&(!Number.isFinite(Number(next[key]))||next[key]===''))next[key]=baseline;
-   if(typeof baseline==='string'&&!['jittered','random','clustered'].includes(next[key]))next[key]=baseline;
+   if(key==='shape'&&!['rectangle','circle','ellipse'].includes(next[key]))next[key]=baseline;
+   if(key==='distribution'&&!['jittered','random','clustered'].includes(next[key]))next[key]=baseline;
   }
   for(const [key,[min,max]] of Object.entries(INPUT_RANGES[stage])){
    next[key]=clamp(Number(next[key]),min,max);
-   if(['count','relaxation','plates','iterations'].includes(key))next[key]=Math.round(next[key]);
+   if(['relaxation','plates','iterations'].includes(key))next[key]=Math.round(next[key]);
   }
-  const seed=Number(next.seed);
-  next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;
+  if(stage===2){
+   const geometry=world.locked[0]?.data||generateGeometry(DEFAULTS[1]);
+   next.averageArea=clamp(Number(next.averageArea),geometry.areaKm2/MAX_CELLS,geometry.areaKm2/100);
+  }
+  if(stage!==1){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
   world.working.settings=next;
  }
  if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow'].includes(world.viewMode))world.viewMode='auto';
@@ -450,7 +546,8 @@ export function snapshotThroughStage(world,stage){
  const result=structuredClone(world);
  result.locked=result.locked.filter(record=>record.stage<=stage);
  if(world.working.stage!==stage){
-  result.working={stage:stage+1,settings:stage+1<=IMPLEMENTED?{...DEFAULTS[stage+1]}:{},data:null,dataSettings:null};
+  const nextStage=stage+1,base=nextStage===2?{...DEFAULTS[2],averageArea:result.locked[0].data.areaKm2/1200}:{...DEFAULTS[nextStage]};
+  result.working={stage:nextStage,settings:nextStage<=IMPLEMENTED?base:{},data:null,dataSettings:null};
  }
  result.viewStage=stage;
  return result;

@@ -1,57 +1,48 @@
-# WorldGen v0.1.3
+# WorldGen v0.1.4
 
-A layered, offline-capable map generator. Its codebase supports **two separate distributions**:
+An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
-- `dist/worldgen/`: app-only module for AppLauncher (no app shell or service worker)
-- `dist/standalone/`: independent installable PWA (HTML, manifest, service worker)
+- `dist/worldgen/` — app module for AppLauncher (launcher owns PWA shell/service worker).
+- `dist/standalone/` — self-contained installable PWA with its own manifest/service worker.
 
-`python3 package.py` builds both outputs. `npm test` runs Node unit tests. `npm run serve` runs the standalone build locally at `http://localhost:8766/`.
+Run `npm test` and `python3 package.py` to validate/build both targets; `npm run serve` serves the standalone distribution on port 8766.
 
-## Working generation layers
+## Generation stages
 
-1. **Voronoi geometry** — editable cell count (100–3200), placement, jitter, relaxation and seed.
-2. **Tectonic plates** — continental/oceanic plate territories, motion, plate boundaries.
-3. **Elevation** — terrain noise, continental elevation and approximate plate-boundary uplift.
-4. **Oceans and coastlines** — explicit sea level derived from requested land coverage.
-5. **Landforms** — further terrain relief, ridges, valleys, slopes, geological landform classification and volcanic fields. Stage 5 *preserves* stage 4's land/water mask.
-6. **Erosion** — graph-based runoff and downhill sediment transfer, plus thermal slope weathering. Controls for rainfall, hydraulic power, thermal weathering, rock resistance, passes, and seed. The locked coast mask remains unchanged.
+1. **World geometry (new)** — choose rectangle (width and height in km), circle (radius in km), or ellipse (horizontal and vertical radius in km). All worlds are planar; no depth is generated. Bounds for each linear dimension/radius: 50–20,000 km. The selected shape becomes part of each checkpoint and drives geometry clipping and the map's physical units.
+2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–5,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
+3. **Tectonic plates** — plate territories, crust type and motion.
+4. **Elevation** — terrain noise, tectonic uplift and relief.
+5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count.
+6. **Landforms** — ridges, valleys, ruggedness, volcanoes; preserves the locked coast mask.
+7. **Erosion** — preliminary rainfall/runoff, sediment transfer, slope weathering, drainage channels; preserves earlier layers and locked coastlines.
 
-Stages 7–12 (climate, hydrology, soils, biomes, habitats and local detail) remain non-functional placeholders. The current geology is a procedural approximation, **not** a physical tectonic simulator. It uses a Web Worker, not WebGPU; later stages can introduce higher-resolution terrain fields and GPU computation.
+Future stages: climate, hydrology, soils, biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
-## Exploration and stage history
+## Parameter controls
 
-Touch gestures support drag/pan, pinch zoom, cell inspection, and zoom-to-fit. Version 0.1.2 adds a **cell locator** (enter the cell ID to center and inspect it) and a **two-point distance tool** (tap each endpoint to see world-unit length and X/Y offsets; tap again to start another measurement). Pan/zoom remain available while measuring. The new **Expand map** control opens a full-height exploration view; **Show settings** returns to the generation panel. The floating stage navigator switches between generated layers even while the settings panel is hidden. Display modes include natural, Voronoi geometry, plates, elevation, coastlines, landforms, erosion/deposition, and accumulated runoff. A drainage-channel overlay becomes available at stage 6. The overlay legend is collapsed by default on smaller screens. An Overlays popover allows independently showing the mesh, tectonic boundaries, and coastlines, and provides a map legend. You can export the currently visible map as a PNG.
+Every generation parameter has a contextual **i** button explaining the effect of increasing and decreasing it. Numeric parameters have both a **slider**, **editable numerical field**, and **− / + buttons**. Geometry dimensions and average Voronoi area change by ±5% of the current value per tap; the other parameters use fixed linear increments suited to their ranges. Area has a logarithmic slider to support dramatically different world sizes. Choices such as shape and site distribution use dropdowns, also with information buttons. The random seed has a direct number field, help button and reroll action (a slider is not appropriate for a seed).
 
-World position, zoom, overlay visibility, display selection, and exploration mode are persisted between sessions. Generation is deterministic per stage seed; Voronoi generation reports progress from the worker. Changing settings invalidates only the current working layer's preview, not locked predecessors. Revising a locked earlier layer requires confirmation and truncates the active branch; make a named checkpoint first to keep the previous result.
+The first stage previews its geometry immediately. Lock it to proceed to Voronoi generation. Cell inspector area reports km² and the distance ruler reports km; map scale and zoom-to-fit use physical world dimensions.
 
-## Saving and migration
+## Navigation, saving and compatibility
 
-**Coastline coverage in new layers is calculated from Voronoi polygon area**, not cell count. Older locked coastlines are not changed, and their area coverage is calculated on display. The stage-4 record retains the old `landFraction` field for compatibility and adds `landAreaFraction` for new worlds. At stage 6, erosion is calculated on the existing Voronoi cell graph, not at terrain-pixel resolution; it is an approximation rather than a full hydraulic simulator.
+Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
 
-**Exports are stage-aware:** Export selected layer produces a self-contained world through the currently viewed stage; Export entire world includes all completed/working stages and requires the active preview to finish generating.
+Automatic caching and named checkpoints preserve all generated layers, parameters, seeds and data. A checkpoint saved through layer N contains every layer 1–N; revising a locked layer creates a new working branch after confirmation. Exports are complete JSON records; keep an external copy because mobile browser storage may be evicted.
 
-All work is automatically cached in a dedicated IndexedDB namespace (`worldgen-v1`). Slider adjustments use a short save debounce to avoid serializing the whole world on every input event. Full save/export includes generated data **and** parameters, not only random seeds. Named checkpoints are stored as independent records with a small index, rather than rewriting every historical checkpoint whenever a new one is saved.
+**Save schema v2:** Existing WorldGen v0.1.0–v0.1.3 saves are upgraded on import or local load. Migration prepends a 2,048 × 1,024 km rectangular geometry layer, increases all previous layer numbers by one, and retains generated polygon coordinates, tectonic data, elevations, coastlines, landforms, and erosion data rather than regenerating them. Previously saved checkpoints and a working Voronoi preview are supported. The internal IndexedDB namespace remains `worldgen-v1` to preserve upgrades.
 
-**Saving while viewing layer N produces a complete checkpoint through layer N**, including all locked layers through N and, where applicable, a generated working preview at N. It does not inadvertently include later stages. Each checkpoint may be restored or independently exported to JSON. When the selected working layer is still regenerating or has stale preview data, saving that working layer is blocked until it finishes. You can still save an earlier locked layer.
+## Deployment
 
-Existing v0.1.0 state and checkpoint arrays migrate to the new representation on first load, without changing the older locked layers. In particular, old worlds ending at layers 4 or 5 are given default settings for the next available stage. A stage-5-complete v0.1.2 world opens at the editable stage 6 without regenerating earlier data. Schema remains 1. Export a downloadable backup periodically; mobile browsers may evict local site data.
-
-## AppLauncher contract
-
-The module entrypoint is `./app.js` and the style entrypoint is `./styles.css` within the distributed app directory. It only renders into the host's `#app` element. If `globalThis.__APP_LAUNCHER__` exists, Home calls `returnToLauncher()` after persisting; otherwise it opens the world library. Source imports and Web Worker URLs are relative to the app module and work under either deployment path.
-
-`package.py` deliberately does not place a manifest or SW in `dist/worldgen`; the launcher owns the installed PWA shell, updates and offline precache. WorldGen's storage namespace is distinct from Ciyan's.
-
-## Updating the existing GitHub repository
-
-Apply the v0.1.1, v0.1.2 and v0.1.3 `git am` patches sequentially to the existing v0.1.0 WorldGen repository. If `origin` is not already configured in the extracted folder, run `git remote add origin https://github.com/tanner-voas/WorldGen.git`. Then:
+Apply the single v0.1.3 → v0.1.4 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
-git push -u origin main
+npm test
+python3 package.py
+git push origin main
 ```
 
-The existing `notify-launcher.yml` workflow dispatches the new commit to AppLauncher, whose `update-worldgen.yml` workflow advances the submodule and triggers its normal deployment. Ensure `APP_LAUNCHER_DISPATCH_TOKEN` remains configured in WorldGen's GitHub Actions secrets. Alternatively, use the provided AppLauncher archive containing this exact pinned WorldGen commit after pushing WorldGen first.
+The existing GitHub Action notifies AppLauncher to advance the pinned WorldGen submodule, with no required launcher-code changes. For independent testing, deploy `dist/standalone/` as a standalone PWA.
 
-## Implementation notes
-
-This first version uses a *bounded planar 2:1 world* (2048 × 1024 units). Spherical planet topology, tiled sub-cell refinement, complete physical tectonics, erosion, climate, hydrology, GPU compute, 3D terrain, societal simulation and fauna are future work. Data is versioned at schema 1, so later migrations can preserve prior exports. Branching currently means saving a complete checkpoint then revising an earlier layer; it does not yet provide a visual branch graph. A Save operation now refuses to silently select the preceding layer when a newer working preview has not been generated.
+Future work includes adaptive polygon batching for much larger worlds, higher-resolution terrain tiles, GPU compute, spherical topology, depth, population, ecology, and societal simulations.
