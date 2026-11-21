@@ -3,8 +3,8 @@
  * Coordinate frame: X east, Y up (render-only), Z south.
  */
 import {insideGeometry} from './engine.js';
-import {createTerrainSampler,visitTerrainSites} from './render.js';
-import {buildTerrainSiteColors,sampleTerrainColor,terrainAppearanceName} from './terrain-3d-material.js';
+import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './render.js';
+import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -71,12 +71,31 @@ export function sampleElevation(sampler,elevations,x,y){
   total+=weight;weighted+=Number(elevations[i])*weight;
  });
  if(found>0&&total>1e-15)return weighted/total;
- let closest=Infinity,best=0;
- for(let i=0;i<sampler.mesh.cells.length;i++){
-  const c=sampler.mesh.cells[i],d=(c.x-x)**2+(c.y-y)**2;
-  if(d<closest){closest=d;best=i;}
- }
- return Number(elevations[best]);
+ return Number(elevations[nearestTerrainSite(sampler,x,y)]);
+}
+
+/** Material-equipped meshes need two differently weighted properties at
+ * exactly the same location. Compute both during one indexed site visit,
+ * preserving the independent elevation/material kernels and fallbacks.
+ * Earlier elevation-only stages still use the cheaper height-only path. */
+export function sampleTerrainFields(sampler,elevations,siteColors,x,y){
+ let heightSum=0,heightWeight=0,colorWeight=0,r=0,g=0,b=0;
+ const radius=sampler.radius;
+ visitTerrainSites(sampler,x,y,(i,colorW)=>{
+  const site=sampler.mesh.cells[i];
+  const t=clamp(Math.hypot(site.x-x,site.y-y)/radius,0,1),u=1-t;
+  const heightW=u*u*u*u*(1+4*t);
+  heightSum+=Number(elevations[i])*heightW;heightWeight+=heightW;
+  const k=i*3,color=colorW;
+  colorWeight+=color;r+=siteColors[k]*color;g+=siteColors[k+1]*color;b+=siteColors[k+2]*color;
+ });
+ if(heightWeight>1e-15&&colorWeight>1e-15)return {
+  height:heightSum/heightWeight,color:[r/colorWeight,g/colorWeight,b/colorWeight]
+ };
+ const nearest=nearestTerrainSite(sampler,x,y),k=nearest*3;
+ return {height:heightWeight>1e-15?heightSum/heightWeight:Number(elevations[nearest]),
+  color:colorWeight>1e-15?[r/colorWeight,g/colorWeight,b/colorWeight]:
+   [siteColors[k],siteColors[k+1],siteColors[k+2]]};
 }
 
 /** A high-resolution local tile that exactly stitches into the coarse mesh.
@@ -97,9 +116,12 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
  const nx=(x1-x0)*subdivisions,ny=(y1-y0)*subdivisions;
  const count=(nx+1)*(ny+1),stride=nx+1;
  const vertexData=new Float32Array(count*7),inside=new Uint8Array(count),raw=new Float32Array(count);
- const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
+ // The viewer worker reuses this immutable sampling context across nearby
+ // tiles. Standalone patch calls still build their own context as before.
+ const sourceColors=options.sourceColors===undefined?
+  buildTerrainSiteColors(mesh,options.appearance||null):options.sourceColors;
  const materialColors=sourceColors?new Float32Array(count*3):null;
- const sampler=createTerrainSampler(mesh,.72);
+ const sampler=options.sampler||createTerrainSampler(mesh,.72);
  // Cache coarse grid corners; the patch can contain more than 65,000
  // vertices but has only a few hundred coarse-grid anchors.
  const anchors=new Float32Array((x1-x0+1)*(y1-y0+1));
@@ -115,15 +137,16 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const fx=gx-ax,fy=gy-ay;
   const coarse=(anchorAt(ax,ay)*(1-fx)+anchorAt(ax+1,ay)*fx)*(1-fy)+
                (anchorAt(ax,ay+1)*(1-fx)+anchorAt(ax+1,ay+1)*fx)*fy;
-  const accurate=sampleElevation(sampler,elevations,wx,wy);
-  const border=Math.min(gx-x0,x1-gx,gy-y0,y1-gy);
+  const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
+  const accurate=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
+  const border=Math.min(gx-x0,x1-gx,gy-y0, y1-gy);
   const fade=smoothstep(0,1.5,border);
   const id=j*stride+i,offset=id*7;
   raw[id]=coarse+(accurate-coarse)*fade;
   vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
   vertexData[offset+2]=zz;vertexData[offset+6]=raw[id];
   inside[id]=insideGeometry(wx,wy,geometry)?1:0;
-  if(materialColors)materialColors.set(sampleTerrainColor(sampler,sourceColors,wx,wy),id*3);
+  if(materialColors)materialColors.set(sampled.color,id*3);
  }
  // Match the coarse mesh normals as well as its edge heights. Without
  // this a mathematically crack-free edge could still show a lighting seam.
@@ -285,9 +308,10 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   const wy=geometry.height*y/rows,z=(y/rows-.5)*planeDepth;
   for(let x=0;x<=cols;x++){
    const wx=geometry.width*x/cols,idx=y*(cols+1)+x,offset=idx*7;
-   raw[idx]=sampleElevation(sampler,elevations,wx,wy);
+   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
+   raw[idx]=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
    minY=Math.min(minY,raw[idx]*heightScale);maxY=Math.max(maxY,raw[idx]*heightScale);
-   if(materialColors)materialColors.set(sampleTerrainColor(sampler,sourceColors,wx,wy),idx*3);
+   if(materialColors)materialColors.set(sampled.color,idx*3);
    inside[idx]=insideGeometry(wx,wy,geometry)?1:0;
    vertexData[offset]=(x/cols-.5)*planeWidth;
    vertexData[offset+1]=raw[idx]*heightScale;

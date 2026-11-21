@@ -11,6 +11,19 @@ export function lodStepForDistance(distance){
  return distance>18?8:distance>11?4:distance>5?2:1;
 }
 
+/** Hysteresis avoids oscillating between two triangle sets when a pinch
+ * gesture hovers around an LOD threshold. New views still use exactly the
+ * legacy distance thresholds; only subsequent transitions gain a margin. */
+export function stableLodStepForDistance(distance,previousStep,margin=.12){
+ const initial=lodStepForDistance(distance);
+ if(!TERRAIN_LOD_STEPS.includes(previousStep))return initial;
+ const thresholds={1:5,2:11,4:18};
+ let step=previousStep;
+ while(step<8&&distance>thresholds[step]*(1+margin))step*=2;
+ while(step>1&&distance<thresholds[step/2]*(1-margin))step/=2;
+ return step;
+}
+
 /** Prefix sum of excluded grid vertices. A coarse triangle must never bridge a
  * map-outline hole: when even one grid vertex inside its footprint is
  * excluded, preserve the original 1-cell triangles in that region. This also
@@ -107,9 +120,9 @@ export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDept
  * Subtracting a fraction of the tile footprint avoids prematurely lowering
  * detail when the camera is close to a large tile's edge.
  */
-export function adaptiveTileLod(eye,tile,span=0){
+export function adaptiveTileLod(eye,tile,span=0,previousStep=null){
  const distance=Math.max(0,Math.hypot(eye[0]-tile.x,eye[1],eye[2]-tile.z)-Math.max(0,span)*.3);
- return lodStepForDistance(distance);
+ return stableLodStepForDistance(distance,previousStep);
 }
 
 /** One index buffer per global resolution for uniformly distant views.

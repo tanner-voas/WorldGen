@@ -1,4 +1,4 @@
-# WorldGen v0.1.27
+# WorldGen v0.1.28
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -191,3 +191,29 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 - Tests cover realistic scale, smooth interpolation, exact coarse-to-refined tile seams on all world shapes, close zoom limits, worker-based tile upload/reuse/release, and preservation of source elevation values.
 
 **Constraint:** A polygon may now fill the camera view without the coarse base mesh becoming the limiting factor, but the actual topographic information is still limited to the original polygons until local-detail generation is implemented. WebGL2 on iPhone Safari still requires testing on device.
+
+## v0.1.28 — 3D optimization and stabilization
+
+- Close-up terrain refinement uses a persistent, read-only worker and retains a
+  single copy of the source world per zoom session. Only tile coordinates move
+  between threads after initialization; rapid camera movements coalesce pending
+  requests rather than queueing obsolete mesh builds. Cached GPU tile resources
+  remain bounded, and zooming out releases the worker and cache.
+- The worker reuses its spatial sampler and source material colors across
+  neighboring high-resolution tiles. Colored terrain samples height and material
+  together in one neighborhood visit, preserving the existing independent
+  interpolation weights and elevation/material data.
+- Sparse-area nearest-site fallback uses an exact spatial-index lookup instead
+  of a full scan of every cell. This primarily benefits circular and elliptical
+  world edges, including sampling outside the final map mask.
+- Adaptive 3D LOD uses a small hysteresis band to prevent repeated mesh changes
+  when pinch/zoom gestures hover at a distance threshold. Initial LOD thresholds
+  and mesh geometry are unchanged.
+- Closing a 3D viewer now cancels and settles an unfinished initial mesh build,
+  releasing the worker instead of leaving an unresolved initialization promise.
+  A failed close-up worker stops retrying continuously during frame draws.
+- Rendering and generation outputs, save format, all 12 stages, checkpoint
+  compatibility, relief control, and AppLauncher integration are unchanged.
+
+Use `npm test` and `python3 package.py` to validate this release. Browser-driven
+GPU screenshots remain unverified here; real iPhone Safari validation is needed.

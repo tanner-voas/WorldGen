@@ -106,9 +106,16 @@ test('close-up worker supplies stitched patches, reuses cached tiles and release
  class FakeWorker{
   constructor(){launches++;}
   postMessage(data){
-   assert.equal(data.kind,'detail');
-   const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(data.geometry,data.mesh,data.elevations,data.grid,tile,{appearance:data.appearance}));
-   this.onmessage({data:{kind:'detail',key:data.key,patches}});
+   if(data.kind==='init-detail'){
+    this.source=data;
+    this.onmessage({data:{kind:'detail-ready'}});
+   }else{
+    assert.equal(data.kind,'detail');
+    assert.deepEqual(Object.keys(data).sort(),['key','kind','tiles']);
+    const {geometry,mesh,elevations,grid,appearance}=this.source;
+    const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,grid,tile,{appearance}));
+    this.onmessage({data:{kind:'detail',key:data.key,patches}});
+   }
   }
   terminate(){}
  }

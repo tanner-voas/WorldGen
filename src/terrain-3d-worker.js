@@ -1,17 +1,39 @@
 import {buildElevationSurface,buildFocusedTerrainPatch} from './terrain-3d-model.js';
+import {createTerrainSampler} from './render.js';
+import {buildTerrainSiteColors} from './terrain-3d-material.js';
+
+// A close-up worker owns one immutable copy of the world. Camera movement only
+// sends compact tile coordinates; it does not repeatedly clone thousands of
+// Voronoi polygons, terrain arrays and environmental records across threads.
+let detailContext=null;
 self.onmessage=({data})=>{
  try{
-  const {geometry,mesh,elevations,seaLevel,hydrology,waterMask,appearance}=data;
+  if(data.kind==='init-detail'){
+   const {geometry,mesh,elevations,appearance,grid}=data;
+   detailContext={geometry,mesh,elevations,appearance,grid,
+    sampler:createTerrainSampler(mesh,.72),
+    sourceColors:buildTerrainSiteColors(mesh,appearance||null)};
+   self.postMessage({kind:'detail-ready'});
+   return;
+  }
   if(data.kind==='detail'){
-   const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,data.grid,tile,{appearance}));
-   const transfer=patches.flatMap(patch=>[patch.vertexData.buffer,patch.indices.buffer,...(patch.materialColors?[patch.materialColors.buffer]:[])]);
+   if(!detailContext)throw Error('Close-up source is not initialized');
+   const {geometry,mesh,elevations,grid,sampler,sourceColors,appearance}=detailContext;
+   const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(
+    geometry,mesh,elevations,grid,tile,{appearance,sampler,sourceColors}));
+   const transfer=patches.flatMap(patch=>[patch.vertexData.buffer,patch.indices.buffer,
+    ...(patch.materialColors?[patch.materialColors.buffer]:[])]);
    self.postMessage({kind:'detail',key:data.key,patches},transfer);
    return;
   }
+  const {geometry,mesh,elevations,seaLevel,hydrology,waterMask,appearance}=data;
   const result=buildElevationSurface(geometry,mesh,elevations,value=>{
    self.postMessage({kind:'progress',value});
   },{seaLevel,hydrology,waterMask,appearance});
-  const transfer=[result.vertexData.buffer,result.insideMask.buffer,result.ocean.buffer,result.hydrology.rivers.buffer,result.hydrology.lakes.buffer,...result.levels.map(level=>level.indices.buffer),...result.uniformLevels.map(level=>level.indices.buffer)];
+  const transfer=[result.vertexData.buffer,result.insideMask.buffer,result.ocean.buffer,
+   result.hydrology.rivers.buffer,result.hydrology.lakes.buffer,
+   ...result.levels.map(level=>level.indices.buffer),
+   ...result.uniformLevels.map(level=>level.indices.buffer)];
   if(result.materialColors)transfer.push(result.materialColors.buffer);
   self.postMessage({kind:'success',result},transfer);
  }catch(error){

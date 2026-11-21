@@ -6,7 +6,7 @@ import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-material.js';
 
-const APP_VERSION='0.1.27',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.28',DB_NAME='worldgen-v1',KEY='workspace';
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');

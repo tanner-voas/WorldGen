@@ -148,6 +148,42 @@ export function visitTerrainSites(sampler,x,y,visitor){
  return count;
 }
 
+/** Exact nearest-site fallback for points outside the compact interpolation
+ * radius. Search spatial-hash buckets in expanding rings; stop as soon as
+ * every unvisited bucket is provably farther than the closest visited site.
+ * This is especially important at the empty corners of circular/elliptical
+ * maps, where scanning every polygon at every off-world grid vertex was slow.
+ * Ties retain the lowest original site index, matching the previous scan. */
+export function nearestTerrainSite(sampler,x,y){
+ const {mesh,buckets,cols,rows,dx,dy}=sampler;
+ if(!mesh.cells.length)return -1;
+ const cx=Math.max(0,Math.min(cols-1,Math.floor(x/dx)));
+ const cy=Math.max(0,Math.min(rows-1,Math.floor(y/dy)));
+ let best=-1,bestDistance=Infinity;
+ for(let ring=0;ring<Math.max(cols,rows);ring++){
+  const x0=Math.max(0,cx-ring),x1=Math.min(cols-1,cx+ring);
+  const y0=Math.max(0,cy-ring),y1=Math.min(rows-1,cy+ring);
+  for(let by=y0;by<=y1;by++)for(let bx=x0;bx<=x1;bx++){
+   if(Math.max(Math.abs(bx-cx),Math.abs(by-cy))!==ring)continue;
+   for(const i of buckets[by*cols+bx]){
+    const c=mesh.cells[i],distance=(c.x-x)**2+(c.y-y)**2;
+    if(distance<bestDistance||(distance===bestDistance&&i<best)){
+     bestDistance=distance;best=i;
+    }
+   }
+  }
+  const frontier=[];
+  if(x0>0)frontier.push(x-x0*dx);
+  if(x1<cols-1)frontier.push((x1+1)*dx-x);
+  if(y0>0)frontier.push(y-y0*dy);
+  if(y1<rows-1)frontier.push((y1+1)*dy-y);
+  if(!frontier.length)break;
+  const lowerBound=Math.max(0,Math.min(...frontier));
+  if(best>=0&&bestDistance<lowerBound*lowerBound)break;
+ }
+ return best;
+}
+
 export function rasterDimensions(output,detail){
  const budget=detail==='ultra'?1250000:detail==='high'?900000:600000;
  // Thin worlds may have only a handful of pixels across their short axis.

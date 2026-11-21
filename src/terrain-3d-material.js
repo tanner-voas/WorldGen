@@ -3,7 +3,7 @@
  * Color values are linear-ish normalized RGB factors used by the existing
  * physically lit WebGL terrain shader, not new terrain heights or biomes.
  */
-import {visitTerrainSites} from './render.js';
+import {visitTerrainSites,nearestTerrainSite} from './render.js';
 
 const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
 const mix=(a,b,t)=>a.map((v,k)=>v+(b[k]-v)*clamp(t));
@@ -125,10 +125,6 @@ export function sampleTerrainColor(sampler,siteColors,x,y){
  if(found&&weight>1e-15)return [r/weight,g/weight,b/weight];
  // For the rare sparse boundary gap, match sampleElevation's nearest-site
  // fallback rather than manufacturing a dark border at the world edge.
- let nearest=Infinity,index=0;
- for(let i=0;i<sampler.mesh.cells.length;i++){
-  const site=sampler.mesh.cells[i],d=(site.x-x)**2+(site.y-y)**2;
-  if(d<nearest){nearest=d;index=i;}
- }
- const k=index*3;return [siteColors[k],siteColors[k+1],siteColors[k+2]];
+ const k=nearestTerrainSite(sampler,x,y)*3;
+ return [siteColors[k],siteColors[k+1],siteColors[k+2]];
 }
