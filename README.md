@@ -1,4 +1,4 @@
-# WorldGen v0.1.1
+# WorldGen v0.1.2
 
 A layered, offline-capable map generator. Its codebase supports **two separate distributions**:
 
@@ -13,17 +13,21 @@ A layered, offline-capable map generator. Its codebase supports **two separate d
 2. **Tectonic plates** — continental/oceanic plate territories, motion, plate boundaries.
 3. **Elevation** — terrain noise, continental elevation and approximate plate-boundary uplift.
 4. **Oceans and coastlines** — explicit sea level derived from requested land coverage.
-5. **Landforms (new in v0.1.1)** — further terrain relief, ridges, valleys, slopes, geological landform classification and volcanic fields. Stage 5 *preserves* stage 4's land/water mask.
+5. **Landforms** — further terrain relief, ridges, valleys, slopes, geological landform classification and volcanic fields. Stage 5 *preserves* stage 4's land/water mask.
 
 Stages 6–12 (erosion, climate, hydrology, soils, biomes, habitats and local detail) remain non-functional placeholders. The current geology is a procedural approximation, **not** a physical tectonic simulator. It uses a Web Worker, not WebGPU; later stages can introduce higher-resolution terrain fields and GPU computation.
 
 ## Exploration and stage history
 
-Touch gestures support drag/pan, pinch zoom, cell inspection, and zoom-to-fit. The new **Expand map** control opens a full-height exploration view; **Show settings** returns to the generation panel. The floating stage navigator switches between generated layers even while the settings panel is hidden. Display modes include natural, Voronoi geometry, plates, elevation, coastlines, and landforms. An Overlays popover allows independently showing the mesh, tectonic boundaries, and coastlines, and provides a map legend. You can export the currently visible map as a PNG.
+Touch gestures support drag/pan, pinch zoom, cell inspection, and zoom-to-fit. Version 0.1.2 adds a **cell locator** (enter the cell ID to center and inspect it) and a **two-point distance tool** (tap each endpoint to see world-unit length and X/Y offsets; tap again to start another measurement). Pan/zoom remain available while measuring. The new **Expand map** control opens a full-height exploration view; **Show settings** returns to the generation panel. The floating stage navigator switches between generated layers even while the settings panel is hidden. Display modes include natural, Voronoi geometry, plates, elevation, coastlines, and landforms. An Overlays popover allows independently showing the mesh, tectonic boundaries, and coastlines, and provides a map legend. You can export the currently visible map as a PNG.
 
 World position, zoom, overlay visibility, display selection, and exploration mode are persisted between sessions. Generation is deterministic per stage seed; Voronoi generation reports progress from the worker. Changing settings invalidates only the current working layer's preview, not locked predecessors. Revising a locked earlier layer requires confirmation and truncates the active branch; make a named checkpoint first to keep the previous result.
 
 ## Saving and migration
+
+**Coastline coverage in new layers is calculated from Voronoi polygon area**, not cell count. Older locked coastlines are not changed, and their area coverage is calculated on display. The stage-4 record retains the old `landFraction` field for compatibility and adds `landAreaFraction` for new worlds.
+
+**Exports are stage-aware:** Export selected layer produces a self-contained world through the currently viewed stage; Export entire world includes all completed/working stages and requires the active preview to finish generating.
 
 All work is automatically cached in a dedicated IndexedDB namespace (`worldgen-v1`). Slider adjustments use a short save debounce to avoid serializing the whole world on every input event. Full save/export includes generated data **and** parameters, not only random seeds. Named checkpoints are stored as independent records with a small index, rather than rewriting every historical checkpoint whenever a new one is saved.
 
@@ -39,7 +43,7 @@ The module entrypoint is `./app.js` and the style entrypoint is `./styles.css` w
 
 ## Updating the existing GitHub repository
 
-This archive retains the original Git history, with v0.1.1 committed above v0.1.0. If `origin` is not already configured in the extracted folder, run `git remote add origin https://github.com/tanner-voas/WorldGen.git`. Then:
+Apply the v0.1.1 and v0.1.2 `git am` patches sequentially to the existing v0.1.0 WorldGen repository. If `origin` is not already configured in the extracted folder, run `git remote add origin https://github.com/tanner-voas/WorldGen.git`. Then:
 
 ```bash
 git push -u origin main

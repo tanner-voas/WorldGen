@@ -1,4 +1,4 @@
-// WorldGen v0.1.1 — deterministic geometry / geology engine; no browser globals.
+// WorldGen v0.1.2 — deterministic geometry / geology engine; no browser globals.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=1;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -25,6 +25,22 @@ export const DEFAULTS={
   5:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+/** Polygon area in world-square units, independent of site density. */
+export function cellArea(cell){
+ const p=cell.poly;let sum=0;
+ for(let j=0;j<p.length;j+=2){const k=(j+2)%p.length;sum+=p[j]*p[k+1]-p[k]*p[j+1];}
+ return Math.abs(sum)*0.5;
+}
+/** Recalculate geographic land share for old checkpoints that only stored cell share. */
+export function landAreaFraction(mesh,water){
+ if(!mesh?.cells||mesh.cells.length!==water?.length)return null;
+ let land=0,total=0;
+ for(let i=0;i<water.length;i++){
+  const a=cellArea(mesh.cells[i]);total+=a;if(!water[i])land+=a;
+ }
+ return total>0?land/total:null;
+}
+
 export function random(seed){let a=(seed|0)>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};}
 function hash2(x,y,seed){let n=Math.imul(x|0,0x1f123bb5)^Math.imul(y|0,0x4f1bbcdc)^Math.imul(seed|0,0x27d4eb2d);n=Math.imul(n^(n>>>15),0x85ebca6b);n=Math.imul(n^(n>>>13),0xc2b2ae35);return ((n^(n>>>16))>>>0)/4294967295;}
 function noise(x,y,s){const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;const u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy);const a=hash2(ix,iy,s),b=hash2(ix+1,iy,s),c=hash2(ix,iy+1,s),d=hash2(ix+1,iy+1,s);return ((a+(b-a)*u)*(1-v)+(c+(d-c)*u)*v)*2-1;}
@@ -149,9 +165,37 @@ export function generateElevation(mesh,plateData,settings){const cells=mesh.cell
  }
  return {elevations};
 }
-export function generateCoasts(elevationData,settings){const es=elevationData.elevations,sorted=[...es].sort((a,b)=>a-b),land=clamp(+settings.land,0.05,0.9),seaLevel=sorted[Math.min(sorted.length-1,Math.floor((1-land)*sorted.length))];
+/** Select sea level by *geographic area*, not cell count. Variable-size
+ * Voronoi cells otherwise make requested land coverage misleading.
+ * The optional mesh argument keeps the old direct-call API compatible.
+ */
+export function generateCoasts(elevationData,settings,mesh=null){
+ const es=elevationData.elevations,landTarget=clamp(Number(settings.land),0.05,0.9);
+ if(!Array.isArray(es)||!es.length)throw Error('Elevation samples required');
+ if(mesh&&mesh.cells.length!==es.length)throw Error('Elevation and mesh dimensions differ');
+ const weights=mesh?mesh.cells.map(cellArea):es.map(()=>1);
+ const indices=es.map((_,i)=>i).sort((a,b)=>es[a]-es[b]||a-b);
+ const total=weights.reduce((a,b)=>a+b,0);
+ if(!(total>0))throw Error('Invalid geographic cell areas');
+ const waterTarget=total*(1-landTarget);
+ let accumulated=0,bestDifference=Infinity,bestSplit=-1;
+ // A threshold may not split cells of exactly the same elevation.
+ for(let k=1;k<indices.length;k++){
+  accumulated+=weights[indices[k-1]];
+  if(es[indices[k-1]]===es[indices[k]])continue;
+  const difference=Math.abs(accumulated-waterTarget);
+  if(difference<bestDifference){bestDifference=difference;bestSplit=k;}
+ }
+ const seaLevel=bestSplit<0?es[indices[0]]+(landTarget>=0.5?-0.000001:0.000001):
+  (es[indices[bestSplit-1]]+es[indices[bestSplit]])*0.5;
  const water=es.map(value=>value<seaLevel?1:0);
- return {seaLevel,water,landFraction:water.filter(v=>!v).length/water.length};
+ const landFraction=water.filter(v=>!v).length/water.length;
+ const landAreaFraction=mesh?landAreaFractionFromWeights(weights,water,total):landFraction;
+ return {seaLevel,water,landFraction,landAreaFraction};
+}
+function landAreaFractionFromWeights(weights,water,total){
+ let land=0;for(let i=0;i<water.length;i++)if(!water[i])land+=weights[i];
+ return land/total;
 }
 /** Detailed relief is added *without mutating* the locked height/sea layers.
  * Preserve the layer-4 land/water mask so locked coastlines remain stable.
@@ -213,7 +257,7 @@ export function generateStage(stage,locked,settings,onProgress=null){
  if(stage===1)return generateMesh(settings,onProgress);
  if(stage===2){if(!mesh)throw Error('Voronoi mesh required');return generatePlates(mesh,settings);}
  if(stage===3){if(!locked[1]?.data)throw Error('Tectonic layer required');return generateElevation(mesh,locked[1].data,settings);}
- if(stage===4){if(!locked[2]?.data)throw Error('Elevation layer required');return generateCoasts(locked[2].data,settings);}
+ if(stage===4){if(!locked[2]?.data)throw Error('Elevation layer required');return generateCoasts(locked[2].data,settings,mesh);}
  if(stage===5){if(!locked[3]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[1].data,locked[2].data,locked[3].data,settings);}
  throw Error('Stage not yet implemented');
 }
@@ -243,10 +287,10 @@ export function validateWorld(world){
   if(record.stage===1)continue;
   if(!n)throw Error('Missing base mesh for a generated layer');
   const d=record.data;
-  if(record.stage===2&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)))throw Error('Invalid plate data');
+  if(record.stage===2&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))throw Error('Invalid plate data');
   if((record.stage===3||record.stage===5)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
   if(record.stage===4&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)))throw Error('Invalid coast data');
-  if(record.stage===5&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)))throw Error('Invalid landform data');
+  if(record.stage===5&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
  }
  return world;
 }
@@ -254,6 +298,13 @@ export function validateWorld(world){
 /** Upgrade incomplete settings in older saves without rewriting locked data.
  * In v0.1.0, stage 5 was only a placeholder and had no parameter defaults.
  */
+const INPUT_RANGES={
+  1:{count:[100,3200],jitter:[0,1.7],relaxation:[0,3]},
+  2:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
+  3:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
+  4:{land:[0.1,0.85]},
+  5:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]}
+};
 export function upgradeWorld(world){
  validateWorld(world);
  const stage=world.working.stage;
@@ -265,6 +316,12 @@ export function upgradeWorld(world){
    if(typeof baseline==='number'&&(!Number.isFinite(Number(next[key]))||next[key]===''))next[key]=baseline;
    if(typeof baseline==='string'&&!['jittered','random','clustered'].includes(next[key]))next[key]=baseline;
   }
+  for(const [key,[min,max]] of Object.entries(INPUT_RANGES[stage])){
+   next[key]=clamp(Number(next[key]),min,max);
+   if(['count','relaxation','plates'].includes(key))next[key]=Math.round(next[key]);
+  }
+  const seed=Number(next.seed);
+  next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;
   world.working.settings=next;
  }
  if(!['auto','natural','geometry','plates','height','coast','landforms'].includes(world.viewMode))world.viewMode='auto';

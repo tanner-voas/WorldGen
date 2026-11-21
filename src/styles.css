@@ -120,3 +120,11 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-legend i{display:inline-block;flex:0 0 13px;width:13px;height:13px;border-radius:3px;border:1px solid #ffffff44}
 .wg-legend p{grid-column:1/-1;font-size:11px;line-height:1.5;margin:0;color:#aec7bb}
 .wg-height-ramp{grid-column:1/-1;height:10px;border-radius:4px;background:linear-gradient(to right,#183653,#2b6882,#8a9d99,#6e9174,#aca87c,#89735f,#e8ece7)}
+/* v0.1.2: high-contrast map utilities remain usable with the console collapsed. */
+.wg-map-buttons button.wg-active-tool{background:#d6e6b6;color:#183b30;border-color:#f3f5d6;box-shadow:0 0 0 2px #d6e6b644}
+.wg-measure-readout{position:absolute;z-index:3;left:10px;bottom:84px;max-width:min(330px,calc(100% - 76px));padding:9px 12px;border:1px solid #8b9271;border-radius:10px;background:#17342ef2;color:#fbe9bb;font-size:12px;line-height:1.35;box-shadow:0 3px 14px #081f2780;pointer-events:none}
+.wg-measure-readout[hidden]{display:none}
+.wg-actions{flex-wrap:wrap}
+.wg-actions button{min-width:95px;white-space:normal}
+.wg-actions button[data-action="reset-settings"]{flex:1;min-width:95px}
+@media(max-height:560px){.wg-measure-readout{bottom:57px;max-width:calc(100% - 80px);font-size:10px}}

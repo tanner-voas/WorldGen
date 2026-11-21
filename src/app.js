@@ -1,6 +1,6 @@
-import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,WORLD_WIDTH,WORLD_HEIGHT,LANDFORM_NAMES} from './engine.js';
+import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,WORLD_WIDTH,WORLD_HEIGHT,LANDFORM_NAMES,cellArea,landAreaFraction} from './engine.js';
 
-const APP_VERSION='0.1.1',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.2',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -30,6 +30,9 @@ let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canv
 let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
 let persistTimer=null,viewportTimer=null,progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
 let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false;
+// Path2D objects and polygon extents are cached across map pans and zooms.
+let geometryCache={mesh:null,paths:null,bounds:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
+let measureMode=false,measurePoints=[];
 function db(){
  if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
   if(!('indexedDB' in globalThis)){reject(Error('IndexedDB unavailable'));return;}
@@ -94,10 +97,11 @@ function buildShell(){
    </header>
    <main class="wg-map-area">
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
-    <div class="wg-map-buttons"><button data-action="fit" aria-label="Fit world to view" title="Fit entire world">⤢</button><button data-action="zoom-in" aria-label="Zoom in">+</button><button data-action="zoom-out" aria-label="Zoom out">−</button></div>
+    <div class="wg-map-buttons"><button data-action="fit" aria-label="Fit world to view" title="Fit entire world">⤢</button><button data-action="zoom-in" aria-label="Zoom in">+</button><button data-action="zoom-out" aria-label="Zoom out">−</button><button data-action="locate-cell" aria-label="Go to cell number" title="Go to cell number">⌖</button><button data-action="measure" aria-label="Measure distance" aria-pressed="false" title="Measure two-point distance">↔</button></div>
     <div class="wg-display-bar"><label for="wg-palette" class="wg-screen-reader-only">Map display</label><select id="wg-palette" aria-label="Map display mode">${Object.entries(palettes).map(([id,name])=>`<option value="${id}">${name}</option>`).join('')}</select><button class="wg-overlay-trigger" data-action="toggle-overlays" aria-expanded="false">Overlays</button></div>
     <div class="wg-overlays" id="wg-overlays" hidden><label><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label><input id="wg-coast-borders" type="checkbox"> Coastlines</label><div id="wg-legend" class="wg-legend"></div></div>
     <div class="wg-map-scale" id="wg-map-scale">World width: 2,048 units</div>
+    <div class="wg-measure-readout" id="wg-measure-readout" aria-live="polite" hidden></div>
     <div class="wg-map-nav"><button data-action="prev-stage" aria-label="Previous completed stage">‹</button><span id="wg-map-layer">Layer 01</span><button data-action="next-stage" aria-label="Next completed stage">›</button></div>
     <button class="wg-explore-toggle" data-action="toggle-explore" aria-label="Toggle generation controls">Expand map</button>
     <div class="wg-inspector" id="wg-inspector" hidden></div>
@@ -128,7 +132,7 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].map(settingRow).join('')}<div class="wg-seed-row"><label for="wg-seed">Random seed</label><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div></div>`;
-  html+=`<div class="wg-actions"><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
+  html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
  }else if(row){
   html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p><div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
  }else{html+='<p class="wg-hint">Generate and lock the preceding layer to continue.</p>';}
@@ -142,7 +146,7 @@ function rebuildUI(){
  root.querySelector('#wg-map-layer').textContent=`${String(stage).padStart(2,'0')} · ${stageText(stage)}`;
  root.querySelector('[data-action="prev-stage"]').disabled=stage<=1;
  root.querySelector('[data-action="next-stage"]').disabled=stage>=Math.min(IMPLEMENTED,currentStage())||!latestData(stage+1);
- updateLegend();showBusy(generating);updateInspector();schedulePaint();
+ updateLegend();updateMeasurement();showBusy(generating);updateInspector();schedulePaint();
 }
 function settingRow([key,label,type,a,b,c]){
  const s=activeSettings(),value=s[key],shown=key==='continental'||key==='land'?`${Math.round(value*100)}%`:String(value);
@@ -153,7 +157,7 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
  case 1:return `${shortNumber(data.cells.length)} Voronoi cells across a 2:1 world.`;
  case 2:return `${data.plates.length} tectonic plates with distinct crust properties and motion.`;
  case 3:return `${data.elevations.length} elevation samples with plate-boundary uplift.`;
- case 4:return `${Math.round(data.landFraction*100)}% of the cells are above sea level.`;
+ case 4:{const area=data.landAreaFraction??landAreaFraction(latestData(1),data.water);return `${Math.round((area??data.landFraction)*100)}% of map area is above sea level (${Math.round(data.landFraction*100)}% of cells).`;}
   case 5:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
  default:return '';
 }}
@@ -210,7 +214,18 @@ function gradient(value,stops){const t=clamp(value,0,1);for(let i=1;i<stops.leng
 const heightColors=[[0,[24,54,83]],[.30,[43,104,130]],[.43,[138,157,153]],[.52,[110,145,116]],[.64,[172,168,124]],[.78,[137,115,95]],[1,[232,236,231]]];
 const landColors=[[0,[54,99,83]],[.38,[76,121,81]],[.57,[119,140,92]],[.72,[166,146,105]],[.88,[157,145,130]],[1,[234,235,223]]];
 const landformColors=['#1d4965','#4c8295','#b5a986','#6e9d6d','#779273','#9a977a','#d3cdbb','#746a65','#839778'];
-function resetBorderCache(){borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};}
+function resetBorderCache(){borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};colorCache.record=null;}
+function prepareGeometry(mesh){
+ if(geometryCache.mesh===mesh)return geometryCache;
+ const paths=[],bounds=[];
+ for(const c of mesh.cells){
+  const p=c.poly,shape=new Path2D();shape.moveTo(p[0],p[1]);
+  let left=p[0],right=p[0],top=p[1],bottom=p[1];
+  for(let k=2;k<p.length;k+=2){shape.lineTo(p[k],p[k+1]);left=Math.min(left,p[k]);right=Math.max(right,p[k]);top=Math.min(top,p[k+1]);bottom=Math.max(bottom,p[k+1]);}
+  shape.closePath();paths.push(shape);bounds.push([left,top,right,bottom]);
+ }
+ geometryCache={mesh,paths,bounds};return geometryCache;
+}
 function borderSegments(mesh,labels){
  const out=[],cells=mesh.cells;
  for(let i=0;i<cells.length;i++){
@@ -262,13 +277,16 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
  // Hide overlays that require layers which do not exist at the selected stage.
  const fallback=stage===1?'geometry':stage===2?'plates':stage===3?'height':stage===4?'coast':'landforms';
  const allowed=(mode==='plates'&&stage<2)||(mode==='height'&&stage<3)||(mode==='coast'&&stage<4)||(mode==='landforms'&&stage<5)?fallback:mode;
- const stroke=workspace.showEdges,points=mesh.cells;
- const bounds={x0:Math.max(0,-view.x/view.scale),y0:Math.max(0,-view.y/view.scale),x1:Math.min(WORLD_WIDTH,(width-view.x)/view.scale),y1:Math.min(WORLD_HEIGHT,(height-view.y)/view.scale)};
+ const stroke=workspace.showEdges,points=mesh.cells,geometry=prepareGeometry(mesh),record=stageRecord(stage)?.data;
+ if(colorCache.mesh!==mesh||colorCache.record!==record||colorCache.stage!==stage||colorCache.mode!==allowed){
+  colorCache={mesh,record,stage,mode:allowed,colors:points.map((_,i)=>colorForCell(i,stage,allowed))};
+ }
+ const bounds={x0:-view.x/view.scale,y0:-view.y/view.scale,x1:(width-view.x)/view.scale,y1:(height-view.y)/view.scale};
+ if(stroke){ctx.strokeStyle='rgba(5,20,28,.31)';ctx.lineWidth=.55/view.scale;}
  for(let i=0;i<points.length;i++){
-  const c=points[i],p=c.poly;if(c.x<bounds.x0-100||c.x>bounds.x1+100||c.y<bounds.y0-100||c.y>bounds.y1+100)continue;
-  ctx.beginPath();ctx.moveTo(p[0],p[1]);for(let k=2;k<p.length;k+=2)ctx.lineTo(p[k],p[k+1]);ctx.closePath();
-  ctx.fillStyle=colorForCell(i,stage,allowed);ctx.fill();
-  if(stroke){ctx.strokeStyle='rgba(5,20,28,.31)';ctx.lineWidth=.55/view.scale;ctx.stroke();}
+  const [x0,y0,x1,y1]=geometry.bounds[i];if(x1<bounds.x0||x0>bounds.x1||y1<bounds.y0||y0>bounds.y1)continue;
+  const path=geometry.paths[i];ctx.fillStyle=colorCache.colors[i];ctx.fill(path);
+  if(stroke)ctx.stroke(path);
  }
   if(stage>=2&&workspace.showPlateBorders&&latestData(2)){
    const plates=latestData(2);
@@ -281,7 +299,12 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
    drawSegments(borderCache.coastLines,'rgba(229,244,239,.93)',2.2);
   }
   if(selectedId!==null&&points[selectedId]){
-  const p=points[selectedId].poly;ctx.beginPath();ctx.moveTo(p[0],p[1]);for(let k=2;k<p.length;k+=2)ctx.lineTo(p[k],p[k+1]);ctx.closePath();ctx.strokeStyle='#f8d47e';ctx.lineWidth=3/view.scale;ctx.stroke();
+  ctx.strokeStyle='#f8d47e';ctx.lineWidth=3/view.scale;ctx.stroke(geometry.paths[selectedId]);
+ }
+ if(measurePoints.length){
+  const r=5/view.scale;
+  if(measurePoints.length===2){ctx.beginPath();ctx.moveTo(measurePoints[0].x,measurePoints[0].y);ctx.lineTo(measurePoints[1].x,measurePoints[1].y);ctx.strokeStyle='#f9dc8c';ctx.lineWidth=2.4/view.scale;ctx.stroke();}
+  for(const point of measurePoints){ctx.beginPath();ctx.arc(point.x,point.y,r,0,Math.PI*2);ctx.fillStyle='#f9dc8c';ctx.fill();ctx.strokeStyle='#17352c';ctx.lineWidth=1.5/view.scale;ctx.stroke();}
  }
  ctx.restore();
  const worldDisplay=worldToScreen(WORLD_WIDTH,0).x-worldToScreen(0,0).x;
@@ -306,9 +329,40 @@ function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!p
  if(stage>=3&&elevation)details.push(`Relative elevation: ${(stage>=5&&latestData(5)?latestData(5).elevations[selectedId]:elevation.elevations[selectedId]).toFixed(3)}`);
  if(stage>=4&&sea)details.push(sea.water[selectedId]?'Ocean cell':'Land cell');
  if(stage>=5&&latestData(5)){const l=latestData(5);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
- let area=0;for(let k=0;k<c.poly.length;k+=2){const next=(k+2)%c.poly.length;area+=c.poly[k]*c.poly[next+1]-c.poly[next]*c.poly[k+1];}
- details.push(`Cell area: ${shortNumber(Math.round(Math.abs(area)/2))} sq. units`);
+ details.push(`Cell area: ${shortNumber(Math.round(cellArea(c)))} sq. units`);
  panel.hidden=false;panel.innerHTML=`<button class="wg-inspector-close" data-action="close-inspector" aria-label="Close inspection">×</button><strong>Cell ${selectedId+1}</strong>${details.map(s=>`<span>${escapeHTML(s)}</span>`).join('')}`;
+}
+function updateMeasurement(){
+ const button=root.querySelector('[data-action="measure"]'),readout=root.querySelector('#wg-measure-readout');
+ if(button){button.classList.toggle('wg-active-tool',measureMode);button.setAttribute('aria-pressed',String(measureMode));}
+ if(!readout)return;
+ readout.hidden=!measureMode;
+ if(!measureMode)return;
+ if(!measurePoints.length)readout.textContent='Measure: tap your first point';
+ else if(measurePoints.length===1)readout.textContent=`Start (${Math.round(measurePoints[0].x)}, ${Math.round(measurePoints[0].y)}) · tap second point`;
+ else{
+  const [a,b]=measurePoints,dx=b.x-a.x,dy=b.y-a.y;
+  readout.textContent=`Distance: ${Math.hypot(dx,dy).toFixed(1)} units · Δx ${Math.round(dx)} · Δy ${Math.round(dy)} · tap to restart`;
+ }
+}
+function measureAt(x,y){
+ const point=screenToWorld(x,y);
+ if(point.x<0||point.y<0||point.x>WORLD_WIDTH||point.y>WORLD_HEIGHT){notice('Tap inside the world to measure',true);return;}
+ measurePoints=measurePoints.length>=2?[point]:[...measurePoints,point];
+ updateMeasurement();schedulePaint();
+}
+function locateCell(){
+ const mesh=latestData(1)||((currentStage()===1)?workspace.working.data:null);
+ if(!mesh?.cells){notice('Generate a Voronoi mesh first',true);return;}
+ const entered=prompt(`Go to cell number (1–${mesh.cells.length})`,selectedId===null?'':String(selectedId+1));
+ if(entered===null)return;
+ const id=Number(entered.trim());
+ if(!Number.isInteger(id)||id<1||id>mesh.cells.length){notice(`Enter a cell number from 1 to ${mesh.cells.length}`,true);return;}
+ selectedId=id-1;
+ const cell=mesh.cells[selectedId];view.scale=Math.max(view.scale,.55);
+ view.x=canvas.clientWidth/2-cell.x*view.scale;
+ view.y=canvas.clientHeight/2-cell.y*view.scale;
+ rememberViewport();updateInspector();schedulePaint();
 }
 function canvasPoint(event){const r=canvas.getBoundingClientRect();return{x:event.clientX-r.left,y:event.clientY-r.top};}
 function pointerStart(event){if(event.button!==0&&event.pointerType==='mouse')return;const p=canvasPoint(event);canvas.setPointerCapture(event.pointerId);movePointers.set(event.pointerId,p);panMoved=false;if(movePointers.size===1){gesture={kind:'pan',origin:p};}else if(movePointers.size>=2){const [a,b]=[...movePointers.values()];gesture={kind:'pinch',dist:Math.hypot(a.x-b.x,a.y-b.y),mid:{x:(a.x+b.x)/2,y:(a.y+b.y)/2}};}}
@@ -316,7 +370,7 @@ function pointerMove(event){if(!movePointers.has(event.pointerId))return;const n
  if(movePointers.size===1&&gesture?.kind==='pan'){const dx=next.x-before.x,dy=next.y-before.y;view.x+=dx;view.y+=dy;if(Math.abs(next.x-gesture.origin.x)+Math.abs(next.y-gesture.origin.y)>5)panMoved=true;rememberViewport();schedulePaint();}
  else if(movePointers.size>=2){const [a,b]=[...movePointers.values()],distance=Math.max(.1,Math.hypot(a.x-b.x,a.y-b.y)),middle={x:(a.x+b.x)/2,y:(a.y+b.y)/2};if(gesture?.kind==='pinch'){const ratio=clamp(distance/Math.max(gesture.dist,.1),.5,2);zoomBy(ratio,gesture.mid.x,gesture.mid.y);view.x+=middle.x-gesture.mid.x;view.y+=middle.y-gesture.mid.y;rememberViewport();gesture={kind:'pinch',dist:distance,mid:middle};}panMoved=true;schedulePaint();}
 }
-function pointerEnd(event){if(!movePointers.has(event.pointerId))return;const position=canvasPoint(event);movePointers.delete(event.pointerId);if(!movePointers.size){if(!panMoved&&gesture?.kind==='pan'){selectedId=pickCell(position.x,position.y);updateInspector();schedulePaint();}gesture=null;}else{gesture={kind:'pan',origin:[...movePointers.values()][0]};panMoved=true;}}
+function pointerEnd(event){if(!movePointers.has(event.pointerId))return;const position=canvasPoint(event);movePointers.delete(event.pointerId);if(!movePointers.size){if(event.type!=='pointercancel'&&!panMoved&&gesture?.kind==='pan'){if(measureMode)measureAt(position.x,position.y);else{selectedId=pickCell(position.x,position.y);updateInspector();schedulePaint();}}gesture=null;}else{gesture={kind:'pan',origin:[...movePointers.values()][0]};panMoved=true;}}
 function downloadText(text,name){const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);}
 function screenshot(){canvas.toBlob(blob=>{if(!blob){notice('Unable to capture map',true);return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${effectiveStage()}-map.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);notice('Current map view exported');},'image/png');}
 function worldThroughStage(stage){
@@ -325,7 +379,15 @@ function worldThroughStage(stage){
  return snapshotThroughStage(workspace,stage);
 }
 function exportWorld(world,labelStage){const full=structuredClone(world);full.exportedAt=new Date().toISOString();downloadText(JSON.stringify(full),`${full.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-stage${labelStage}-worldgen.json`);notice('Complete world file exported');}
-async function doExport(){if(generating||dirty){notice('Wait for generation to finish before exporting the working world',true);return;}exportWorld(workspace,availableThrough());}
+async function doExport(){
+ const stage=viewStage();
+ try{const selected=worldThroughStage(stage);exportWorld(selected,stage);}
+ catch(error){notice(`Export unavailable: ${error.message}`,true);}
+}
+async function exportAll(){
+ if(generating||dirty){notice('Wait for the current working layer to finish before exporting everything',true);return;}
+ exportWorld(workspace,availableThrough());
+}
 function availableThrough(){return workspace.locked.length+(workspace.working.data?1:0);}
 async function saveCheckpoint(){
  const stage=Math.min(viewStage(),availableThrough());
@@ -345,10 +407,10 @@ async function saveCheckpoint(){
 }
 function modal(html){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal" role="dialog" aria-modal="true" aria-label="World library"><div class="wg-modal-heading"><h2>World library</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
 function showLibrary(){
- modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export current</button><button data-action="screenshot">Map PNG</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
+ modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
 function closeModal(){root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
-function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;workspace=upgradeWorld(world);resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
+function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());upgradeWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
  switch(action){
@@ -358,6 +420,8 @@ async function handleAction(action,button){
   case 'close-modal':closeModal();break;
   case 'close-inspector':selectedId=null;updateInspector();schedulePaint();break;
   case 'fit':fitMap();break;
+  case 'locate-cell':locateCell();break;
+  case 'measure':measureMode=!measureMode;measurePoints=[];selectedId=null;updateInspector();updateMeasurement();schedulePaint();break;
   case 'toggle-explore':{const center=canvas?screenToWorld(canvas.clientWidth/2,canvas.clientHeight/2):null;workspace.exploreMode=!workspace.exploreMode;rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(center){view.x=canvas.clientWidth/2-center.x*view.scale;view.y=canvas.clientHeight/2-center.y*view.scale;}rememberViewport();schedulePaint();});persist();break;}
   case 'toggle-overlays':{const panel=root.querySelector('#wg-overlays'),open=panel.hidden;panel.hidden=!open;root.querySelector('[data-action="toggle-overlays"]').setAttribute('aria-expanded',String(open));break;}
   case 'prev-stage':case 'next-stage':{const shift=action==='prev-stage'?-1:1,target=workspace.viewStage+shift;if(target>=1&&target<=IMPLEMENTED&&latestData(target)){workspace.viewStage=target;selectedId=null;persist();rebuildUI();}break;}
@@ -366,10 +430,12 @@ async function handleAction(action,button){
   case 'zoom-out':zoomBy(1/1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'reroll':workspace.working.settings.seed=nextSeed();dirty=true;void persist();rebuildUI();scheduleGeneration(20);break;
   case 'regenerate':scheduleGeneration(10);break;
+  case 'reset-settings':workspace.working.settings={...DEFAULTS[currentStage()]};dirty=true;void persist();rebuildUI();scheduleGeneration(50);break;
   case 'lock':commitLayer();break;
   case 'edit-earlier':reviseStage(viewStage());break;
   case 'rename':{const name=prompt('World name',workspace.name);if(name!==null&&name.trim()){workspace.name=name.trim().slice(0,80);void persist();rebuildUI();}break;}
   case 'export':await doExport();break;
+  case 'export-all':await exportAll();break;
   case 'export-checkpoint':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(savedWorld)exportWorld(savedWorld,saved.stage);else notice('Checkpoint data unavailable',true);}break;}
   case 'import':root.querySelector('#wg-import').click();break;
   case 'new-world':if(confirm('Create a new world? Your current working world will be replaced. Save a checkpoint or export it first if needed.'))changeWorld(newWorld());break;
