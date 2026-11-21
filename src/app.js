@@ -5,7 +5,7 @@ import {rasterize} from './raster.js';
 import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 
-const APP_VERSION='0.1.20',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.21',DB_NAME='worldgen-v1',KEY='workspace';
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
@@ -1082,7 +1082,7 @@ function showElevation3D(){
  catch(error){notice(`3D terrain unavailable: ${error.message}`,true);return;}
  releaseRender();
  const description=terrain.usesEarlierTerrain?
-  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':'Later environmental layers are not shown in 3D yet'}`:
+  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':selected>=9?'Hydrology and later environmental surfaces use the eroded elevation':'Environmental colors not yet included in 3D'}`:
   `Layer ${String(terrain.terrainStage).padStart(2,'0')} · ${terrain.label} · ${terrain.hasCoast?'Actual sea level':'Provisional zero-height sea datum'}`;
  openModal(`3D terrain · ${terrain.label}`,`<div class="wg-3d-root">
   <div class="wg-3d-intro">Read-only GPU terrain · ${escapeHTML(description)}</div>
@@ -1099,7 +1099,7 @@ function showElevation3D(){
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
  const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
  terrainViewer=viewer;
- viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,label:terrain.label}).then(()=>{
+ viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,label:selected>=9?`${terrain.label} + hydrology`:terrain.label,hydrology:selected>=9?latestData(9):null,waterMask:selected>=9?latestData(5)?.water:null}).then(()=>{
   if(viewer.disposed)return;
   const loading=root.querySelector('#wg-3d-loading');if(loading)loading.hidden=true;
  }).catch(error=>{

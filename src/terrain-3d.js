@@ -61,6 +61,16 @@ vec3 colorRamp(float h){
 }
 void main(){
  vec3 sun=normalize(vec3(-.52,.80,.32));
+ if(uWater==2){
+  vec3 sunlit=vec3(.12,.64,.76);
+  fragColor=vec4(sunlit,1.0);
+  return;
+ }
+ if(uWater==3){
+  vec3 sunlit=vec3(.12,.43,.58);
+  fragColor=vec4(sunlit,.94);
+  return;
+ }
  if(uWater==1){
   vec3 view=normalize(uEye-vPosition);
   float glint=pow(max(dot(reflect(-sun,vec3(0.0,1.0,0.0)),view),0.0),46.0);
@@ -135,7 +145,7 @@ export class Terrain3DViewer{
     else{worker.terminate();this.worker=null;reject(Error(data.message||'Elevation mesh failed'));}
    };
    worker.onerror=e=>{worker.terminate();this.worker=null;reject(Error(e.message||'3D worker failed'));};
-   worker.postMessage({geometry,mesh,elevations,seaLevel});
+   worker.postMessage({geometry,mesh,elevations,seaLevel,hydrology:options.hydrology||null,waterMask:options.waterMask||null});
   });
   if(this.disposed)return;
   this.surface=surface;
@@ -178,6 +188,18 @@ export class Terrain3DViewer{
   gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,12,0);
   gl.disableVertexAttribArray(1);gl.vertexAttrib3f(1,0,1,0);
   gl.disableVertexAttribArray(2);gl.vertexAttrib1f(2,0);
+  // Separate arrays for channels and lakes share the position-only water shader.
+  this.hydroGeometry=[];
+  for(const [kind,vertices] of [[2,s.hydrology?.rivers],[3,s.hydrology?.lakes]]){
+   if(!vertices?.length)continue;
+   const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+   const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+   gl.bufferData(gl.ARRAY_BUFFER,vertices,gl.STATIC_DRAW);
+   gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,12,0);
+   gl.disableVertexAttribArray(1);gl.vertexAttrib3f(1,0,1,0);
+   gl.disableVertexAttribArray(2);gl.vertexAttrib1f(2,0);
+   this.hydroGeometry.push({kind,vao,buffer,count:vertices.length/3});
+  }
   gl.bindVertexArray(null);
  }
  resetCamera(){
@@ -244,8 +266,14 @@ export class Terrain3DViewer{
   gl.uniform1i(this.waterLocation,1);
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
   gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
+  // Water features are draped on the terrain and never modify its height.
+  // Keep depth testing so rivers cannot shine through mountains.
+  for(const water of this.hydroGeometry||[]){
+   gl.uniform1i(this.waterLocation,water.kind);
+   gl.bindVertexArray(water.vao);gl.drawArrays(gl.TRIANGLES,0,water.count);
+  }
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);
-  this.onStatus(`${this.label} · LOD ${selected===1?'High':selected===2?'Medium':'Wide'} · GPU`);
+  this.onStatus(`${this.label} · LOD ${selected===1?'High':selected===2?'Medium':'Wide'} · ${s.hydrology?.riverSegments||0} river triangles · ${s.hydrology?.lakeCells||0} lake cells`);
  }
  dispose(){
   if(this.disposed)return;
@@ -259,6 +287,7 @@ export class Terrain3DViewer{
   const gl=this.gl;
   if(gl&&!this.lost){
    for(const b of this.levelBuffers||[])gl.deleteBuffer(b.buffer);
+   for(const water of this.hydroGeometry||[]){gl.deleteBuffer(water.buffer);gl.deleteVertexArray(water.vao);}
    if(this.terrainVBO)gl.deleteBuffer(this.terrainVBO);
    if(this.waterVBO)gl.deleteBuffer(this.waterVBO);
    if(this.terrainVAO)gl.deleteVertexArray(this.terrainVAO);

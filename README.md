@@ -1,4 +1,4 @@
-# WorldGen v0.1.20
+# WorldGen v0.1.21
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -146,3 +146,10 @@ Later work can extend this renderer with coastlines, post-erosion elevation, riv
 ## v0.1.20 — 3D terrain history and physically positioned sea surface
 
 The 3D viewer now follows the generation stage selected in the world explorer. Layer 4 uses the original tectonic elevation, layer 5 uses coast-adjusted elevations and its computed sea level, layer 6 uses refined landforms, and layer 7 uses the eroded terrain. Layers 8–12 currently reuse the layer-7 terrain; later climate, water features and vegetation do not yet appear as 3D effects. The ocean surface is at the saved coastline sea level from layer 5 onward, not at an arbitrary height of zero. Render mode continues to be a read-only WebGL2 viewer without render settings or save-schema changes.
+
+
+## v0.1.21 — Hydrology in the 3D terrain viewer
+
+- From layer 9 onward, the interactive WebGL2 terrain viewer renders the saved hydrology network as narrow curved river surfaces and level lake surfaces, spatially aligned with the locked layer-7 terrain.
+- The water geometry is derived in the existing worker, transferred as typed arrays and drawn with depth testing so streams stay behind obscuring mountain ridges. It does not mutate any generation layer or the checkpoint schema.
+- Layers 4–8 retain their existing read-only terrain render and ocean datum. Climate, soils, biome and vegetation materials are still planned later. River widths and lake shores remain limited by the coarse Voronoi data until local terrain generation is introduced.
