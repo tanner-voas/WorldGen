@@ -1,4 +1,4 @@
-# WorldGen v0.1.4
+# WorldGen v0.1.5
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -13,7 +13,7 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–5,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
 3. **Tectonic plates** — plate territories, crust type and motion.
 4. **Elevation** — terrain noise, tectonic uplift and relief.
-5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count.
+5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. An optional *edge ocean bias* pushes the immediate outer boundary underwater for rectangles, circles, and ellipses. Its smooth falloff is adjustable in typical cell widths; the default is narrow (1.5 cell widths), capped at 12% of the shorter world dimension. Boundary-touching cells are always water while this setting is enabled, and the land-area target accounts for that forced edge water. Existing locked heights and older saved coastlines remain unchanged.
 6. **Landforms** — ridges, valleys, ruggedness, volcanoes; preserves the locked coast mask.
 7. **Erosion** — preliminary rainfall/runoff, sediment transfer, slope weathering, drainage channels; preserves earlier layers and locked coastlines.
 
@@ -25,6 +25,10 @@ Every generation parameter has a contextual **i** button explaining the effect o
 
 The first stage previews its geometry immediately. Lock it to proceed to Voronoi generation. Cell inspector area reports km² and the distance ruler reports km; map scale and zoom-to-fit use physical world dimensions.
 
+## Launcher-startup fix
+
+v0.1.5 also fixes the JavaScript `ReferenceError: Can't find variable: stored` shown when opening WorldGen from AppLauncher. The loaded workspace variable is now correctly scoped across storage recovery and interface initialization. The fix lives in WorldGen; no AppLauncher update is required.
+
 ## Navigation, saving and compatibility
 
 Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
@@ -35,7 +39,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.3 → v0.1.4 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.4 → v0.1.5 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test

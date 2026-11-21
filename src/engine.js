@@ -1,4 +1,4 @@
-// WorldGen v0.1.4 — parameterized world geometry and deterministic landscape engine.
+// WorldGen v0.1.5 — tapered ocean boundary and deterministic landscape engine.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -24,7 +24,7 @@ export const DEFAULTS={
   2:{averageArea:2300,distribution:'jittered',jitter:0.74,relaxation:1,seed:271828},
   3:{plates:15,continental:0.42,motion:0.7,seed:314159},
   4:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
-  5:{land:0.38,seed:141421},
+  5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,seed:141421},
   6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
   7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607}
 };
@@ -217,34 +217,113 @@ export function generateElevation(mesh,plateData,settings){const cells=mesh.cell
  }
  return {elevations};
 }
-/** Select sea level by *geographic area*, not cell count. Variable-size
- * Voronoi cells otherwise make requested land coverage misleading.
- * The optional mesh argument keeps the old direct-call API compatible.
+/** Distance to the actual clipped world outline, in km. For circles and
+ * ellipses the outline is the same 128-segment path as the Voronoi clipper,
+ * so both edge detection and the visual rim agree with saved mesh geometry.
+ */
+function outlineDistance(x,y,outline){
+ let nearest=Infinity;
+ for(let i=0;i<outline.length;i++){
+  const a=outline[i],b=outline[(i+1)%outline.length];
+  const dx=b[0]-a[0],dy=b[1]-a[1];
+  const t=clamp(((x-a[0])*dx+(y-a[1])*dy)/(dx*dx+dy*dy||1),0,1);
+  nearest=Math.min(nearest,Math.hypot(x-a[0]-t*dx,y-a[1]-t*dy));
+ }
+ return nearest;
+}
+function rectangleEdgeDistance(x,y,geometry){
+ return Math.min(x,geometry.width-x,y,geometry.height-y);
+}
+/** A cell is exposed to the outside if even one of its polygon vertices
+ * reaches the clipping outline. The rounded saved coordinates need a small
+ * tolerance. This catches long, irregular Voronoi boundary polygons, not just
+ * cells whose sites happen to be close to the outer edge.
+ */
+function boundaryCells(mesh,outline){
+ const rectangle=mesh.shape==='rectangle',distance=rectangle?
+  (x,y)=>rectangleEdgeDistance(x,y,mesh):(x,y)=>outlineDistance(x,y,outline);
+ const near=new Array(mesh.cells.length),touches=new Array(mesh.cells.length).fill(false);
+ for(let i=0;i<mesh.cells.length;i++){
+  const cell=mesh.cells[i];near[i]=Math.max(0,distance(cell.x,cell.y));
+  // The site-to-corner radius is an exact bound on polygon extent.
+  let maxRadius=0;
+  for(let j=0;j<cell.poly.length;j+=2)maxRadius=Math.max(maxRadius,Math.hypot(cell.poly[j]-cell.x,cell.poly[j+1]-cell.y));
+  if(near[i]>maxRadius+.002)continue;
+  for(let j=0;j<cell.poly.length;j+=2){
+   if(distance(cell.poly[j],cell.poly[j+1])<.002){touches[i]=true;break;}
+  }
+ }
+ return {near,touches};
+}
+/** Select geographic-area-weighted sea level with an edge-local ocean bias.
+ * The bias gently fades over a few average cell widths, leaving the interior
+ * elevation field unchanged. All actual boundary-contacting polygons remain
+ * water, even when a high continental plate reaches the edge. Edge water is
+ * counted toward the target rather than silently increasing overall ocean
+ * coverage whenever sufficient non-edge cells are available.
+ *
+ * With no mesh (legacy direct API) or zero edgeOcean, the old unmodified
+ * threshold behavior is preserved. This layer owns its adjusted elevations:
+ * the locked tectonic/elevation layers are never modified. Later landforms
+ * consume this coastal field so land/sea and heights remain consistent.
  */
 export function generateCoasts(elevationData,settings,mesh=null){
  const es=elevationData.elevations,landTarget=clamp(Number(settings.land),0.05,0.9);
  if(!Array.isArray(es)||!es.length)throw Error('Elevation samples required');
  if(mesh&&mesh.cells.length!==es.length)throw Error('Elevation and mesh dimensions differ');
  const weights=mesh?mesh.cells.map(cellArea):es.map(()=>1);
- const indices=es.map((_,i)=>i).sort((a,b)=>es[a]-es[b]||a-b);
  const total=weights.reduce((a,b)=>a+b,0);
  if(!(total>0))throw Error('Invalid geographic cell areas');
- const waterTarget=total*(1-landTarget);
- let accumulated=0,bestDifference=Infinity,bestSplit=-1;
- // A threshold may not split cells of exactly the same elevation.
- for(let k=1;k<indices.length;k++){
-  accumulated+=weights[indices[k-1]];
-  if(es[indices[k-1]]===es[indices[k]])continue;
-  const difference=Math.abs(accumulated-waterTarget);
-  if(difference<bestDifference){bestDifference=difference;bestSplit=k;}
+ const strength=clamp(Number(settings.edgeOcean)||0,0,1.5);
+ const fade=clamp(Number(settings.edgeFade)||1.5,.5,5);
+ const protectedCells=new Array(es.length).fill(false);
+ const elevations=es.slice();
+ let edgeWidthKm=0;
+ if(mesh&&strength>0){
+  const outline=boundaryPolygon(mesh);
+  const {near,touches}=boundaryCells(mesh,outline);
+  const averageCellWidth=Math.sqrt(total/es.length);
+  // Prevent the ocean rim from engulfing thin maps or very coarse meshes.
+  edgeWidthKm=Math.min(fade*averageCellWidth,Math.min(mesh.width,mesh.height)*.12);
+  for(let i=0;i<es.length;i++){
+   protectedCells[i]=touches[i];
+   const normalized=clamp(1-near[i]/edgeWidthKm,0,1);
+   const smooth=normalized*normalized*(3-2*normalized);
+   // No noise is added along the edge: the underlying geology supplies
+   // variation, while smoothstep prevents an artificial concentric ridge.
+   elevations[i]=+clamp(es[i]-strength*smooth,-1.8,1.8).toFixed(4);
+  }
  }
- const seaLevel=bestSplit<0?es[indices[0]]+(landTarget>=0.5?-0.000001:0.000001):
-  (es[indices[bestSplit-1]]+es[indices[bestSplit]])*0.5;
- const water=es.map(value=>value<seaLevel?1:0);
+ const available=es.map((_,i)=>i).filter(i=>!protectedCells[i]);
+ const forcedArea=weights.reduce((sum,a,i)=>sum+(protectedCells[i]?a:0),0);
+ const target=clamp(total*(1-landTarget)-forcedArea,0,total-forcedArea);
+ const indices=available.sort((a,b)=>elevations[a]-elevations[b]||a-b);
+ let seaLevel;
+ if(!indices.length)seaLevel=0;
+ else if(target<=0)seaLevel=elevations[indices[0]]-.000001;
+ else if(target>=total-forcedArea)seaLevel=elevations[indices.at(-1)]+.000001;
+ else{
+  let accumulated=0,bestDifference=Infinity,bestSplit=-1;
+  // A threshold may not split cells of identical elevation.
+  for(let k=1;k<indices.length;k++){
+   accumulated+=weights[indices[k-1]];
+   if(elevations[indices[k-1]]===elevations[indices[k]])continue;
+   const difference=Math.abs(accumulated-target);
+   if(difference<bestDifference){bestDifference=difference;bestSplit=k;}
+  }
+  seaLevel=bestSplit<0?elevations[indices[0]]+.000001:
+   (elevations[indices[bestSplit-1]]+elevations[indices[bestSplit]])*.5;
+ }
+ const water=elevations.map((value,i)=>protectedCells[i]||value<seaLevel?1:0);
+ // The boundary must be below sea level in the *derived* height field, too.
+ // Leave the original tectonic elevations intact for stage-4 exploration.
+ for(let i=0;i<elevations.length;i++)if(protectedCells[i])elevations[i]=Math.min(elevations[i],seaLevel-.015);
  const landFraction=water.filter(v=>!v).length/water.length;
  const landAreaFraction=mesh?landAreaFractionFromWeights(weights,water,total):landFraction;
- return {seaLevel,water,landFraction,landAreaFraction};
+ const edgeWaterCells=protectedCells.filter(Boolean).length;
+ return {seaLevel,water,landFraction,landAreaFraction,elevations,edgeWaterCells,edgeWidthKm:+edgeWidthKm.toFixed(2)};
 }
+
 function landAreaFractionFromWeights(weights,water,total){
  let land=0;for(let i=0;i<water.length;i++)if(!water[i])land+=weights[i];
  return land/total;
@@ -254,7 +333,7 @@ function landAreaFractionFromWeights(weights,water,total){
  * Class IDs match LANDFORM_NAMES and will remain part of the save schema.
  */
 export function generateLandforms(mesh,plateData,heightData,coastData,settings){
- const cells=mesh.cells,base=heightData.elevations,water=coastData.water,sea=coastData.seaLevel;
+ const cells=mesh.cells,base=coastData.elevations||heightData.elevations,water=coastData.water,sea=coastData.seaLevel;
  const {plates,owners}=plateData,seed=settings.seed|0;
  const elevations=new Array(cells.length),ruggedness=new Array(cells.length),classes=new Array(cells.length),volcanoes=[];
  const ridgePower=clamp(Number(settings.ridge),0,1.6),detailPower=clamp(Number(settings.detail),0,1.6);
@@ -446,7 +525,7 @@ export function validateWorld(world){
   const d=record.data;
   if(record.stage===3&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))throw Error('Invalid plate data');
   if((record.stage===4||record.stage===6||record.stage===7)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
-  if(record.stage===5&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)))throw Error('Invalid coast data');
+  if(record.stage===5&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)||d.elevations!==undefined&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2))))throw Error('Invalid coast data');
   if(record.stage===6&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
   if(record.stage===7){
    if(!Array.isArray(d.erosionDepth)||!Array.isArray(d.deposition)||!Array.isArray(d.flowTo)||!Array.isArray(d.discharge)||!Array.isArray(d.channels)
@@ -466,7 +545,7 @@ const INPUT_RANGES={
  2:{jitter:[0,1.7],relaxation:[0,3]},
  3:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
  4:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
- 5:{land:[0.1,0.85]},
+ 5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5]},
  6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
  7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]}
 };

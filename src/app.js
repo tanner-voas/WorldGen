@@ -1,6 +1,6 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,WORLD_WIDTH,WORLD_HEIGHT,LANDFORM_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 
-const APP_VERSION='0.1.4',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.5',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -29,7 +29,7 @@ const OPTIONS={
  ],
  3:[['plates','Plates','range',3,50,1,'linear'],['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear']],
  4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation','range',0.05,0.8,0.025,'linear']],
- 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear']],
+ 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (cell widths)','range',0.5,5,0.25,'linear']],
  6:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
  7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']]
 };
@@ -50,7 +50,9 @@ const PARAM_HELP={
  uplift:['Uplift strength','How strongly converging tectonic boundaries raise terrain. Higher values create more prominent mountain systems; lower values soften those effects.'],
  roughness:['Surface roughness','Strength of small-scale height noise before landform refinement. Increasing it makes elevation less smooth; decreasing it produces gentler terrain.'],
  continentalHeight:['Crust elevation','Relative starting height difference between continental and oceanic plates. Higher values lift continents and deepen relative crust contrast; lower values flatten that contrast.'],
- land:['Land coverage target','Desired share of the world surface ABOVE sea level by geographic area. Higher values expose more land; lower values flood more land. It is approximate at the resolution of individual cells.'],
+ land:['Land coverage target','Desired share of the world surface ABOVE sea level by geographic area. Higher values expose more land; lower values flood more land. It is approximate at the resolution of individual cells. An enabled edge-ocean buffer takes priority if the outermost cells already exceed the water target.'],
+ edgeOcean:['Edge ocean bias','Strength of the ocean-promoting effect at the outer world boundary. Higher values lower near-edge terrain relative to sea level, making a broader water margin without changing distant inland heights. When greater than zero, polygons touching the world boundary are guaranteed to be water. Zero disables this feature.'],
+ edgeFade:['Edge falloff width','How far the edge-ocean influence extends inland, measured in typical Voronoi cell widths. Smaller values concentrate the effect close to the map border; larger values make the transition gentler. The reach is capped to protect the center of narrow worlds.'],
  ridge:['Ridge strength','Strength of coherent mountainous ridges during landform refinement. Higher produces stronger belts and peaks; lower makes ridges subtler. Locked coastlines remain fixed.'],
  detail:['Terrain variation','Fine-scale variation added to existing elevations. Higher gives rougher and more diverse local terrain; lower keeps smoother landscapes.'],
  valleys:['Valley incision','How strongly valley-like features cut into the terrain. More produces deeper local valleys; less preserves uplands.'],
@@ -264,7 +266,7 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
  case 2:return `${shortNumber(data.cells.length)} Voronoi cells across ${shortNumber(Math.round(data.areaKm2))} km².`;
  case 3:return `${data.plates.length} tectonic plates with distinct crust properties and motion.`;
  case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift.`;
- case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% of map area is above sea level (${Math.round(data.landFraction*100)}% of cells).`;}
+ case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% land area · ${data.edgeWaterCells||0} protected outer-edge water cells${data.edgeWaterCells?` · fade ${data.edgeWidthKm} km`:''}.`;}
  case 6:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
  case 7:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)}.`;
  default:return '';
@@ -360,7 +362,7 @@ function drawSegments(segments,color,width){ctx.beginPath();for(const [x1,y1,x2,
 
 function colorForCell(i,stage,display){
  const mesh=latestData(2)||(currentStage()===2?workspace.working.data:null),plates=latestData(3),heights=latestData(4),coasts=latestData(5),landforms=latestData(6),erosion=latestData(7);
- const elev=(stage>=7?erosion?.elevations[i]:undefined)??(stage>=6?landforms?.elevations[i]:undefined)??heights?.elevations[i]??0;
+ const elev=(stage>=7?erosion?.elevations[i]:undefined)??(stage>=6?landforms?.elevations[i]:undefined)??(stage>=5?coasts?.elevations?.[i]:undefined)??heights?.elevations[i]??0;
  if(display==='geometry'||stage===1){const h=((i*137.508)%360);return `hsl(${150+(h%55)},${18+(i%4)*2}%,${36+(i%7)*3}%)`;}
  if((display==='plates'||stage===3)&&plates){const owner=plates.owners[i],plate=plates.plates[owner],h=(owner*137.508+22)%360;return `hsl(${h},${plate.continental?32:42}%,${plate.continental?49:34}%)`;}
  if(display==='landforms'&&stage>=6&&landforms)return landformColors[landforms.classes[i]]||'#6e9d6d';
@@ -463,7 +465,7 @@ function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!p
  const c=(latestData(2)||(currentStage()===2?workspace.working.data:null))?.cells?.[selectedId];if(!c){panel.hidden=true;return;}
  const stage=effectiveStage(),plate=latestData(3),elevation=latestData(4),sea=latestData(5),details=[`Position ${Math.round(c.x)}, ${Math.round(c.y)}`,`${c.neighbors.length} neighboring cells`];
  if(stage>=3&&plate){const p=plate.plates[plate.owners[selectedId]];details.push(`Plate ${p.id+1} · ${p.continental?'continental':'oceanic'} crust`);}
- if(stage>=4&&elevation)details.push(`Relative elevation: ${(stage>=7&&latestData(7)?latestData(7).elevations[selectedId]:stage>=6&&latestData(6)?latestData(6).elevations[selectedId]:elevation.elevations[selectedId]).toFixed(3)}`);
+ if(stage>=4&&elevation)details.push(`Relative elevation: ${(stage>=7&&latestData(7)?latestData(7).elevations[selectedId]:stage>=6&&latestData(6)?latestData(6).elevations[selectedId]:stage>=5&&sea?.elevations?sea.elevations[selectedId]:elevation.elevations[selectedId]).toFixed(3)}`);
  if(stage>=5&&sea)details.push(sea.water[selectedId]?'Ocean cell':'Land cell');
  if(stage>=6&&latestData(6)){const l=latestData(6);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
  if(stage>=7&&latestData(7)){const e=latestData(7);details.push(`Eroded depth: ${e.erosionDepth[selectedId].toFixed(4)}`);details.push(`Deposited depth: ${e.deposition[selectedId].toFixed(4)}`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
@@ -617,9 +619,13 @@ function bindEvents(){
  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushViewport();void flushPersist();}});
 }
 async function initialize(){
+ // Keep the loaded value available after the storage try/catch. Previously,
+ // `stored` was block-scoped inside try but referenced below it, causing a
+ // ReferenceError in Safari before WorldGen could open inside AppLauncher.
+ let stored=null;
  try{
-  const [stored,index,legacy,indexMigrated]=await Promise.all([storeGet(KEY),storeGet('checkpoint-index'),storeGet('snapshots'),storeGet('checkpoint-index-v2')]);
-  if(stored)workspace=upgradeWorld(stored);
+  const [saved,index,legacy,indexMigrated]=await Promise.all([storeGet(KEY),storeGet('checkpoint-index'),storeGet('snapshots'),storeGet('checkpoint-index-v2')]);
+  if(saved){workspace=upgradeWorld(saved);stored=saved;}
   if(Array.isArray(index)){
    snapshots=index.filter(s=>s?.id&&s?.stage&&s?.name);
    if(!indexMigrated){
