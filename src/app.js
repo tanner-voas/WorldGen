@@ -3,9 +3,9 @@ import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,renderInsideGeometry,rasterDimensions,comparisonStages,elevationsAt,distanceScale,createTerrainSampler,riverShorePoint} from './render.js';
 import {rasterize} from './raster.js';
 import {Terrain3DViewer} from './terrain-3d.js';
-import {ELEVATION_RENDER_STAGE} from './terrain-3d-model.js';
+import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 
-const APP_VERSION='0.1.19',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.20',DB_NAME='worldgen-v1',KEY='workspace';
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
@@ -1065,23 +1065,29 @@ async function saveCheckpoint(){
 function openModal(title,html,extraClass=''){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal ${extraClass}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><div class="wg-modal-heading"><h2>${escapeHTML(title)}</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
 function modal(html){openModal('World library',html);}
 function showLibrary(){
- modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Explore 3D elevation</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
+ modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Explore 3D terrain</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
-/** v0.1.19: the render command goes straight to the one supported 3D profile.
- * It reads layer 4 without modifying its saved data or revising later layers. */
+/** 3D terrain follows the selected historical layer and uses its real
+ * coastline sea level once that layer is available. Never changes saves. */
 function showElevation3D(){
- const selected=effectiveStage(),elevation=latestData(ELEVATION_RENDER_STAGE),mesh=latestData(2),geometry=latestData(1);
- if(selected<ELEVATION_RENDER_STAGE||!elevation||!mesh||!geometry){
+ const selected=effectiveStage(),mesh=latestData(2),geometry=latestData(1);
+ if(selected<ELEVATION_RENDER_STAGE||!latestData(ELEVATION_RENDER_STAGE)||!mesh||!geometry){
   notice('3D terrain becomes available at layer 4 — Elevation',true);return;
  }
- if(currentStage()===ELEVATION_RENDER_STAGE&&(generating||dirty)){
-  notice('Finish elevation generation before opening the 3D terrain viewer',true);return;
+ if(selected===currentStage()&&(generating||dirty)){
+  notice('Finish the current layer generation before opening the 3D terrain viewer',true);return;
  }
+ let terrain;
+ try{terrain=selectTerrainSource(selected,latestData);}
+ catch(error){notice(`3D terrain unavailable: ${error.message}`,true);return;}
  releaseRender();
- openModal('3D terrain · Elevation',`<div class="wg-3d-root">
-  <div class="wg-3d-intro">Read-only GPU terrain · Layer 04${selected>4?' · Earlier elevation shown; later layers not rendered yet':''}</div>
-  <div class="wg-3d-viewport"><canvas id="wg-3d-canvas" aria-label="Interactive 3D elevation terrain"></canvas>
-   <div class="wg-3d-loading" id="wg-3d-loading">Preparing 3D elevation…</div></div>
+ const description=terrain.usesEarlierTerrain?
+  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':'Later environmental layers are not shown in 3D yet'}`:
+  `Layer ${String(terrain.terrainStage).padStart(2,'0')} · ${terrain.label} · ${terrain.hasCoast?'Actual sea level':'Provisional zero-height sea datum'}`;
+ openModal(`3D terrain · ${terrain.label}`,`<div class="wg-3d-root">
+  <div class="wg-3d-intro">Read-only GPU terrain · ${escapeHTML(description)}</div>
+  <div class="wg-3d-viewport"><canvas id="wg-3d-canvas" aria-label="Interactive 3D terrain from ${escapeHTML(terrain.label)}"></canvas>
+   <div class="wg-3d-loading" id="wg-3d-loading">Preparing 3D terrain…</div></div>
   <div class="wg-3d-bar">
    <div class="wg-3d-modes"><button data-action="3d-orbit" class="wg-3d-selected" aria-pressed="true">Orbit</button><button data-action="3d-pan" aria-pressed="false">Pan</button></div>
    <button data-action="3d-zoom-out" aria-label="Zoom out">−</button>
@@ -1093,7 +1099,7 @@ function showElevation3D(){
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
  const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
  terrainViewer=viewer;
- viewer.initialize(geometry,mesh,elevation.elevations).then(()=>{
+ viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,label:terrain.label}).then(()=>{
   if(viewer.disposed)return;
   const loading=root.querySelector('#wg-3d-loading');if(loading)loading.hidden=true;
  }).catch(error=>{

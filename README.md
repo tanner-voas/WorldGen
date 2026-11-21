@@ -1,4 +1,4 @@
-# WorldGen v0.1.19
+# WorldGen v0.1.20
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -141,3 +141,8 @@ A separate computation worker converts the saved Voronoi elevations to a smoothl
 Orbit with one finger, pan with two fingers or Pan mode, pinch or use the zoom buttons, and Fit to recenter. The viewer requires WebGL2 and fails with a visible explanation on unsupported browsers. No external libraries/CDNs are required: all modules are included in the standalone and AppLauncher packages. Existing worlds and the v2 save schema remain unchanged.
 
 Later work can extend this renderer with coastlines, post-erosion elevation, rivers, climate materials and local subgrid detail.
+
+
+## v0.1.20 — 3D terrain history and physically positioned sea surface
+
+The 3D viewer now follows the generation stage selected in the world explorer. Layer 4 uses the original tectonic elevation, layer 5 uses coast-adjusted elevations and its computed sea level, layer 6 uses refined landforms, and layer 7 uses the eroded terrain. Layers 8–12 currently reuse the layer-7 terrain; later climate, water features and vegetation do not yet appear as 3D effects. The ocean surface is at the saved coastline sea level from layer 5 onward, not at an arbitrary height of zero. Render mode continues to be a read-only WebGL2 viewer without render settings or save-schema changes.

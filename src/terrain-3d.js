@@ -49,6 +49,7 @@ in vec3 vPosition;
 in float vElevation;
 uniform int uWater;
 uniform vec3 uEye;
+uniform float uSeaLevel;
 out vec4 fragColor;
 vec3 colorRamp(float h){
  if(h<-.28)return mix(vec3(.12,.26,.28),vec3(.25,.42,.39),smoothstep(-1.5,-.28,h));
@@ -70,8 +71,9 @@ void main(){
  vec3 n=normalize(vNormal);
  float shade=.54+.46*max(dot(n,sun),0.0);
  // Steeper faces reveal more rock; heights stay a continuous scalar field.
- vec3 albedo=colorRamp(vElevation);
- float exposed=(1.0-smoothstep(.30,.80,n.y))*smoothstep(.02,.7,vElevation);
+ float relativeHeight=vElevation-uSeaLevel;
+ vec3 albedo=colorRamp(relativeHeight);
+ float exposed=(1.0-smoothstep(.30,.80,n.y))*smoothstep(.02,.7,relativeHeight);
  albedo=mix(albedo,vec3(.48,.46,.42),exposed*.34);
  float ambient=clamp(.88+.12*n.y,.73,1.0);
  fragColor=vec4(albedo*shade*ambient,1.0);
@@ -96,7 +98,7 @@ export class Terrain3DViewer{
  constructor(canvas,{onStatus=()=>{}}={}){
   this.canvas=canvas;
   this.onStatus=onStatus;
-  this.disposed=false;this.lost=false;this.worker=null;this.gl=null;this.surface=null;
+  this.disposed=false;this.lost=false;this.worker=null;this.gl=null;this.surface=null;this.label='Elevation';
   this.pitch=.93;this.yaw=-.69;this.distance=7.5;this.target=[0,0,0];this.mode='orbit';
   this.pointers=new Map();this.gesture=null;this.pendingFrame=0;this.resources=[];
   this.onLost=e=>{e.preventDefault();this.lost=true;this.onStatus('Graphics context interrupted');};
@@ -117,9 +119,12 @@ export class Terrain3DViewer{
   this.resizeObserver=typeof ResizeObserver!=='undefined'?new ResizeObserver(()=>this.drawSoon()):null;
   this.resizeObserver?.observe(canvas);
  }
- async initialize(geometry,mesh,elevations){
+ async initialize(geometry,mesh,elevations,options={}){
   if(this.disposed)return;
-  this.onStatus('Preparing elevation mesh…');
+  this.label=options.label||'Elevation';
+  const seaLevel=Number(options.seaLevel??0);
+  if(!Number.isFinite(seaLevel))throw Error('Invalid 3D sea level');
+  this.onStatus(`Preparing ${this.label.toLowerCase()} mesh…`);
   const surface=await new Promise((resolve,reject)=>{
    const worker=new Worker(new URL('./terrain-3d-worker.js',import.meta.url),{type:'module'});
    this.worker=worker;
@@ -130,14 +135,14 @@ export class Terrain3DViewer{
     else{worker.terminate();this.worker=null;reject(Error(data.message||'Elevation mesh failed'));}
    };
    worker.onerror=e=>{worker.terminate();this.worker=null;reject(Error(e.message||'3D worker failed'));};
-   worker.postMessage({geometry,mesh,elevations});
+   worker.postMessage({geometry,mesh,elevations,seaLevel});
   });
   if(this.disposed)return;
   this.surface=surface;
   this._initializeGL();
   this._uploadSurface();
   this.resetCamera();
-  this.onStatus(`Elevation terrain · ${surface.cols} × ${surface.rows} grid`);
+  this.onStatus(`${this.label} terrain · ${surface.cols} × ${surface.rows} grid`);
  }
  _initializeGL(){
   const gl=this.canvas.getContext('webgl2',{alpha:false,depth:true,antialias:true,powerPreference:'high-performance'});
@@ -147,6 +152,7 @@ export class Terrain3DViewer{
   this.cameraLocation=gl.getUniformLocation(this.program,'uCamera');
   this.waterLocation=gl.getUniformLocation(this.program,'uWater');
   this.eyeLocation=gl.getUniformLocation(this.program,'uEye');
+  this.seaLocation=gl.getUniformLocation(this.program,'uSeaLevel');
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
   gl.disable(gl.CULL_FACE);
@@ -229,6 +235,7 @@ export class Terrain3DViewer{
   const projection=perspectiveMatrix(.77,width/height,.04,100);
   const view=lookAtMatrix(eye,this.target),camera=multiplyMatrices(projection,view);
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
+  gl.uniform1f(this.seaLocation,s.seaLevel||0);
   const selected=meshLod(this.distance);const level=this.levelBuffers.find(b=>b.step===selected)||this.levelBuffers[0];
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
@@ -238,7 +245,7 @@ export class Terrain3DViewer{
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
   gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);
-  this.onStatus(`Elevation · LOD ${selected===1?'High':selected===2?'Medium':'Wide'} · GPU`);
+  this.onStatus(`${this.label} · LOD ${selected===1?'High':selected===2?'Medium':'Wide'} · GPU`);
  }
  dispose(){
   if(this.disposed)return;
