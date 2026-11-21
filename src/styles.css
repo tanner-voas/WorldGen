@@ -158,3 +158,18 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 /* v0.1.6: readable climate palettes inside the collapsible map legend. */
 .wg-climate-temp-ramp{height:11px;border-radius:6px;background:linear-gradient(90deg,#314f8b,#659ac1,#d5eadb,#d5d284,#d38248,#a43a2f)}
 .wg-climate-rain-ramp{height:11px;border-radius:6px;background:linear-gradient(90deg,#c19960,#ceba7b,#96b77e,#4d959e,#25508f)}
+
+/* v0.1.12: high-resolution render dialog and preview. */
+.wg-render-dialog{width:min(100%,720px)}
+.wg-render-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;margin-top:14px}
+.wg-render-field{display:flex;flex-direction:column;gap:7px;color:#d4e5db;font-size:12px;min-width:0}
+.wg-render-field span{display:flex;justify-content:space-between;gap:8px}
+.wg-render-field output{color:#eaf5d5;font-weight:700;font-variant-numeric:tabular-nums}
+.wg-render-field select,.wg-render-field input[type=number]{min-height:38px;border:1px solid #55756b;background:#203b36;border-radius:8px;color:#ecf5eb;padding:4px 8px;width:100%}
+.wg-render-field input[type=range]{width:100%;margin:0;accent-color:#c0e2ad;height:24px}
+.wg-render-result{margin-top:16px}
+.wg-render-preview{margin-top:8px;border:1px solid #47675f;border-radius:12px;background:#11242b;padding:8px;max-height:min(58dvh,560px);overflow:auto;-webkit-overflow-scrolling:touch}
+.wg-render-preview canvas{display:block;width:100%;height:auto;border-radius:8px;background:#11242b}
+.wg-render-progress{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid #4a665b;border-radius:12px;background:#233d37;color:#d8eadf}
+.wg-render-progress progress{width:100%;height:14px}
+@media(max-width:560px){.wg-render-controls{grid-template-columns:1fr}}

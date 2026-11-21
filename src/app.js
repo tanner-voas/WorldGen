@@ -1,7 +1,8 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
+import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01} from './render.js';
 
-const APP_VERSION='0.1.11',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.12',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -120,7 +121,7 @@ const palettes={
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
 let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
 let persistTimer=null,viewportTimer=null,progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
-let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false;
+let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false,renderDraft=null;
 // Path2D objects and polygon extents are cached across map pans and zooms.
 let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
 let measureMode=false,measurePoints=[];
@@ -189,6 +190,7 @@ function buildShell(){
     <button class="wg-icon-button wg-home" data-action="home" aria-label="Return to launcher" title="Return to launcher">${host?'⌂':'≡'}</button>
     <div class="wg-headline"><div class="wg-eyebrow">WORLDGEN <span>v${APP_VERSION}</span></div><button class="wg-world-name" data-action="rename" title="Rename world">${escapeHTML(workspace.name)} <span>⌄</span></button></div>
     <button class="wg-icon-button" data-action="save" aria-label="Save checkpoint" title="Save checkpoint">▣</button>
+    <button class="wg-icon-button" data-action="render" aria-label="Render high-resolution map" title="Render high-resolution map">◫</button>
     <button class="wg-icon-button" data-action="library" aria-label="Open world library" title="World library">☰</button>
    </header>
    <main class="wg-map-area">
@@ -712,6 +714,153 @@ async function exportAll(){
  exportWorld(workspace,availableThrough());
 }
 function availableThrough(){return workspace.locked.length+(workspace.working.data?1:0);}
+
+function canRenderStage(stage){return stage>=MIN_RENDER_STAGE&&stage<=availableThrough()&&!!latestData(stage)&&!!latestData(2);}
+function renderableStages(){const out=[];for(let stage=MIN_RENDER_STAGE;stage<=availableThrough();stage++)if(latestData(stage))out.push(stage);return out;}
+function blendRenderSettings(next){
+ const stage=Math.max(MIN_RENDER_STAGE,Number(next?.stage)||effectiveStage());
+ const base=defaultRenderSettings(stage);
+ const supported=renderOptionSupport(stage);
+ const mixed={...base,...next,stage};
+ if(!renderModeOptions(stage).some(([id])=>id===mixed.mode))mixed.mode=base.mode;
+ if(!supported.hydro)mixed.hydro=0;
+ if(!supported.climateTint)mixed.climateTint=0;
+ if(!supported.biomeTint)mixed.biomeTint=0;
+ if(!supported.vegetationTint)mixed.vegetationTint=0;
+ mixed.longEdge=RENDER_SIZE_OPTIONS.includes(Number(mixed.longEdge))?Number(mixed.longEdge):base.longEdge;
+ return mixed;
+}
+function showRenderDialog(stage=effectiveStage()){
+ const choices=renderableStages();
+ if(!choices.length){notice(`Rendering becomes available once layer ${MIN_RENDER_STAGE} is generated`,true);return;}
+ renderDraft=blendRenderSettings(renderDraft?.stage?renderDraft:{stage:Math.min(Math.max(stage,choices[0]),choices.at(-1))});
+ const supports=renderOptionSupport(renderDraft.stage),modeOptions=renderModeOptions(renderDraft.stage);
+ openModal('Render map', `<p class="wg-modal-caption">Generate a heavier, higher-resolution static render from any completed world state from layer ${MIN_RENDER_STAGE} onward. This does not lock a new layer or alter generation history.</p>
+  <div class="wg-render-controls">
+   <label class="wg-render-field"><span>Render from layer</span><select data-render-setting="stage">${choices.map(n=>`<option value="${n}" ${n===renderDraft.stage?'selected':''}>${String(n).padStart(2,'0')} · ${escapeHTML(stageText(n))}</option>`).join('')}</select></label>
+   <label class="wg-render-field"><span>Base render mode</span><select data-render-setting="mode">${modeOptions.map(([id,label])=>`<option value="${id}" ${id===renderDraft.mode?'selected':''}>${escapeHTML(label)}</option>`).join('')}</select></label>
+   <label class="wg-render-field"><span>Longest edge (px)</span><select data-render-setting="longEdge">${RENDER_SIZE_OPTIONS.map(px=>`<option value="${px}" ${px===renderDraft.longEdge?'selected':''}>${shortNumber(px)} px</option>`).join('')}</select></label>
+   <label class="wg-render-field"><span>LOD / detail</span><select data-render-setting="detail"><option value="preview" ${renderDraft.detail==='preview'?'selected':''}>Preview</option><option value="standard" ${renderDraft.detail==='standard'?'selected':''}>Standard</option><option value="high" ${renderDraft.detail==='high'?'selected':''}>High</option><option value="ultra" ${renderDraft.detail==='ultra'?'selected':''}>Ultra</option></select></label>
+   <label class="wg-render-field"><span>Boundary blending <output>${Math.round(renderDraft.blend*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.blend}" data-render-setting="blend"></label>
+   <label class="wg-render-field"><span>Relief shading <output>${Math.round(renderDraft.relief*100)}%</output></span><input type="range" min="0" max="1.5" step="0.05" value="${renderDraft.relief}" data-render-setting="relief"></label>
+   ${supports.hydro?`<label class="wg-render-field"><span>River and lake emphasis <output>${Math.round(renderDraft.hydro*100)}%</output></span><input type="range" min="0" max="1.5" step="0.05" value="${renderDraft.hydro}" data-render-setting="hydro"></label>`:''}
+   ${supports.climateTint?`<label class="wg-render-field"><span>Climate tint <output>${Math.round(renderDraft.climateTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.climateTint}" data-render-setting="climateTint"></label>`:''}
+   ${supports.biomeTint?`<label class="wg-render-field"><span>Biome tint <output>${Math.round(renderDraft.biomeTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.biomeTint}" data-render-setting="biomeTint"></label>`:''}
+   ${supports.vegetationTint?`<label class="wg-render-field"><span>Vegetation tint <output>${Math.round(renderDraft.vegetationTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.vegetationTint}" data-render-setting="vegetationTint"></label>`:''}
+  </div>
+  <div class="wg-actions"><button class="wg-secondary" data-action="render-current-view">Quick view PNG</button><button class="wg-primary" data-action="render-generate">Generate render</button></div>
+  <div id="wg-render-result" class="wg-render-result"><p class="wg-hint">Choose settings, then generate a high-resolution static render. After generation, you can preview it here and export the PNG.</p></div>`, 'wg-render-dialog');
+}
+function geometryClipPath(context,geometry,scaleX,scaleY){
+ context.beginPath();
+ if(geometry.shape==='rectangle')context.rect(0,0,geometry.width*scaleX,geometry.height*scaleY);
+ else context.ellipse(geometry.width*scaleX/2,geometry.height*scaleY/2,geometry.width*scaleX/2,geometry.height*scaleY/2,0,0,Math.PI*2);
+}
+let renderColorCanvas=null,renderColorCtx=null;
+function parseRenderColor(value){
+ if(!renderColorCanvas){renderColorCanvas=document.createElement('canvas');renderColorCanvas.width=renderColorCanvas.height=1;renderColorCtx=renderColorCanvas.getContext('2d');}
+ renderColorCtx.fillStyle='#000';renderColorCtx.fillStyle=value;const normalized=renderColorCtx.fillStyle;
+ if(normalized.startsWith('#')){
+  const hex=normalized.slice(1);const size=hex.length===3?1:2;
+  const parts=size===1?hex.split('').map(ch=>parseInt(ch+ch,16)):[parseInt(hex.slice(0,2),16),parseInt(hex.slice(2,4),16),parseInt(hex.slice(4,6),16)];
+  return parts;
+ }
+ const nums=normalized.match(/\d+(?:\.\d+)?/g)?.map(Number)||[0,0,0];
+ return nums.slice(0,3);
+}
+function rgbToCss(rgb){return `rgb(${rgb.map(v=>Math.max(0,Math.min(255,Math.round(v)))).join(',')})`;}
+function mixRgb(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function mulRgb(a,f){return [a[0]*f,a[1]*f,a[2]*f];}
+function renderNaturalColor(i,stage,settings){
+ const baseMode=settings.mode||'natural';
+ let rgb=parseRenderColor(colorForCell(i,stage,baseMode==='natural'?'auto':baseMode));
+ const climate=stage>=8?latestData(8):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null;
+ if(climate&&settings.climateTint>0){
+  const dry=[193,165,110],wet=[76,132,151];
+  rgb=mixRgb(rgb,mixRgb(dry,wet,clamp01(climate.moisture[i])),clamp01(settings.climateTint)*0.45);
+ }
+ if(biomes&&settings.biomeTint>0)rgb=mixRgb(rgb,parseRenderColor(colorForCell(i,stage,'biomes')),clamp01(settings.biomeTint)*0.5);
+ if(vegetation&&settings.vegetationTint>0)rgb=mixRgb(rgb,parseRenderColor(colorForCell(i,stage,'vegetation')),clamp01(settings.vegetationTint)*0.55);
+ return rgb;
+}
+function renderShadeArray(stage,amount){
+ const mesh=latestData(2),heights=(stage>=7?latestData(7)?.elevations:null)||(stage>=6?latestData(6)?.elevations:null)||(stage>=5?latestData(5)?.elevations:null)||latestData(4)?.elevations;
+ if(!mesh?.cells||!heights||amount<=0)return null;
+ const light=[-0.62,-0.5,1.08];
+ const ll=Math.hypot(...light);light[0]/=ll;light[1]/=ll;light[2]/=ll;
+ const shade=new Float32Array(mesh.cells.length);
+ for(let i=0;i<mesh.cells.length;i++){
+  const c=mesh.cells[i];let gx=0,gy=0;
+  for(const j of c.neighbors){const dx=mesh.cells[j].x-c.x,dy=mesh.cells[j].y-c.y,d=Math.hypot(dx,dy)||1;const de=heights[j]-heights[i];gx+=de*dx/(d*d);gy+=de*dy/(d*d);} 
+  const nx=-gx*65*amount,ny=-gy*65*amount,nz=1;const nl=Math.hypot(nx,ny,nz)||1;const dot=(nx/nl)*light[0]+(ny/nl)*light[1]+(nz/nl)*light[2];shade[i]=Math.max(0.45,Math.min(1.35,0.83+dot*0.42));
+ }
+ return shade;
+}
+async function generateRenderImage(settings){
+ const stage=settings.stage,mesh=latestData(2),geometry=geometryData();
+ if(!mesh?.cells||!latestData(stage))throw Error('This stage is not ready to render');
+ const dims=outputDimensions(geometry.width,geometry.height,settings.longEdge),preset=detailPreset(settings.detail);
+ const hostEl=root.querySelector('#wg-render-result');
+ if(hostEl)hostEl.innerHTML=`<div class="wg-render-progress"><div>Rendering ${shortNumber(dims.width)} × ${shortNumber(dims.height)} image…</div><progress id="wg-render-progress" max="100" value="0"></progress></div>`;
+ const base=document.createElement('canvas');base.width=dims.width;base.height=dims.height;const bctx=base.getContext('2d',{alpha:false});
+ bctx.fillStyle='#11252f';bctx.fillRect(0,0,base.width,base.height);
+ const sx=dims.width/geometry.width,sy=dims.height/geometry.height;
+ const shade=renderShadeArray(stage,Number(settings.relief)||0);
+ const colors=mesh.cells.map((_,i)=>renderNaturalColor(i,stage,settings));
+ const progress=root.querySelector('#wg-render-progress');
+ const batch=Math.max(40,Math.round(mesh.cells.length/16));
+ bctx.save();geometryClipPath(bctx,geometry,sx,sy);bctx.clip();
+ for(let start=0;start<mesh.cells.length;start+=batch){
+  const end=Math.min(mesh.cells.length,start+batch);
+  for(let i=start;i<end;i++){
+   const cell=mesh.cells[i],poly=cell.poly;const rgb=shade?mulRgb(colors[i],shade[i]):colors[i];
+   bctx.beginPath();bctx.moveTo(poly[0]*sx,poly[1]*sy);for(let k=2;k<poly.length;k+=2)bctx.lineTo(poly[k]*sx,poly[k+1]*sy);bctx.closePath();bctx.fillStyle=rgbToCss(rgb);bctx.fill();
+  }
+  if(progress)progress.value=Math.round(start/mesh.cells.length*55);
+  await new Promise(r=>requestAnimationFrame(r));
+ }
+ bctx.restore();
+ const blurPx=Math.max(0,settings.blend*12*preset.blur*(dims.longEdge?1:1));
+ let finalCanvas=base;
+ if(blurPx>.1){
+  const smoothed=document.createElement('canvas');smoothed.width=base.width;smoothed.height=base.height;const sctx=smoothed.getContext('2d',{alpha:false});
+  sctx.fillStyle='#11252f';sctx.fillRect(0,0,smoothed.width,smoothed.height);sctx.save();geometryClipPath(sctx,geometry,sx,sy);sctx.clip();sctx.filter=`blur(${blurPx.toFixed(2)}px)`;sctx.drawImage(base,0,0);sctx.restore();sctx.filter='none';finalCanvas=smoothed;
+ }
+ const fctx=finalCanvas.getContext('2d');
+ const coasts=stage>=5?latestData(5):null;
+ if(coasts){
+  fctx.save();geometryClipPath(fctx,geometry,sx,sy);fctx.clip();
+  fctx.strokeStyle='rgba(232,239,233,.45)';fctx.lineWidth=Math.max(0.8,1.25+settings.coast*1.8);
+  for(let i=0;i<mesh.cells.length;i++){
+   if(coasts.water[i])continue;const cell=mesh.cells[i];if(!cell.neighbors.some(j=>coasts.water[j]))continue;const poly=cell.poly;
+   fctx.beginPath();fctx.moveTo(poly[0]*sx,poly[1]*sy);for(let k=2;k<poly.length;k+=2)fctx.lineTo(poly[k]*sx,poly[k+1]*sy);fctx.closePath();fctx.stroke();
+  }
+  fctx.restore();
+ }
+ if(stage>=9&&settings.hydro>0&&latestData(9)){
+  const hydro=latestData(9),maxVolume=Math.max(.001,hydro.summary.maxDischarge);fctx.save();geometryClipPath(fctx,geometry,sx,sy);fctx.clip();fctx.lineCap='round';fctx.strokeStyle='rgba(102,215,238,.92)';
+  for(const i of hydro.channels){const j=hydro.flowTo[i];if(j<0||hydro.lakeId[i]>=0&&hydro.lakeId[j]===hydro.lakeId[i])continue;const volume=Math.sqrt(Math.max(0,Math.min(1,hydro.discharge[i]/maxVolume)));fctx.lineWidth=(0.8+4.4*volume*settings.hydro*preset.riverWidth);fctx.beginPath();fctx.moveTo(mesh.cells[i].x*sx,mesh.cells[i].y*sy);fctx.lineTo(mesh.cells[j].x*sx,mesh.cells[j].y*sy);fctx.stroke();}
+  fctx.restore();
+ }
+ if(progress)progress.value=100;
+ return finalCanvas;
+}
+async function renderCurrentView(){
+ screenshot();closeModal();
+}
+async function runRenderGeneration(){
+ try{
+  const canvasOut=await generateRenderImage(renderDraft);
+  const result=root.querySelector('#wg-render-result');if(!result)return;
+  result.innerHTML=`<div class="wg-render-preview"><canvas id="wg-render-canvas"></canvas></div><div class="wg-actions"><button class="wg-secondary" data-action="render-regenerate">Render again</button><button class="wg-primary" data-action="render-download">Download PNG</button></div><p class="wg-modal-caption">Static render from layer ${renderDraft.stage}. It is generated separately from the interactive map and does not change your saved world.</p>`;
+  const target=result.querySelector('#wg-render-canvas');target.width=canvasOut.width;target.height=canvasOut.height;target.getContext('2d').drawImage(canvasOut,0,0);result.dataset.ready='1';
+  notice('High-resolution render ready');
+ }catch(error){const result=root.querySelector('#wg-render-result');if(result)result.innerHTML=`<p class="wg-hint">Render failed: ${escapeHTML(error.message)}</p>`;notice(`Render failed: ${error.message}`,true);}
+}
+function downloadRenderedImage(){
+ const canvasOut=root.querySelector('#wg-render-canvas');if(!canvasOut){notice('Generate a render first',true);return;}
+ canvasOut.toBlob(blob=>{if(!blob){notice('PNG export failed',true);return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${renderDraft.stage}-render.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);notice('Rendered PNG downloaded');},'image/png');
+}
 async function saveCheckpoint(){
  const stage=viewStage();
  if(!latestData(stage)){notice('This layer has no preview yet. Finish generating it or select an earlier completed layer.',true);return;}
@@ -728,9 +877,10 @@ async function saveCheckpoint(){
   notice(`Layer ${stage} checkpoint saved: ${name}`);
  }catch(error){snapshots=snapshots.filter(s=>s.id!==snap.id);notice(`Checkpoint could not be saved: ${error.message}`,true);}
 }
-function modal(html){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal" role="dialog" aria-modal="true" aria-label="World library"><div class="wg-modal-heading"><h2>World library</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
+function openModal(title,html,extraClass=''){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal ${extraClass}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><div class="wg-modal-heading"><h2>${escapeHTML(title)}</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
+function modal(html){openModal('World library',html);}
 function showLibrary(){
- modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
+ modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Render image</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
 function closeModal(){root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
 function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
@@ -740,6 +890,7 @@ async function handleAction(action,button){
   case 'home':{flushViewport();await flushPersist();if(host?.returnToLauncher)host.returnToLauncher();else showLibrary();break;}
   case 'save':await saveCheckpoint();break;
   case 'library':showLibrary();break;
+  case 'render':showRenderDialog();break;
   case 'close-modal':closeModal();break;
   case 'close-inspector':selectedId=null;updateInspector();schedulePaint();break;
   case 'fit':fitMap();break;
@@ -749,6 +900,10 @@ async function handleAction(action,button){
   case 'toggle-overlays':{const panel=root.querySelector('#wg-overlays'),open=panel.hidden;panel.hidden=!open;root.querySelector('[data-action="toggle-overlays"]').setAttribute('aria-expanded',String(open));break;}
   case 'prev-stage':case 'next-stage':{const shift=action==='prev-stage'?-1:1,target=workspace.viewStage+shift;if(target>=1&&target<=IMPLEMENTED&&latestData(target)){workspace.viewStage=target;selectedId=null;persist();rebuildUI();}break;}
   case 'screenshot':screenshot();break;
+  case 'render-current-view':await renderCurrentView();break;
+  case 'render-generate':await runRenderGeneration();break;
+  case 'render-regenerate':showRenderDialog(renderDraft?.stage||effectiveStage());break;
+  case 'render-download':downloadRenderedImage();break;
   case 'zoom-in':zoomBy(1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'zoom-out':zoomBy(1/1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'reroll':workspace.working.settings.seed=nextSeed();dirty=true;void persist();rebuildUI();scheduleGeneration(20);break;
@@ -777,10 +932,16 @@ function bindEvents(){
  // clear and retype a number without generating an invalid intermediate world.
  root.addEventListener('input',event=>{
   const el=event.target,key=el.dataset?.slider;
-  if(!key)return;
-  const [min,max]=controlBounds(currentStage(),key);
-  const value=key==='averageArea'?sliderToArea(el.value,min,max):Number(el.value);
-  applyParameter(key,value,false);
+  if(key){
+   const [min,max]=controlBounds(currentStage(),key);
+   const value=key==='averageArea'?sliderToArea(el.value,min,max):Number(el.value);
+   applyParameter(key,value,false);
+   return;
+  }
+  if(el.dataset?.renderSetting&&el.type==='range'){
+   renderDraft=blendRenderSettings({...renderDraft,[el.dataset.renderSetting]:Number(el.value)});
+   const output=el.closest('label')?.querySelector('output');if(output)output.textContent=`${Math.round(Number(el.value)*100)}%`;
+  }
  });
  root.addEventListener('change',event=>{
   const el=event.target;
@@ -798,6 +959,15 @@ function bindEvents(){
     el.value=String(workspace.working.settings.seed);return;
    }
    if(seed!==workspace.working.settings.seed){workspace.working.settings.seed=seed;dirty=true;void persist();showBusy(generating);scheduleGeneration(40);}
+  }
+  if(el.dataset?.renderSetting){
+   const key=el.dataset.renderSetting;
+   const value=el.type==='range'||el.type==='number'?Number(el.value):el.value;
+   if(key==='stage')renderDraft=blendRenderSettings({...renderDraft,stage:Number(value)});
+   else renderDraft=blendRenderSettings({...renderDraft,[key]:value});
+   if(key==='stage')showRenderDialog(renderDraft.stage);
+   else if(el.previousElementSibling?.querySelector?.('output'))el.previousElementSibling.querySelector('output').textContent=`${Math.round(Number(value)*100)}%`;
+   return;
   }
   if(el.id==='wg-import')void handleImport(el.files?.[0]);
  });

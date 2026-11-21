@@ -84,3 +84,8 @@ Future work includes adaptive polygon batching for much larger worlds, higher-re
 - River and lakeshore effects propagate across only a few mesh neighbors. Oceans and lakes have no vegetation; permanent snow/ice remains bare. None of the earlier locked layers are modified.
 - Stage-12 named checkpoints store all twelve layers. Earlier WorldGen saves (including v0.1.10 stage-11 worlds) are compatible without a schema migration, and the layer can be generated from those saved projects.
 - The model is a spatial approximation. It does not model species, animal populations, yearly growth, wildfire chronology, or true physical biomass units.
+
+
+## v0.1.12
+
+WorldGen now includes a stage-aware static render mode that can generate higher-resolution blended map images from any completed layer 5+ world state without changing the generation pipeline.
