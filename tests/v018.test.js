@@ -14,7 +14,7 @@ function worldAt(stage=10,count=320,shape={shape:'rectangle',width:1500,height:8
  return w;
 }
 test('stage 10 computes deterministic soil fields from immutable upstream layers',()=>{
- assert.equal(IMPLEMENTED,10);
+ assert.ok(IMPLEMENTED>=10);
  const w=worldAt(9),upstream=JSON.stringify(w.locked),soil=generateStage(10,w.locked,DEFAULTS[10]);
  assert.equal(JSON.stringify(w.locked),upstream);
  assert.deepEqual(generateStage(10,w.locked,DEFAULTS[10]),soil);

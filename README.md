@@ -1,4 +1,4 @@
-# WorldGen v0.1.9
+# WorldGen v0.1.10
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -23,7 +23,9 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 
 10. **Soils** — derived soil thickness, texture class, organic matter potential, permeability, fertility potential, groundwater recharge potential, and erosion susceptibility. Soil formation uses geology, terrain, erosion/deposition, climate, and hydrology. Ocean and lake cells do not receive soil. Five controls tune weathering, organic accumulation, alluvium, permeability and recharge. Soil maps and per-cell inspection are available without changing earlier layers.
 
-Future stages: biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
+11. **Biomes** — potential natural environments derived from the locked climate, soil, topography, rivers and lakes. The classification distinguishes cold, temperate, tropical, mountain, dryland and wetland environments. Independent settings adjust effective biome temperature, rainfall response, forest moisture threshold, wetland threshold, alpine summer threshold and smooth regional variation without rewriting earlier climate or terrain. Additional Voronoi-scale maps visualize ecological productivity potential, tree-cover potential, drought stress, the thermal growing season and biome transitions. This is environmental suitability, not vegetation growth or animal-population simulation.
+
+Future stages: habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
 ## Parameter controls
 
@@ -53,7 +55,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.8 → v0.1.9 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.9 → v0.1.10 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test
@@ -62,5 +64,13 @@ git push origin main
 ```
 
 The existing GitHub Action notifies AppLauncher to advance the pinned WorldGen submodule, with no required launcher-code changes. For independent testing, deploy `dist/standalone/` as a standalone PWA.
+
+## v0.1.10 biome and exploration pass
+
+- A full eleventh generation layer calculates biome classes, thermal growing window, tree-cover potential, relative productivity, drought stress and transitions between neighboring biome cells.
+- The natural map now shows biome colors at stage 11; prior-stage palettes remain available. Five additional numerical overlays, a legend and per-cell inspection show underlying ecological conditions.
+- Ocean and freshwater lakes remain separate classes. Locked upstream layers are immutable; the climate/forest modifiers affect only biome interpretation.
+- Stage-11 snapshots include all prior generation data. v0.1.9 worlds and their stage-10 checkpoints can advance directly after upgrade. Save schema stays at v2.
+- Automated tests cover deterministic generation, three world shapes, controls, complete checkpoint/save validation and corrupted import rejection.
 
 Future work includes adaptive polygon batching for much larger worlds, higher-resolution terrain tiles, GPU compute, spherical topology, depth, population, ecology, and societal simulations.
