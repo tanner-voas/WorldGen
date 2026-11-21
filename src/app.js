@@ -1,8 +1,8 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
-import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01,smoothstep,renderInsideGeometry,terrainTexture} from './render.js';
+import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01,smoothstep,renderInsideGeometry,terrainTexture,createTerrainSampler,visitTerrainSites} from './render.js';
 
-const APP_VERSION='0.1.15',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.16',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -733,7 +733,8 @@ function blendRenderSettings(next){
 function showRenderDialog(stage=effectiveStage()){
  const choices=renderableStages();
  if(!choices.length){notice(`Rendering becomes available once layer ${MIN_RENDER_STAGE} is generated`,true);return;}
- renderDraft=blendRenderSettings(renderDraft?.stage?renderDraft:{stage:Math.min(Math.max(stage,choices[0]),choices.at(-1))});
+ const requested=renderDraft?.stage||stage;
+ renderDraft=blendRenderSettings({...renderDraft,stage:choices.includes(requested)?requested:choices.at(-1)});
  const supports=renderOptionSupport(renderDraft.stage),modeOptions=renderModeOptions(renderDraft.stage);
  openModal('Render map', `<p class="wg-modal-caption">Generate a heavier rendered terrain view from any completed world state from layer ${MIN_RENDER_STAGE} onward. Rendering is compute-heavy and produces a continuous, satellite-style map image that you can pan and zoom in-app. It does not create a new layer or alter your world history.</p>
   <div class="wg-render-controls">
@@ -772,28 +773,7 @@ function rgbToCss(rgb){return `rgb(${rgb.map(v=>Math.max(0,Math.min(255,Math.rou
 function mixRgb(a,b,t){const u=clamp01(t);return [a[0]+(b[0]-a[0])*u,a[1]+(b[1]-a[1])*u,a[2]+(b[2]-a[2])*u];}
 function mulRgb(a,f){return [a[0]*f,a[1]*f,a[2]*f];}
 function addRgb(a,b,t){return [a[0]+b[0]*t,a[1]+b[1]*t,a[2]+b[2]*t];}
-function buildRenderNeighborhoods(mesh,maxCells=18){
- return mesh.cells.map((cell,index)=>{
-  const seen=new Set([index]);
-  const out=[index];
-  let frontier=[index];
-  for(let depth=0;depth<2&&out.length<maxCells;depth++){
-   const next=[];
-   for(const current of frontier){
-    for(const nb of mesh.cells[current].neighbors){
-     if(seen.has(nb))continue;
-     seen.add(nb);out.push(nb);next.push(nb);
-     if(out.length>=maxCells)break;
-    }
-    if(out.length>=maxCells)break;
-   }
-   frontier=next;
-   if(!frontier.length)break;
-  }
-  return out;
- });
-}
-function renderCellStats(stage){
+function renderCellStats(stage,settings){
  const mesh=latestData(2),coasts=stage>=5?latestData(5):null,landforms=stage>=6?latestData(6):null,erosion=stage>=7?latestData(7):null,climate=stage>=8?latestData(8):null,hydrology=stage>=9?latestData(9):null,soils=stage>=10?latestData(10):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null;
  const elevations=(erosion?.elevations)||(landforms?.elevations)||(coasts?.elevations)||(latestData(4)?.elevations)||new Float32Array(mesh.cells.length);
  const water=coasts?.water||Array(mesh.cells.length).fill(false),seaLevel=coasts?.seaLevel??0;
@@ -804,32 +784,30 @@ function renderCellStats(stage){
  const biomeRgb=biomes?mesh.cells.map((_,i)=>parseRenderColor(colorForCell(i,stage,'biomes'))):null;
  const vegetationRgb=vegetation?mesh.cells.map((_,i)=>parseRenderColor(colorForCell(i,stage,'vegetation'))):null;
  const avgArea=(mesh.areaKm2||geometryData().width*geometryData().height)/Math.max(1,mesh.cells.length);
- return {mesh,coasts,climate,hydrology,soils,biomes,vegetation,elevations,water,seaLevel,minWater,maxLand,avgRadius:Math.sqrt(avgArea/Math.PI),neighborhoods:buildRenderNeighborhoods(mesh),biomeRgb,vegetationRgb,geometry:prepareGeometry(mesh)};
+ return {mesh,coasts,climate,hydrology,soils,biomes,vegetation,elevations,water,seaLevel,minWater,maxLand,avgRadius:Math.sqrt(avgArea/Math.PI),sampler:createTerrainSampler(mesh,settings.blend),biomeRgb,vegetationRgb,geometry:prepareGeometry(mesh)};
 }
-function weightedSample(state,wx,wy,settings){
- const owner=cellAtPoint(state.geometry.spatial,wx,wy);
- if(owner==null)return {landFrac:0,elev:state.seaLevel-.18,tempC:8,moist:0.45,rain:700,canopy:0,ground:0.05,biomeRgb:[146,157,124],vegetationRgb:[153,167,128],lake:0,discharge:0,productivity:0.3};
- const cells=state.mesh.cells,group=state.neighborhoods[owner]||[owner];
- const sigma=Math.max(1e-6,state.avgRadius*(0.7+settings.blend*1.85));
- const sigma2=sigma*sigma;
+function weightedSample(state,wx,wy){
+ const cells=state.mesh.cells;
  let wSum=0,land=0,elev=0,temp=0,moist=0,rain=0,canopy=0,ground=0,lake=0,discharge=0,productivity=0,tree=0;
  const biome=[0,0,0],veg=[0,0,0];
- for(const j of group){
-  const c=cells[j],dx=wx-c.x,dy=wy-c.y,d2=dx*dx+dy*dy,w=1/(1+d2/sigma2);
+ const collect=(j,w)=>{
   wSum+=w;
-  const landCell=state.water[j]?0:1;
-  land+=landCell*w;
+  land+=(state.water[j]?0:1)*w;
   elev+=state.elevations[j]*w;
   if(state.climate){temp+=state.climate.meanTemp[j]*w;moist+=state.climate.moisture[j]*w;rain+=state.climate.precipitation[j]*w;}else{temp+=12*w;moist+=0.42*w;rain+=700*w;}
   let treeHere=0.2,productivityHere=0.38;
   if(state.biomes){productivityHere=state.biomes.productivity[j];treeHere=state.biomes.treePotential[j];const rgb=state.biomeRgb[j];biome[0]+=rgb[0]*w;biome[1]+=rgb[1]*w;biome[2]+=rgb[2]*w;}
   productivity+=productivityHere*w;tree+=treeHere*w;
   if(state.vegetation){canopy+=state.vegetation.canopyCover[j]*w;ground+=state.vegetation.groundCover[j]*w;const rgb=state.vegetationRgb[j];veg[0]+=rgb[0]*w;veg[1]+=rgb[1]*w;veg[2]+=rgb[2]*w;}
-  else if(state.soils){ground+=state.soils.fertility[j]*0.55*w;canopy+=treeHere*0.35*w;}
-  else ground+=(state.climate?state.climate.moisture[j]:0.42)*0.35*w;
+  else if(state.soils){ground+=state.soils.fertility[j]*0.55*w;canopy+=treeHere*.35*w;}
+  else ground+=(state.climate?state.climate.moisture[j]:.42)*.35*w;
   if(state.hydrology){lake+=(state.hydrology.lakeId[j]>=0?1:0)*w;discharge+=Math.min(1,state.hydrology.discharge[j]/Math.max(.001,state.hydrology.summary.maxDischarge))*w;}
- }
- wSum=Math.max(1e-6,wSum);
+ };
+ visitTerrainSites(state.sampler,wx,wy,collect);
+ // A very sparse or highly clustered mesh can have empty sampling disks.
+ // Fall back to its containing cell instead of leaving a dark rendering hole.
+ if(wSum<1e-8){const owner=cellAtPoint(state.geometry.spatial,wx,wy);if(owner!==null)collect(owner,1);}
+ if(wSum<1e-8)return {landFrac:0,elev:state.seaLevel-.18,tempC:8,moist:.45,rain:700,canopy:0,ground:.05,biomeRgb:[146,157,124],vegetationRgb:[153,167,128],lake:0,discharge:0,productivity:.3};
  return {landFrac:land/wSum,elev:elev/wSum,tempC:temp/wSum,moist:moist/wSum,rain:rain/wSum,canopy:canopy/wSum,ground:ground/wSum,biomeRgb:biome.map(v=>v/wSum),vegetationRgb:veg.map(v=>v/wSum),lake:lake/wSum,discharge:discharge/wSum,productivity:productivity/wSum,tree:tree/wSum};
 }
 function climateRamp(tempNorm,moist){
@@ -896,7 +874,7 @@ async function generateRenderImage(settings,taskId){
  const sampleFactor=Math.min(1,Math.sqrt(maxSamples/(idealW*idealH)));
  const sampleW=Math.max(1,Math.round(idealW*sampleFactor)),sampleH=Math.max(1,Math.round(idealH*sampleFactor));
  const sampleCanvas=document.createElement('canvas');sampleCanvas.width=sampleW;sampleCanvas.height=sampleH;const sctx=sampleCanvas.getContext('2d',{alpha:false});
- const image=sctx.createImageData(sampleW,sampleH),data=image.data,heightField=new Float32Array(sampleW*sampleH),landField=new Float32Array(sampleW*sampleH),state=renderCellStats(stage),progress=root.querySelector('#wg-render-progress');
+ const image=sctx.createImageData(sampleW,sampleH),data=image.data,heightField=new Float32Array(sampleW*sampleH),landField=new Float32Array(sampleW*sampleH),state=renderCellStats(stage,settings),progress=root.querySelector('#wg-render-progress');
  const rowsPerChunk=Math.max(6,Math.round(sampleH/28));
  for(let y0=0;y0<sampleH;y0+=rowsPerChunk){
   if(taskId!==renderTaskId)throw Error('Render cancelled');
@@ -904,7 +882,7 @@ async function generateRenderImage(settings,taskId){
   for(let y=y0;y<y1;y++)for(let x=0;x<sampleW;x++){
    const wx=(x+.5)/sampleW*geometry.width,wy=(y+.5)/sampleH*geometry.height,index=y*sampleW+x,o=index*4;
    if(!renderInsideGeometry(wx,wy,geometry)){data[o]=8;data[o+1]=40;data[o+2]=55;data[o+3]=255;heightField[index]=-0.35;landField[index]=0;continue;}
-   const sample=weightedSample(state,wx,wy,settings);
+   const sample=weightedSample(state,wx,wy);
    // Stable continuous sub-cell texture; the locked polygon data is untouched.
    // Keep coast perturbations confined to the shoreline, not whole continents.
    const detail=terrainTexture(wx,wy,Math.max(1,state.avgRadius*.67))-.5;
@@ -948,7 +926,7 @@ async function generateRenderImage(settings,taskId){
  return finalCanvas;
 }
 function renderViewerMarkup(stage){
- return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-regenerate">Settings</button><button class="wg-secondary" data-action="render-zoom-out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in">+</button><button class="wg-primary" data-action="render-download">PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas></div></div><p class="wg-modal-caption">Rendered terrain view from layer ${stage}. Drag to pan, use the zoom controls to inspect detail, and close the dialog to return to the editable world.</p></div>`;
+ return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-regenerate">Settings</button><button class="wg-secondary" data-action="render-zoom-out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in">+</button><button class="wg-primary" data-action="render-download">PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas><div id="wg-render-inspect" class="wg-render-inspect" hidden></div></div></div><p class="wg-modal-caption">Rendered terrain view from layer ${stage}. Drag to pan, use the zoom controls to inspect detail, and close the dialog to return to the editable world.</p></div>`;
 }
 function applyRenderViewerTransform(viewer){
  const state=viewer?viewer._wgState:null,canvasEl=viewer?.querySelector('#wg-render-canvas');if(!state||!canvasEl)return;
@@ -969,21 +947,43 @@ function nudgeRenderViewer(factor){
  const viewer=root.querySelector('#wg-render-viewer');if(!viewer)return;
  zoomRenderViewerAt(viewer,factor,viewer.clientWidth/2,viewer.clientHeight/2);
 }
+function inspectRenderedCoordinate(viewer,screenX,screenY){
+ const canvasEl=viewer?.querySelector('#wg-render-canvas'),state=viewer?viewer._wgState:null,panel=viewer?.querySelector('#wg-render-inspect');
+ if(!canvasEl||!state||!panel)return;
+ const pixelX=(screenX-state.tx)/state.scale,pixelY=(screenY-state.ty)/state.scale;
+ if(pixelX<0||pixelY<0||pixelX>canvasEl.width||pixelY>canvasEl.height){panel.hidden=true;return;}
+ const geometry=geometryData(),wx=pixelX/canvasEl.width*geometry.width,wy=pixelY/canvasEl.height*geometry.height;
+ if(!renderInsideGeometry(wx,wy,geometry)){panel.hidden=true;return;}
+ const mesh=latestData(2),id=cellAtPoint(prepareGeometry(mesh).spatial,wx,wy);
+ if(id===null){panel.hidden=true;return;}
+ const stage=renderDraft.stage,coasts=latestData(5),hydro=stage>=9?latestData(9):null,climate=stage>=8?latestData(8):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null,erosion=stage>=7?latestData(7):null,landforms=stage>=6?latestData(6):null;
+ const elev=(erosion?.elevations?.[id]??landforms?.elevations?.[id]??coasts?.elevations?.[id]??latestData(4)?.elevations?.[id]);
+ const kind=coasts?.water?.[id]?'Ocean':hydro&&hydro.lakeId[id]>=0?'Lake':'Land';
+ const lines=[`Cell ${id+1} · ${kind}`,`${Math.round(wx)} km E, ${Math.round(wy)} km S`];
+ if(Number.isFinite(elev))lines.push(`Relative elevation ${elev.toFixed(3)}`);
+ if(climate)lines.push(`${climate.meanTemp[id].toFixed(1)} °C · ${Math.round(climate.precipitation[id])} mm/year`);
+ if(biomes)lines.push(BIOME_NAMES[biomes.biome[id]]||'Biome');
+ if(vegetation)lines.push(VEGETATION_NAMES[vegetation.coverClass[id]]||'Vegetation');
+ panel.textContent=lines.join('  •  ');panel.hidden=false;
+}
 function initRenderViewer(viewer){
  const canvasEl=viewer?.querySelector('#wg-render-canvas');if(!viewer||!canvasEl)return;
- const state={scale:1,minScale:1,maxScale:8,tx:0,ty:0,pointers:new Map(),pinch:null};
+ const state={scale:1,minScale:1,maxScale:8,tx:0,ty:0,pointers:new Map(),pinch:null,tapStart:null,tapMoved:false,wasPinching:false};
  viewer._wgState=state;canvasEl.style.transformOrigin='0 0';canvasEl.style.touchAction='none';
  const local=event=>{const r=viewer.getBoundingClientRect();return {x:event.clientX-r.left,y:event.clientY-r.top};};
  const pinchValues=()=>{const [a,b]=[...state.pointers.values()];return {x:(a.x+b.x)/2,y:(a.y+b.y)/2,dist:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y))};};
  viewer.onpointerdown=event=>{
   if(event.pointerType==='mouse'&&event.button!==0)return;
-  state.pointers.set(event.pointerId,local(event));viewer.setPointerCapture?.(event.pointerId);
+  const pos=local(event);state.pointers.set(event.pointerId,pos);viewer.setPointerCapture?.(event.pointerId);
+  if(state.pointers.size===1){state.tapStart=pos;state.tapMoved=false;state.wasPinching=false;}
+  if(state.pointers.size>=2)state.wasPinching=true;
   state.pinch=state.pointers.size>=2?pinchValues():null;event.preventDefault();
  };
  viewer.onpointermove=event=>{
   if(!state.pointers.has(event.pointerId))return;
   const prior=state.pointers.get(event.pointerId),position=local(event);
   state.pointers.set(event.pointerId,position);
+  if(state.tapStart&&Math.hypot(position.x-state.tapStart.x,position.y-state.tapStart.y)>8)state.tapMoved=true;
   if(state.pointers.size>=2){
    const next=pinchValues(),prev=state.pinch||next;
    // Anchoring previous midpoint to the new midpoint combines pan and pinch.
@@ -996,6 +996,7 @@ function initRenderViewer(viewer){
   applyRenderViewerTransform(viewer);event.preventDefault();
  };
  viewer.onpointerup=viewer.onpointercancel=event=>{
+  if(event.type==='pointerup'&&state.pointers.size===1&&!state.tapMoved&&!state.wasPinching)inspectRenderedCoordinate(viewer,local(event).x,local(event).y);
   state.pointers.delete(event.pointerId);
   state.pinch=state.pointers.size>=2?pinchValues():null;
   if(viewer.hasPointerCapture?.(event.pointerId))viewer.releasePointerCapture(event.pointerId);
@@ -1018,7 +1019,9 @@ async function runRenderGeneration(){
   renderOutputCanvas=canvasOut;
   result.innerHTML=renderViewerMarkup(renderDraft.stage);
   result.closest('.wg-render-dialog')?.classList.add('wg-render-ready');
-  const target=result.querySelector('#wg-render-canvas');target.width=canvasOut.width;target.height=canvasOut.height;target.getContext('2d').drawImage(canvasOut,0,0);initRenderViewer(result.querySelector('#wg-render-viewer'));result.dataset.ready='1';
+  // Reparent the actual output canvas: don't allocate another full-size GPU/CPU bitmap.
+  canvasOut.id='wg-render-canvas';result.querySelector('#wg-render-canvas').replaceWith(canvasOut);
+  initRenderViewer(result.querySelector('#wg-render-viewer'));result.dataset.ready='1';
   notice('Rendered terrain map ready');
  }catch(error){
   if(taskId!==renderTaskId)return;
@@ -1052,7 +1055,7 @@ function showLibrary(){
  modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Render image</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
 function closeModal(){renderTaskId++;renderOutputCanvas=null;root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
-function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
+function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);renderDraft=null;renderOutputCanvas=null;resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());upgradeWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
  switch(action){

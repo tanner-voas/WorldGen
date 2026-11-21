@@ -1,4 +1,4 @@
-# WorldGen v0.1.15
+# WorldGen v0.1.16
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -109,3 +109,12 @@ Render mode is now a true terrain-render pass rather than a lightly blurred cell
 - Kept maximum sampling work within bounded CPU budgets for large PNG exports. Export dimensions stay as requested; higher resolutions may resample the synthesized terrain field until local-detail tiles are available.
 - Improved render exploration with pinch zoom, pointer-centered mouse-wheel zoom, drag-to-pan, fit and zoom buttons, and an expanded map viewing area on phones.
 - Cancel render jobs when the render dialog closes to avoid wasted mobile CPU work. Render remains a non-destructive function, not a layer.
+
+
+## v0.1.16 — continuous raster and viewer refinement
+
+- Replaced Voronoi-owner-dependent blend neighborhoods with a spatially indexed, compact-support interpolation field. Site contributions now depend continuously on geographic distance, reducing cell-aligned seams in rendered terrain.
+- Tapping an undragged location in the render viewer displays read-only world coordinates, cell number, relative elevation and available environmental data. This does not edit the map.
+- Reuses the completed full-resolution canvas directly in the viewer instead of duplicating it, reducing peak render-preview memory use.
+- Render stage selection resets appropriately when changing worlds and is clamped to available completed stages.
+- No new generation layer or save-schema change. Existing worlds remain compatible.
