@@ -26,7 +26,7 @@ const palettes={
   natural:'Natural',geometry:'Cell geometry',plates:'Tectonic plates',height:'Elevation',coast:'Land / sea'
 };
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
-let generating=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
+let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
 let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false;
 function db(){
  if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
@@ -39,8 +39,8 @@ function db(){
 }
 async function storeGet(key){const database=await db();return new Promise((resolve,reject)=>{const req=database.transaction('data').objectStore('data').get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
 async function storePut(key,value){const database=await db();return new Promise((resolve,reject)=>{const tx=database.transaction('data','readwrite');tx.objectStore('data').put(value,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
-function persist(){workspace.updated=new Date().toISOString();const copy=structuredClone(workspace);writeQueue=writeQueue.catch(()=>{}).then(()=>storePut(KEY,copy)).catch(e=>notice(`Automatic saving unavailable: ${e.message}`,true));return writeQueue;}
-function saveSnapshots(){const copy=structuredClone(snapshots);writeQueue=writeQueue.catch(()=>{}).then(()=>storePut('snapshots',copy)).catch(e=>notice(`Checkpoint storage failed: ${e.message}`,true));return writeQueue;}
+function persist(){workspace.updated=new Date().toISOString();const copy=structuredClone(workspace);writeQueue=writeQueue.catch(()=>{}).then(()=>storePut(KEY,copy)).then(()=>{storageHealthy=true;storageWarned=false;}).catch(e=>{storageHealthy=false;showBusy(generating);if(!storageWarned){storageWarned=true;notice(`Automatic saving unavailable: ${e.message}. Export your world as a backup.`,true);}});return writeQueue;}
+function saveSnapshots(){const copy=structuredClone(snapshots);writeQueue=writeQueue.catch(()=>{}).then(()=>storePut('snapshots',copy));return writeQueue;}
 function notice(message,error=false){let el=root.querySelector('#wg-toast');if(!el)return;el.textContent=message;el.classList.toggle('error',error);el.classList.add('visible');clearTimeout(notice.timer);notice.timer=setTimeout(()=>el.classList.remove('visible'),4000);}
 function stageText(stage){return STAGES[stage]?.[0]||'Unknown stage';}
 function currentStage(){return workspace.working.stage;}
@@ -49,7 +49,7 @@ function latestData(stage){return stageRecord(stage)?.data||null;}
 function viewStage(){return workspace.viewStage||1;}
 function effectiveStage(){const chosen=viewStage();return latestData(chosen)?chosen:Math.min(currentStage()-1,IMPLEMENTED);}
 function activeSettings(){return workspace.working.settings;}
-function showBusy(busy){generating=busy;const el=root.querySelector('#wg-status');if(el)el.innerHTML=busy?'<span class="wg-busy-dot"></span> Generating…':'<span class="wg-saved-dot"></span> Cached locally';const lock=root.querySelector('[data-action="lock"]');if(lock)lock.disabled=busy||!workspace.working.data;}
+function showBusy(busy){generating=busy;const el=root.querySelector('#wg-status');if(el)el.innerHTML=busy?'<span class="wg-busy-dot"></span> Generating…':storageHealthy?'<span class="wg-saved-dot"></span> Cached locally':'<span class="wg-busy-dot"></span> Export backup';const lock=root.querySelector('[data-action="lock"]');if(lock)lock.disabled=busy||dirty||!workspace.working.data;}
 
 function buildShell(){
  root.innerHTML=`<div id="worldgen-root" class="wg-shell">
@@ -92,7 +92,7 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].map(settingRow).join('')}<div class="wg-seed-row"><label for="wg-seed">Random seed</label><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div></div>`;
-  html+=`<div class="wg-actions"><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
+  html+=`<div class="wg-actions"><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
  }else if(row){
   html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p><div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
  }else{html+='<p class="wg-hint">Generate and lock the preceding layer to continue.</p>';}
@@ -118,7 +118,7 @@ function scheduleGeneration(ms=230){clearTimeout(rebuildTimer);rebuildTimer=setT
 async function generateCurrent(){
  const stage=currentStage();if(stage>IMPLEMENTED)return;
  if(worker){worker.terminate();worker=null;}
- const id=++requestId;const settings=structuredClone(workspace.working.settings);const locked=workspace.locked.map(({stage,data})=>({stage,data}));
+ const id=++requestId;const settings=structuredClone(workspace.working.settings);const settingsStamp=JSON.stringify(settings);const locked=workspace.locked.map(({stage,data})=>({stage,data}));
  showBusy(true);
  try{
   worker=new Worker(new URL('./compute-worker.js',import.meta.url),{type:'module'});
@@ -128,9 +128,9 @@ async function generateCurrent(){
    job.onerror=error=>reject(Error(error.message||'Generation worker failed'));
    job.postMessage({id,stage,settings,locked});
   });
-  if(id!==requestId||stage!==currentStage())return;
+  if(id!==requestId||stage!==currentStage()||settingsStamp!==JSON.stringify(workspace.working.settings))return;
   if(!result.ok)throw Error(result.error);
-  workspace.working.data=result.data;
+  workspace.working.data=result.data;workspace.working.dataSettings=structuredClone(settings);dirty=false;
   workspace.viewStage=stage;
   selectedId=null;
   await persist();
@@ -140,10 +140,10 @@ async function generateCurrent(){
 }
 function commitLayer(){
  const stage=currentStage(),working=workspace.working;
- if(generating||!working.data||stage>IMPLEMENTED)return;
+ if(generating||dirty||!working.data||stage>IMPLEMENTED)return;
  workspace.locked.push({stage,settings:structuredClone(working.settings),data:working.data,lockedAt:new Date().toISOString()});
  const next=stage+1;
- workspace.working={stage:next,settings:next<=IMPLEMENTED?{...DEFAULTS[next]}:{},data:null};
+ workspace.working={stage:next,settings:next<=IMPLEMENTED?{...DEFAULTS[next]}:{},data:null,dataSettings:null};dirty=false;
  workspace.viewStage=stage;selectedId=null;
  void persist();rebuildUI();notice(`Layer ${stage} locked. Your world history is preserved.`);
  // Advance the interface to a working layer, while preserving the last map.
@@ -155,7 +155,7 @@ function reviseStage(stage){
  if(!confirm(`Revise layer ${stage}? This creates a new branch from that layer. ${later?`${later} later locked layer(s) will be removed from the working branch.`:'Later layers will be regenerated from this revision.'} Save a checkpoint first if you want to preserve the current branch.`))return;
  requestId++;worker?.terminate();worker=null;clearTimeout(rebuildTimer);generating=false;
  workspace.locked=workspace.locked.slice(0,stage-1);
- workspace.working={stage,settings:structuredClone(earlier.settings),data:structuredClone(earlier.data)};
+ workspace.working={stage,settings:structuredClone(earlier.settings),data:structuredClone(earlier.data),dataSettings:structuredClone(earlier.settings)};dirty=false;
  workspace.viewStage=stage;selectedId=null;
  void persist();rebuildUI();notice(`Layer ${stage} is editable again`);
 }
@@ -233,14 +233,14 @@ async function saveCheckpoint(){
  const proposed=prompt('Checkpoint name',snapshotName());if(proposed===null)return;
  const name=proposed.trim().slice(0,100)||snapshotName();
  const snap={id:`save-${Date.now()}-${Math.round(Math.random()*10000)}`,name,created:new Date().toISOString(),stage:workspace.locked.length,world:structuredClone(workspace)};
- snapshots.unshift(snap);await saveSnapshots();notice(`Checkpoint saved: ${name}`);
+ snapshots.unshift(snap);try{await saveSnapshots();notice(`Checkpoint saved: ${name}`);}catch(error){snapshots=snapshots.filter(s=>s.id!==snap.id);throw Error(`Checkpoint could not be saved: ${error.message}`);}
 }
 function modal(html){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal" role="dialog" aria-modal="true" aria-label="World library"><div class="wg-modal-heading"><h2>World library</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
 function showLibrary(){
  modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export current</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
 function closeModal(){root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
-function changeWorld(world){requestId++;worker?.terminate();worker=null;clearTimeout(rebuildTimer);generating=false;workspace=validateWorld(world);selectedId=null;firstFit=true;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>fitMap());if(currentStage()<=IMPLEMENTED&&!workspace.working.data)scheduleGeneration(150);}
+function changeWorld(world){requestId++;worker?.terminate();worker=null;clearTimeout(rebuildTimer);generating=false;workspace=validateWorld(world);dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=true;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>fitMap());if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());validateWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
  switch(action){
@@ -252,7 +252,7 @@ async function handleAction(action,button){
   case 'fit':fitMap();break;
   case 'zoom-in':zoomBy(1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'zoom-out':zoomBy(1/1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
-  case 'reroll':workspace.working.settings.seed=nextSeed();rebuildUI();scheduleGeneration(20);break;
+  case 'reroll':workspace.working.settings.seed=nextSeed();dirty=true;void persist();rebuildUI();scheduleGeneration(20);break;
   case 'regenerate':scheduleGeneration(10);break;
   case 'lock':commitLayer();break;
   case 'edit-earlier':reviseStage(viewStage());break;
@@ -272,7 +272,7 @@ function bindEvents(){
  root.addEventListener('input',event=>{
   const el=event.target,setting=el.dataset?.setting;
   if(!setting)return;
-  workspace.working.settings[setting]=el.type==='range'?Number(el.value):el.value;
+  workspace.working.settings[setting]=el.type==='range'?Number(el.value):el.value;dirty=true;void persist();showBusy(generating);
   const output=root.querySelector(`[data-value="${setting}"]`);
   if(output)output.textContent=setting==='continental'||setting==='land'?`${Math.round(Number(el.value)*100)}%`:el.value;
   scheduleGeneration(el.type==='range'?380:80);
@@ -281,7 +281,7 @@ function bindEvents(){
   const el=event.target;
   if(el.id==='wg-edges'){workspace.showEdges=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;void persist();schedulePaint();}
-  if(el.id==='wg-seed'){workspace.working.settings.seed=clamp(Number(el.value)||0,0,0xffffffff);scheduleGeneration(40);}
+  if(el.id==='wg-seed'){workspace.working.settings.seed=clamp(Number(el.value)||0,0,0xffffffff);dirty=true;void persist();showBusy(generating);scheduleGeneration(40);}
   if(el.id==='wg-import')void handleImport(el.files?.[0]);
  });
  canvas.addEventListener('pointerdown',pointerStart);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerEnd);canvas.addEventListener('pointercancel',pointerEnd);
@@ -293,7 +293,8 @@ function bindEvents(){
 }
 async function initialize(){
  try{const [stored,saved]=await Promise.all([storeGet(KEY),storeGet('snapshots')]);if(stored)workspace=validateWorld(stored);if(Array.isArray(saved))snapshots=saved.filter(s=>s?.world?.schema===SCHEMA_VERSION);}
- catch(error){console.warn('WorldGen startup storage:',error);}
- buildShell();if(currentStage()<=IMPLEMENTED&&!workspace.working.data)scheduleGeneration(100);
+ catch(error){console.warn('WorldGen startup storage:',error);storageHealthy=false;}
+ dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));
+ buildShell();if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(100);
 }
 await initialize();

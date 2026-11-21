@@ -158,7 +158,7 @@ export function generateStage(stage,locked,settings){
  throw Error('Stage not available in v0.1.0');
 }
 export function newWorld(name='Untitled world'){
- return {schema:SCHEMA_VERSION,id:`world-${Date.now()}`,name,created:new Date().toISOString(),updated:new Date().toISOString(),locked:[],working:{stage:1,settings:{...DEFAULTS[1]},data:null},viewStage:1,viewMode:'auto',showEdges:true,selected:null};
+ return {schema:SCHEMA_VERSION,id:`world-${Date.now()}`,name,created:new Date().toISOString(),updated:new Date().toISOString(),locked:[],working:{stage:1,settings:{...DEFAULTS[1]},data:null,dataSettings:null},viewStage:1,viewMode:'auto',showEdges:true,selected:null};
 }
 export function validateWorld(world){
  if(!world||world.schema!==SCHEMA_VERSION||!Array.isArray(world.locked)||world.locked.length>IMPLEMENTED)throw Error('Unsupported or invalid world save');
