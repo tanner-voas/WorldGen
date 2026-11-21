@@ -30,23 +30,25 @@ export function multiplyMatrices(a,b){
 }
 export function meshLod(distance){return lodStepForDistance(distance);}
 
-const VERTEX=`#version 300 es
+export const TERRAIN_VERTEX_SHADER=`#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in float aElevation;
 layout(location=3) in vec3 aMaterial;
 uniform mat4 uCamera;
+uniform float uHeightMultiplier;
 out vec3 vMaterial;
 out vec3 vNormal;
 out vec3 vPosition;
 out float vElevation;
 void main(){
- vNormal=aNormal;
+ vec3 position=vec3(aPosition.x,aPosition.y*uHeightMultiplier,aPosition.z);
+ vNormal=normalize(vec3(aNormal.x*uHeightMultiplier,aNormal.y,aNormal.z*uHeightMultiplier));
  vMaterial=aMaterial;
- vPosition=aPosition;
+ vPosition=position;
  vElevation=aElevation;
- gl_Position=uCamera*vec4(aPosition,1.0);
+ gl_Position=uCamera*vec4(position,1.0);
 }`;
 export const TERRAIN_FRAGMENT_SHADER=`#version 300 es
 precision highp float;
@@ -126,7 +128,7 @@ function compile(gl,kind,source){
  return shader;
 }
 function program(gl){
- const vert=compile(gl,gl.VERTEX_SHADER,VERTEX),frag=compile(gl,gl.FRAGMENT_SHADER,TERRAIN_FRAGMENT_SHADER);
+ const vert=compile(gl,gl.VERTEX_SHADER,TERRAIN_VERTEX_SHADER),frag=compile(gl,gl.FRAGMENT_SHADER,TERRAIN_FRAGMENT_SHADER);
  const p=gl.createProgram();gl.attachShader(p,vert);gl.attachShader(p,frag);gl.linkProgram(p);
  gl.deleteShader(vert);gl.deleteShader(frag);
  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){const log=gl.getProgramInfoLog(p);gl.deleteProgram(p);throw Error(`3D program link failed: ${log}`);}
@@ -141,6 +143,8 @@ export class Terrain3DViewer{
   this.pitch=.93;this.yaw=-.69;this.distance=7.5;this.target=[0,0,0];this.mode='orbit';
   this.pointers=new Map();this.gesture=null;this.pendingFrame=0;this.resources=[];
   this.tapStart=null;this.lastTap=null;this.lastFocusTime=0;
+  // Height control is viewer-only. Saved elevation and GPU buffers stay unchanged.
+  this.heightSteps=0;this.heightMultiplier=1;this.heightTimer=null;this.heightStateCallback=null;
   this.detailWorker=null;this.detailSignature='';this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSource=null;
   this.onLost=e=>{e.preventDefault();this.lost=true;
    this.detailWorker?.terminate();this.detailWorker=null;this.detailSignature='';
@@ -200,6 +204,7 @@ export class Terrain3DViewer{
   this.eyeLocation=gl.getUniformLocation(this.program,'uEye');
   this.seaLocation=gl.getUniformLocation(this.program,'uSeaLevel');
   this.materialLocation=gl.getUniformLocation(this.program,'uMaterialStrength');
+  this.heightLocation=gl.getUniformLocation(this.program,'uHeightMultiplier');
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
   gl.disable(gl.CULL_FACE);
@@ -333,6 +338,34 @@ export class Terrain3DViewer{
    planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale},
    ...source});
  }
+ /** Each step is exactly one factor of 1.05 from the unmodified world-aware
+  * relief scale. Updating the label does not redraw until the user stops
+  * tapping for 2 seconds. The GPU transforms all terrain and water together.
+  */
+ queueHeightStep(direction,onState=()=>{}){
+  if(this.disposed||![1,-1].includes(direction))return;
+  this.heightSteps=(this.heightSteps||0)+direction;
+  this.heightStateCallback=onState;
+  if(this.heightTimer!==null)clearTimeout(this.heightTimer);
+  onState(this.heightSteps,true);
+  this.heightTimer=setTimeout(()=>{
+   this.heightTimer=null;
+   if(this.disposed)return;
+   this.applyHeightSteps();
+   this.heightStateCallback?.(this.heightSteps,false);
+  },2000);
+ }
+ applyHeightSteps(){
+  if(this.disposed)return;
+  const next=Math.pow(1.05,this.heightSteps||0);
+  if(!(next>0)&&next!==Infinity)return;
+  const previous=this.heightMultiplier||1;
+  this.heightMultiplier=next;
+  // Preserve an existing local terrain focus when its Y position changes.
+  if(this.target) this.target[1]*=next/previous;
+  this.lastDrawStatus='';
+  this.drawSoon();
+ }
  resetCamera(){
   this.pitch=.94;this.yaw=-.72;this.target=[0,0,0];
   const span=Math.max(this.surface?.planeWidth||4.8,this.surface?.planeDepth||3.5);
@@ -345,7 +378,7 @@ export class Terrain3DViewer{
   const ground=surfaceHeightAt(this.surface,this.target[0],this.target[2]);
   if(ground===null)return;
   const sea=(this.surface.seaLevel||0)*(this.surface.heightScale??.73);
-  this.target[1]=Math.max(ground,sea);
+  this.target[1]=Math.max(ground,sea)*(this.heightMultiplier||1);
  }
  zoom(factor){this.distance=clamp(this.distance*factor,this.detailLimits?.minimumDistance||.008,32);
   this._followTerrain();this.drawSoon();}
@@ -402,7 +435,7 @@ export class Terrain3DViewer{
   const cp=Math.cos(this.pitch),sp=Math.sin(this.pitch),sy=Math.sin(this.yaw),cy=Math.cos(this.yaw);
   const eye=[this.target[0]+this.distance*cp*sy,this.target[1]+this.distance*sp,this.target[2]+this.distance*cp*cy];
   const ray=cameraRay(eye,this.target,x,y,rect.width,rect.height);
-  const point=ray&&pickTerrainRay(this.surface,eye,ray);
+  const point=ray&&pickTerrainRay(this.surface,eye,ray,this.heightMultiplier||1);
   if(!point)return false;
   this.target=point;this.distance=clamp(this.distance*.78,this.detailLimits?.minimumDistance||.008,32);
   this.lastFocusTime=now;this.drawSoon();return true;
@@ -428,6 +461,7 @@ export class Terrain3DViewer{
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
   gl.uniform1f(this.materialLocation,s.materialColors?.length?0.88:0);
+  gl.uniform1f(this.heightLocation,this.heightMultiplier??1);
   const selected=meshLod(this.distance);
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
@@ -456,7 +490,9 @@ export class Terrain3DViewer{
      if(this.activeDetailIds?.has(tile.id)&&this.detailPatches?.has(tile.id))continue;
      // The full elevation range makes this culling conservative even when a
      // tile contains steep mountains. Invisible tiles need no GPU draw call.
-     if(!tileVisibleInFrustum(camera,tile,s))continue;
+     const scale=this.heightMultiplier||1;
+     const visibleTile=scale===1?tile:{...tile,minY:tile.minY*scale,maxY:tile.maxY*scale};
+     if(!tileVisibleInFrustum(camera,visibleTile,s))continue;
      const step=selectedSteps[i],level=tiled.find(row=>row.step===step)||baseline;
      const range=level.tiles?.[i];if(!range?.count)continue;
      if(currentStep!==step){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);currentStep=step;}
@@ -496,7 +532,10 @@ export class Terrain3DViewer{
  }
  dispose(){
   if(this.disposed)return;
-  this.disposed=true;if(this.pendingFrame)cancelAnimationFrame(this.pendingFrame);
+  this.disposed=true;
+  if(this.heightTimer!==null){clearTimeout(this.heightTimer);this.heightTimer=null;}
+  this.heightStateCallback=null;
+  if(this.pendingFrame)cancelAnimationFrame(this.pendingFrame);
   this.worker?.terminate();this.worker=null;
   this.detailWorker?.terminate();this.detailWorker=null;
   this._releaseFocusedPatches();this.detailSource=null;

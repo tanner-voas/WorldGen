@@ -1,4 +1,4 @@
-# WorldGen v0.1.26
+# WorldGen v0.1.27
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -181,7 +181,7 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 - Double-tap a visible terrain location in the 3D viewer to focus and zoom the orbit camera on it; Fit restores the global view. The focus ray checks the current generated mesh and the exact world outline. Mouse double-click is also supported.
 - Worker output includes a compact shape mask for read-only focus picking, with no changes to stored worlds.
 
-## v0.1.26 — realistic terrain proportions and close-up geometry
+## v0.1.27 — realistic terrain proportions and close-up geometry
 
 - Corrected gross vertical exaggeration in the 3D renderer. Source elevations are not metres; the 3D view now uses a stable world-dimension-based convention (approximately 6 km of relief per model unit, visual exaggeration ×3, with bounds for small/large worlds), replacing the fixed 0.73 multiplier. Ocean, lakes, rivers, tile height bounds, and terrain picking use the same vertical units. No saved elevation data is changed.
 - A smoother, finite-slope, compact interpolation kernel replaces the very sharp inverse-distance weighting that created isolated 3D spikes at individual Voronoi centres.

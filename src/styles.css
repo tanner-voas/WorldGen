@@ -219,3 +219,13 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-3d-modes{display:flex;gap:5px;margin-right:auto}
 .wg-3d-foot{flex-shrink:0;display:flex;gap:6px;justify-content:space-between;color:#a3baaf;font-size:10px;min-height:17px;padding:0 3px;flex-wrap:wrap}
 @media(max-width:380px){.wg-3d-bar button{padding-inline:8px;min-width:39px}.wg-3d-foot{font-size:9px}}
+
+/* v0.1.27: compact optional relief controls shrink the 3D viewport only while expanded. */
+.wg-3d-height-toggle{flex-shrink:0;align-self:flex-start;display:flex;align-items:center;gap:7px;border:0;background:transparent;color:#b6d6c5;font-size:11px;padding:2px 5px;min-height:24px;font-weight:650}
+.wg-3d-height-toggle span:last-child{font-size:13px;color:#95b6a7}
+.wg-3d-height-panel{flex-shrink:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid #395f56;border-radius:10px;background:#19352f;padding:7px 9px}
+.wg-3d-height-panel[hidden]{display:none}
+.wg-3d-height-title{font-size:11px;color:#bfd8c9;margin-right:auto}
+.wg-3d-height-panel button{min-height:36px;min-width:36px;border-radius:9px;background:#305248;border:1px solid #668779;color:#e9f4eb;font-size:19px}
+.wg-3d-height-panel output{min-width:60px;text-align:center;color:#e6f5dc;font-size:13px;font-variant-numeric:tabular-nums;font-weight:720}
+.wg-3d-height-state{flex-basis:100%;font-size:10px;color:#9ebbb0;text-align:right}

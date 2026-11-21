@@ -6,7 +6,7 @@ import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-material.js';
 
-const APP_VERSION='0.1.26',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.27',DB_NAME='worldgen-v1',KEY='workspace';
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
@@ -1095,6 +1095,14 @@ function showElevation3D(){
    <button data-action="3d-fit">Fit</button>
    <button data-action="3d-zoom-in" aria-label="Zoom in">+</button>
   </div>
+  <button class="wg-3d-height-toggle" data-action="3d-height-toggle" aria-expanded="false" aria-controls="wg-3d-height-panel">Relief · <span id="wg-3d-height-summary">1.00×</span><span aria-hidden="true">⌄</span></button>
+  <div id="wg-3d-height-panel" class="wg-3d-height-panel" hidden>
+   <span class="wg-3d-height-title">Vertical relief</span>
+   <button data-action="3d-height-down" aria-label="Decrease vertical relief by 5%">−</button>
+   <output id="wg-3d-height-value" aria-live="polite">1.00×</output>
+   <button data-action="3d-height-up" aria-label="Increase vertical relief by 5%">+</button>
+   <span class="wg-3d-height-state" id="wg-3d-height-state">World-aware baseline</span>
+  </div>
   <div class="wg-3d-foot"><span id="wg-3d-status">Preparing surface…</span><span>Drag to orbit · pinch to zoom / pan · double-tap to focus</span></div>
  </div>`,'wg-3d-modal');
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
@@ -1150,6 +1158,30 @@ async function handleAction(action,button){
   case '3d-fit':terrainViewer?.resetCamera();break;
   case '3d-zoom-in':terrainViewer?.zoom(.73);break;
   case '3d-zoom-out':terrainViewer?.zoom(1.37);break;
+  case '3d-height-toggle':{
+   const panel=root.querySelector('#wg-3d-height-panel');
+   if(!panel)break;
+   panel.hidden=!panel.hidden;
+   button.setAttribute('aria-expanded',String(!panel.hidden));
+   break;
+  }
+  case '3d-height-up':case '3d-height-down':{
+   if(!terrainViewer)break;
+   terrainViewer.queueHeightStep(action==='3d-height-up'?1:-1,(steps,pending)=>{
+    if(terrainViewer?.disposed)return;
+    const multiplier=Math.pow(1.05,steps);
+    const formatted=Number.isFinite(multiplier)?
+     `${multiplier>=.01&&multiplier<100?multiplier.toFixed(2):multiplier.toPrecision(3)}×`:
+     'Extremely high ×';
+    const value=root.querySelector('#wg-3d-height-value');
+    const summary=root.querySelector('#wg-3d-height-summary');
+    const state=root.querySelector('#wg-3d-height-state');
+    if(value)value.textContent=formatted;
+    if(summary)summary.textContent=formatted;
+    if(state)state.textContent=pending?'Applying after 2 seconds…':'Applied';
+   });
+   break;
+  }
 
   case 'zoom-in':zoomBy(1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'zoom-out':zoomBy(1/1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
