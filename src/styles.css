@@ -1,0 +1,93 @@
+/* WorldGen runs as its own full-viewport scene, without leaking styles to Ciyan. */
+body.worldgen-active{margin:0;overflow:hidden;background:#14231e;color:#e9f1e9;overscroll-behavior:none}
+body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:100%;max-width:none;min-height:0;height:100dvh;margin:0;padding:0;overflow:hidden}
+#worldgen-root,#worldgen-root *{box-sizing:border-box}
+#worldgen-root{--wg-ink:#eff5ee;--wg-muted:#9bb6ab;--wg-surface:#162b29;--wg-border:#36534b;--wg-accent:#bbdfa8;position:fixed;inset:0;z-index:20;color:var(--wg-ink);background:#13252a;font:400 14px/1.4 -apple-system,BlinkMacSystemFont,'SF Pro Display',Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-user-select:none;user-select:none}
+#worldgen-root button,#worldgen-root input,#worldgen-root select{font:inherit}
+#worldgen-root button{cursor:pointer;-webkit-tap-highlight-color:transparent}
+#worldgen-root button:disabled{cursor:default;opacity:.5}
+#worldgen-root button:focus-visible,#worldgen-root input:focus-visible,#worldgen-root select:focus-visible{outline:2px solid #b6e7ca;outline-offset:2px}
+.wg-header{height:calc(63px + env(safe-area-inset-top));padding:calc(9px + env(safe-area-inset-top)) 14px 9px;position:absolute;z-index:5;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;background:#172c2c;box-shadow:0 1px 0 #3b534e}
+.wg-icon-button{width:42px;height:42px;flex-shrink:0;background:#294540;color:#e3f0e7;border:1px solid #3a5953;border-radius:13px;font-size:23px;font-weight:450;display:grid;place-items:center}
+.wg-icon-button:active{background:#42655b}
+.wg-headline{min-width:0;flex:1}
+.wg-eyebrow{font-size:10px;letter-spacing:.15em;font-weight:740;color:#b4d4be;white-space:nowrap}
+.wg-eyebrow span{font-size:10px;color:#789990;letter-spacing:.04em;padding-left:3px}
+.wg-world-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;border:0;background:transparent;padding:1px 0 0;color:#f0f5f0;font-size:18px!important;font-weight:680!important;letter-spacing:-.4px;text-align:left}
+.wg-world-name span{color:#94baaa;font-size:12px}
+.wg-map-area{position:absolute;top:calc(63px + env(safe-area-inset-top));bottom:clamp(272px,36dvh,430px);left:0;right:0;overflow:hidden;background:#132a34;touch-action:none}
+#wg-map{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+#wg-map:active{cursor:grabbing}
+.wg-map-buttons{position:absolute;right:12px;top:14px;display:flex;flex-direction:column;gap:7px}
+.wg-map-buttons button{background:#142f35de;color:#e4f0ec;border:1px solid #52736e7e;min-width:38px;height:38px;border-radius:11px;font-size:23px;backdrop-filter:blur(12px)}
+.wg-display-bar{position:absolute;top:12px;left:12px;display:flex;align-items:center;gap:7px;max-width:calc(100% - 66px)}
+.wg-display-bar select,.wg-edge-toggle{background:#142f35e8;border:1px solid #52736e7e;border-radius:10px;color:#e6f2ee;height:38px;backdrop-filter:blur(10px)}
+.wg-display-bar select{max-width:175px;padding:0 8px;font-size:12px;outline:0}
+.wg-edge-toggle{display:flex;align-items:center;gap:5px;padding:0 8px;font-size:11px;white-space:nowrap}
+.wg-edge-toggle input{accent-color:#b4e0ad;width:14px;height:14px}
+.wg-map-scale{position:absolute;bottom:10px;left:10px;pointer-events:none;background:#12262ac9;border-radius:8px;padding:5px 8px;color:#b4cfc7;font-size:10px;font-variant-numeric:tabular-nums}
+.wg-inspector{position:absolute;bottom:40px;left:12px;right:12px;max-width:330px;padding:13px 15px 12px;border:1px solid #74917ba6;border-radius:14px;background:#173530ee;box-shadow:0 12px 32px #071b22ad;backdrop-filter:blur(10px);pointer-events:auto}
+.wg-inspector[hidden]{display:none}
+.wg-inspector strong{font-size:14px;display:block;margin:0 0 6px;color:#e7f5de}
+.wg-inspector span{display:block;color:#b2d4c6;font-size:11px;margin:3px 0}
+.wg-inspector-close{position:absolute;top:4px;right:6px;border:0;background:transparent;color:#e9f1e9;font-size:24px;line-height:1.1;padding:3px 8px}
+.wg-console{position:absolute;left:0;right:0;bottom:0;height:clamp(272px,36dvh,430px);background:#172c29;border-radius:18px 18px 0 0;box-shadow:0 -10px 24px #071a1e80;border-top:1px solid #415b4d;overflow:hidden;padding-bottom:env(safe-area-inset-bottom)}
+.wg-console-handle{height:4px;width:35px;margin:8px auto 9px;background:#648275;border-radius:3px}
+.wg-progress-row{border-bottom:1px solid #33524b;padding:0 13px 9px}
+.wg-stage-heading{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:9px}
+.wg-section-caption{font-size:10px;letter-spacing:.12em;font-weight:700;color:#96b7a6}
+#wg-status{font-size:10px;color:#9db4a9;white-space:nowrap;display:flex;align-items:center;gap:5px}
+.wg-saved-dot,.wg-busy-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#9bce9d}
+.wg-busy-dot{background:#f8c879;animation:wg-pulse 1s ease-in-out infinite}
+@keyframes wg-pulse{50%{opacity:.2}}
+.wg-stage-scroll{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:1px 0 4px;scroll-snap-type:x proximity}
+.wg-stage-scroll::-webkit-scrollbar{display:none}
+.wg-stage-chip{flex:0 0 auto;min-width:93px;max-width:110px;min-height:47px;display:flex;align-items:center;gap:7px;border:1px solid #33574e;background:#213b36;color:#c2d5cb;padding:6px 8px;border-radius:9px;text-align:left;scroll-snap-align:nearest}
+.wg-stage-chip span{font-variant-numeric:tabular-nums;display:grid;place-items:center;flex:0 0 23px;height:25px;border-radius:7px;background:#314b41;font-size:10px;font-weight:700}
+.wg-stage-chip small{font-size:10px;line-height:1.13;white-space:normal}
+.wg-stage-chip.current{border-color:#a7d2af;background:#324e40;color:#f8fdef}
+.wg-stage-chip.current span{background:#c7e8b4;color:#1c3e2b}
+.wg-stage-chip.done span{color:#bfe9bc}
+.wg-stage-chip.later{opacity:.4}
+.wg-stage-main{height:calc(100% - 97px);overflow-y:auto;overscroll-behavior:contain;padding:13px 15px 24px}
+.wg-stage-title{display:flex;justify-content:space-between;align-items:start;gap:8px}
+.wg-layer-label{font-size:10px;letter-spacing:.08em;font-weight:740;color:#a7ceb2}
+.wg-stage-title h2{font-size:19px;letter-spacing:-.45px;font-weight:700;margin:1px 0 2px;color:#f1f6ed}
+.wg-stage-title p{color:#a7c0b5;font-size:11px;margin:0}
+.wg-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px;margin-top:17px}
+.wg-form-field{min-width:0;display:flex;flex-direction:column;gap:7px;font-size:11px;color:#c7d9c9}
+.wg-form-field>span{display:flex;justify-content:space-between;gap:3px}
+.wg-form-field output{color:#e3edcf;font-weight:700;font-variant-numeric:tabular-nums}
+.wg-form-field input[type=range]{width:100%;margin:0;accent-color:#c0e2ad;height:18px}
+.wg-form-field select,#wg-seed{border:1px solid #55756b;background:#203b36;border-radius:8px;color:#ecf5eb;min-height:33px;padding:4px 7px;min-width:0;width:100%;font-size:12px}
+.wg-seed-row{grid-column:1/-1;display:flex;align-items:center;gap:9px;color:#bad2c3;font-size:11px}
+.wg-seed-row label{white-space:nowrap}
+#wg-seed{max-width:170px;flex:1}
+.wg-seed-row button{background:#2b4e44;border:1px solid #507466;border-radius:8px;color:#e8f6e5;padding:8px;font-size:11px}
+.wg-actions{display:flex;gap:9px;margin:15px 0 5px}
+.wg-actions button{height:38px;border-radius:10px;padding:6px 14px;font-size:12px;font-weight:720}
+.wg-secondary{flex:1;background:#2b4941;color:#d0e6da;border:1px solid #597a6b}
+.wg-primary{flex:1.3;background:#c4e2b1;color:#163627;border:1px solid #e2f3d2}
+.wg-hint,.wg-summary{font-size:12px;color:#a9c3b4;line-height:1.6;margin:12px 0}
+.wg-toast{position:fixed;z-index:110;top:calc(70px + env(safe-area-inset-top));left:50%;transform:translateX(-50%) translateY(-8px);background:#d6f0c5;color:#17362b;border-radius:11px;box-shadow:0 9px 25px #0008;padding:10px 14px;max-width:90vw;min-width:160px;font-size:12px;font-weight:640;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;text-align:center}
+.wg-toast.visible{opacity:1;transform:translateX(-50%) translateY(0)}
+.wg-toast.error{background:#ffe0d4;color:#642e26}
+.wg-modal-backdrop{position:fixed;inset:0;background:#091619bc;z-index:90;display:flex;align-items:flex-end;justify-content:center;backdrop-filter:blur(4px)}
+.wg-modal{width:min(100%,550px);max-height:84dvh;overflow-y:auto;background:#1c3530;border-radius:20px 20px 0 0;padding:19px 18px calc(22px + env(safe-area-inset-bottom));border:1px solid #50715d;box-shadow:0 -10px 32px #0005}
+.wg-modal-heading{display:flex;align-items:center;justify-content:space-between}
+.wg-modal h2{margin:0;font-size:21px}
+.wg-modal h3{font-size:13px;margin:24px 0 10px;color:#d8f0da;display:flex;justify-content:space-between}
+.wg-modal h3 span{color:#8ca99a}
+.wg-modal-caption{font-size:12px;color:#aac4b6;line-height:1.6;margin:12px 0}
+.wg-library-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}
+.wg-library-actions button,.wg-snapshot button{background:#335647;color:#e8f6e8;border:1px solid #72917d;border-radius:10px;padding:9px 11px;font-size:12px}
+.wg-snapshot-list{display:flex;flex-direction:column;gap:8px}
+.wg-snapshot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 10px;border:1px solid #4b6859;border-radius:11px;background:#253e35}
+.wg-snapshot>div:first-child{min-width:0}
+.wg-snapshot strong{font-size:12px;display:block;overflow-wrap:anywhere}
+.wg-snapshot small{display:block;font-size:10px;color:#9db6a7;margin-top:4px}
+.wg-snapshot>div:last-child{display:flex;gap:6px;flex-shrink:0}
+.wg-snapshot button.wg-delete{color:#ffbba9;font-size:16px;padding:4px 10px}
+.wg-screen-reader-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+@media(min-width:700px){.wg-console{height:clamp(260px,32dvh,410px)}.wg-map-area{bottom:clamp(260px,32dvh,410px)}.wg-stage-main{padding:15px max(22px,calc((100vw - 900px)/2)) 25px}.wg-progress-row{padding-inline:max(18px,calc((100vw - 900px)/2))}.wg-controls{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-height:610px){.wg-map-area{bottom:250px}.wg-console{height:250px}.wg-stage-main{padding-bottom:10px}.wg-stage-chip{min-height:37px}}

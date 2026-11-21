@@ -1,0 +1,30 @@
+name: Notify AppLauncher of WorldGen update
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send WorldGen commit to AppLauncher
+        env:
+          TOKEN: ${{ secrets.APP_LAUNCHER_DISPATCH_TOKEN }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$TOKEN" ]]; then
+            echo "::error::Configure APP_LAUNCHER_DISPATCH_TOKEN in WorldGen Actions secrets"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --retry 3 \
+            --request POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "{\"event_type\":\"worldgen-updated\",\"client_payload\":{\"app\":\"worldgen\",\"sha\":\"$SHA\"}}" \
+            https://api.github.com/repos/tanner-voas/AppLauncher/dispatches

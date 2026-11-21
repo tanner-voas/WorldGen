@@ -1,0 +1,12 @@
+{
+  "name": "worldgen-pwa",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Layered procedural world generator for AppLauncher and standalone PWA.",
+  "scripts": {
+    "build": "python3 package.py",
+    "test": "node --test tests/*.test.js",
+    "serve": "python3 -m http.server 8766 --directory dist/standalone"
+  }
+}
