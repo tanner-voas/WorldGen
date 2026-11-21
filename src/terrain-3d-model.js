@@ -4,14 +4,16 @@
  */
 import {insideGeometry} from './engine.js';
 import {createTerrainSampler,visitTerrainSites} from './render.js';
+import {buildTerrainSiteColors,sampleTerrainColor,terrainAppearanceName} from './terrain-3d-material.js';
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const ELEVATION_RENDER_STAGE=4;
 
 /** Select the actual saved terrain field for a historical generation stage.
- * Later environmental layers reuse the locked erosion terrain; they do not
- * silently incorporate climate, water or vegetation into the 3D material.
- * This is a read-only selection: it never rewrites saved layer records.
+ * Later environmental layers reuse the locked erosion heightfield; their
+ * saved climate, soil, biome and vegetation fields are separately interpreted
+ * as read-only material colors by terrain-3d-material.js. This function only
+ * chooses elevation and sea level and never rewrites saved layer records.
  */
 export function selectTerrainSource(stage,getLayer){
  const selected=Number(stage);
@@ -158,6 +160,8 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  // Position(3) + normal(3) + elevation(1), interleaved for one GPU buffer.
  const raw=new Float32Array(count),inside=new Uint8Array(count);
  const sampler=createTerrainSampler(mesh,.72);
+ const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
+ const materialColors=sourceColors?new Float32Array(count*3):null;
  const maxExtent=Math.max(geometry.width,geometry.height);
  const worldScale=4.8/maxExtent,planeWidth=geometry.width*worldScale,planeDepth=geometry.height*worldScale;
  const dx=planeWidth/cols,dz=planeDepth/rows;
@@ -166,6 +170,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   for(let x=0;x<=cols;x++){
    const wx=geometry.width*x/cols,idx=y*(cols+1)+x,offset=idx*7;
    raw[idx]=sampleElevation(sampler,elevations,wx,wy);
+   if(materialColors)materialColors.set(sampleTerrainColor(sampler,sourceColors,wx,wy),idx*3);
    inside[idx]=insideGeometry(wx,wy,geometry)?1:0;
    vertexData[offset]=(x/cols-.5)*planeWidth;
    vertexData[offset+1]=raw[idx]*.73;
@@ -214,5 +219,5 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
    return arr;
   })());
  onProgress(1);
- return {vertexData,levels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count};
+ return {vertexData,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count};
 }

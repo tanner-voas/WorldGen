@@ -32,12 +32,15 @@ precision highp float;
 layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in float aElevation;
+layout(location=3) in vec3 aMaterial;
 uniform mat4 uCamera;
+out vec3 vMaterial;
 out vec3 vNormal;
 out vec3 vPosition;
 out float vElevation;
 void main(){
  vNormal=aNormal;
+ vMaterial=aMaterial;
  vPosition=aPosition;
  vElevation=aElevation;
  gl_Position=uCamera*vec4(aPosition,1.0);
@@ -45,11 +48,13 @@ void main(){
 const FRAGMENT=`#version 300 es
 precision highp float;
 in vec3 vNormal;
+in vec3 vMaterial;
 in vec3 vPosition;
 in float vElevation;
 uniform int uWater;
 uniform vec3 uEye;
 uniform float uSeaLevel;
+uniform float uMaterialStrength;
 out vec4 fragColor;
 vec3 colorRamp(float h){
  if(h<-.28)return mix(vec3(.12,.26,.28),vec3(.25,.42,.39),smoothstep(-1.5,-.28,h));
@@ -82,7 +87,7 @@ void main(){
  float shade=.54+.46*max(dot(n,sun),0.0);
  // Steeper faces reveal more rock; heights stay a continuous scalar field.
  float relativeHeight=vElevation-uSeaLevel;
- vec3 albedo=colorRamp(relativeHeight);
+ vec3 albedo=mix(colorRamp(relativeHeight),vMaterial,uMaterialStrength);
  float exposed=(1.0-smoothstep(.30,.80,n.y))*smoothstep(.02,.7,relativeHeight);
  albedo=mix(albedo,vec3(.48,.46,.42),exposed*.34);
  float ambient=clamp(.88+.12*n.y,.73,1.0);
@@ -145,14 +150,14 @@ export class Terrain3DViewer{
     else{worker.terminate();this.worker=null;reject(Error(data.message||'Elevation mesh failed'));}
    };
    worker.onerror=e=>{worker.terminate();this.worker=null;reject(Error(e.message||'3D worker failed'));};
-   worker.postMessage({geometry,mesh,elevations,seaLevel,hydrology:options.hydrology||null,waterMask:options.waterMask||null});
+   worker.postMessage({geometry,mesh,elevations,seaLevel,hydrology:options.hydrology||null,waterMask:options.waterMask||null,appearance:options.appearance||null});
   });
   if(this.disposed)return;
   this.surface=surface;
   this._initializeGL();
   this._uploadSurface();
   this.resetCamera();
-  this.onStatus(`${this.label} terrain · ${surface.cols} × ${surface.rows} grid`);
+  this.onStatus(`${this.label} terrain · ${surface.materialName||'Elevation'} materials · ${surface.cols} × ${surface.rows} grid`);
  }
  _initializeGL(){
   const gl=this.canvas.getContext('webgl2',{alpha:false,depth:true,antialias:true,powerPreference:'high-performance'});
@@ -163,6 +168,7 @@ export class Terrain3DViewer{
   this.waterLocation=gl.getUniformLocation(this.program,'uWater');
   this.eyeLocation=gl.getUniformLocation(this.program,'uEye');
   this.seaLocation=gl.getUniformLocation(this.program,'uSeaLevel');
+  this.materialLocation=gl.getUniformLocation(this.program,'uMaterialStrength');
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
   gl.disable(gl.CULL_FACE);
@@ -176,6 +182,11 @@ export class Terrain3DViewer{
   gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,28,0);
   gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,3,gl.FLOAT,false,28,12);
   gl.enableVertexAttribArray(2);gl.vertexAttribPointer(2,1,gl.FLOAT,false,28,24);
+  if(s.materialColors?.length===s.vertexCount*3){
+   this.materialVBO=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.materialVBO);
+   gl.bufferData(gl.ARRAY_BUFFER,s.materialColors,gl.STATIC_DRAW);
+   gl.enableVertexAttribArray(3);gl.vertexAttribPointer(3,3,gl.FLOAT,false,12,0);
+  }else{gl.disableVertexAttribArray(3);gl.vertexAttrib3f(3,0,0,0);this.materialVBO=null;}
   this.levelBuffers=[];
   for(const level of s.levels){
    const buffer=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buffer);
@@ -188,6 +199,7 @@ export class Terrain3DViewer{
   gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,12,0);
   gl.disableVertexAttribArray(1);gl.vertexAttrib3f(1,0,1,0);
   gl.disableVertexAttribArray(2);gl.vertexAttrib1f(2,0);
+  gl.disableVertexAttribArray(3);gl.vertexAttrib3f(3,0,0,0);
   // Separate arrays for channels and lakes share the position-only water shader.
   this.hydroGeometry=[];
   for(const [kind,vertices] of [[2,s.hydrology?.rivers],[3,s.hydrology?.lakes]]){
@@ -198,6 +210,7 @@ export class Terrain3DViewer{
    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,12,0);
    gl.disableVertexAttribArray(1);gl.vertexAttrib3f(1,0,1,0);
    gl.disableVertexAttribArray(2);gl.vertexAttrib1f(2,0);
+   gl.disableVertexAttribArray(3);gl.vertexAttrib3f(3,0,0,0);
    this.hydroGeometry.push({kind,vao,buffer,count:vertices.length/3});
   }
   gl.bindVertexArray(null);
@@ -258,6 +271,7 @@ export class Terrain3DViewer{
   const view=lookAtMatrix(eye,this.target),camera=multiplyMatrices(projection,view);
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
+  gl.uniform1f(this.materialLocation,s.materialColors?.length?0.88:0);
   const selected=meshLod(this.distance);const level=this.levelBuffers.find(b=>b.step===selected)||this.levelBuffers[0];
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
@@ -289,6 +303,7 @@ export class Terrain3DViewer{
    for(const b of this.levelBuffers||[])gl.deleteBuffer(b.buffer);
    for(const water of this.hydroGeometry||[]){gl.deleteBuffer(water.buffer);gl.deleteVertexArray(water.vao);}
    if(this.terrainVBO)gl.deleteBuffer(this.terrainVBO);
+   if(this.materialVBO)gl.deleteBuffer(this.materialVBO);
    if(this.waterVBO)gl.deleteBuffer(this.waterVBO);
    if(this.terrainVAO)gl.deleteVertexArray(this.terrainVAO);
    if(this.waterVAO)gl.deleteVertexArray(this.waterVAO);

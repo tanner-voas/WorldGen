@@ -1,4 +1,4 @@
-# WorldGen v0.1.21
+# WorldGen v0.1.22
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -153,3 +153,10 @@ The 3D viewer now follows the generation stage selected in the world explorer. L
 - From layer 9 onward, the interactive WebGL2 terrain viewer renders the saved hydrology network as narrow curved river surfaces and level lake surfaces, spatially aligned with the locked layer-7 terrain.
 - The water geometry is derived in the existing worker, transferred as typed arrays and drawn with depth testing so streams stay behind obscuring mountain ridges. It does not mutate any generation layer or the checkpoint schema.
 - Layers 4–8 retain their existing read-only terrain render and ocean datum. Climate, soils, biome and vegetation materials are still planned later. River widths and lake shores remain limited by the coarse Voronoi data until local terrain generation is introduced.
+
+
+## v0.1.22 — Environmental materials for the interactive 3D viewer
+
+From layer 8 onward, the existing 3D terrain mesh now receives continuously interpolated environmental colors from the *selected* completed stage. Layers 8–9 use saved climate temperature/moisture; layer 10 additionally uses soil type and fertility; layer 11 adds biome colors; and layer 12 adds vegetation canopy and ground-cover characteristics. The render has one stable visual profile per stage with no extra settings. Layer 9 and later still include the previously implemented river and lake geometry. Levels 4–7 retain their previous elevation-based appearance.
+
+Terrain height, sea level, hydrology, and saved world data are not rewritten. Appearance is calculated in the mesh-generation worker and transferred as an optional RGB vertex buffer. Source fields are blended on the existing 3D mesh; the eventual high-resolution local-detail subgrid remains necessary for realistic fine textures and vegetation geometry.

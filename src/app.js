@@ -4,8 +4,9 @@ import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOpt
 import {rasterize} from './raster.js';
 import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
+import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-material.js';
 
-const APP_VERSION='0.1.21',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.22',DB_NAME='worldgen-v1',KEY='workspace';
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
@@ -1077,14 +1078,14 @@ function showElevation3D(){
  if(selected===currentStage()&&(generating||dirty)){
   notice('Finish the current layer generation before opening the 3D terrain viewer',true);return;
  }
- let terrain;
- try{terrain=selectTerrainSource(selected,latestData);}
+ let terrain,appearance;
+ try{terrain=selectTerrainSource(selected,latestData);appearance=selectTerrainAppearance(selected,latestData);}
  catch(error){notice(`3D terrain unavailable: ${error.message}`,true);return;}
  releaseRender();
  const description=terrain.usesEarlierTerrain?
-  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':selected>=9?'Hydrology and later environmental surfaces use the eroded elevation':'Environmental colors not yet included in 3D'}`:
+  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':`Layer ${String(selected).padStart(2,'0')} ${terrainAppearanceName(selected).toLowerCase()} appearance`}${selected>=9?' · saved rivers and lakes':''}`:
   `Layer ${String(terrain.terrainStage).padStart(2,'0')} · ${terrain.label} · ${terrain.hasCoast?'Actual sea level':'Provisional zero-height sea datum'}`;
- openModal(`3D terrain · ${terrain.label}`,`<div class="wg-3d-root">
+ openModal(`3D terrain · ${terrainAppearanceName(selected)}`,`<div class="wg-3d-root">
   <div class="wg-3d-intro">Read-only GPU terrain · ${escapeHTML(description)}</div>
   <div class="wg-3d-viewport"><canvas id="wg-3d-canvas" aria-label="Interactive 3D terrain from ${escapeHTML(terrain.label)}"></canvas>
    <div class="wg-3d-loading" id="wg-3d-loading">Preparing 3D terrain…</div></div>
@@ -1099,7 +1100,7 @@ function showElevation3D(){
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
  const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
  terrainViewer=viewer;
- viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,label:selected>=9?`${terrain.label} + hydrology`:terrain.label,hydrology:selected>=9?latestData(9):null,waterMask:selected>=9?latestData(5)?.water:null}).then(()=>{
+ viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,label:selected>=8?`${terrain.label} + ${terrainAppearanceName(selected).toLowerCase()}`:terrain.label,hydrology:selected>=9?latestData(9):null,waterMask:selected>=5?latestData(5)?.water:null,appearance}).then(()=>{
   if(viewer.disposed)return;
   const loading=root.querySelector('#wg-3d-loading');if(loading)loading.hidden=true;
  }).catch(error=>{
