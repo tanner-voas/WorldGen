@@ -1,4 +1,4 @@
-// WorldGen v0.1.0 — deterministic geometry / geology engine; no browser globals.
+// WorldGen v0.1.1 — deterministic geometry / geology engine; no browser globals.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=1;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -6,7 +6,7 @@ export const STAGES=[
   ['Tectonic plates','Plate territories and relative motion'],
   ['Elevation','Crust, collision uplift and terrain noise'],
   ['Oceans & coasts','Sea level, water coverage and coastlines'],
-  ['Landforms','Future: geomorphology and geology'],
+  ['Landforms','Mountains, valleys, geology and fine terrain variation'],
   ['Erosion','Future: hydraulic and thermal erosion'],
   ['Climate','Future: seasonal atmosphere and oceans'],
   ['Hydrology','Future: drainage, lakes and rivers'],
@@ -15,12 +15,14 @@ export const STAGES=[
   ['Habitats','Future: vegetation and habitats'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=4;
+export const IMPLEMENTED=5;
+export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
   1:{count:900,distribution:'jittered',jitter:0.74,relaxation:1,seed:271828},
   2:{plates:15,continental:0.42,motion:0.7,seed:314159},
   3:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
-  4:{land:0.38,seed:141421}
+  4:{land:0.38,seed:141421},
+  5:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export function random(seed){let a=(seed|0)>>>0;return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};}
@@ -56,13 +58,14 @@ function initialSites(settings){const rand=random(settings.seed),n=clamp(Math.ro
  }
  return sites;
 }
-function cellPolygons(sites){
+function cellPolygons(sites,onProgress=null){
  const n=sites.length,spacing=Math.sqrt(WORLD_WIDTH*WORLD_HEIGHT/n),sz=spacing*1.25;
  const nx=Math.ceil(WORLD_WIDTH/sz),ny=Math.ceil(WORLD_HEIGHT/sz),buckets=new Map();
  function bucketIndex(ix,iy){return iy*nx+ix;}
  for(let i=0;i<n;i++){const p=sites[i],ix=clamp(Math.floor(p[0]/sz),0,nx-1),iy=clamp(Math.floor(p[1]/sz),0,ny-1),k=bucketIndex(ix,iy);if(!buckets.has(k))buckets.set(k,[]);buckets.get(k).push(i);}
  const result=new Array(n),adj=new Array(n);
  for(let i=0;i<n;i++){
+  if(onProgress && i%Math.max(10,Math.floor(n/45))===0)onProgress(i/n);
   const [x,y]=sites[i],ix=clamp(Math.floor(x/sz),0,nx-1),iy=clamp(Math.floor(y/sz),0,ny-1);
   const seen=new Set(),candidates=[];
   function addNearby(radius){const lowX=clamp(Math.floor((x-radius)/sz),0,nx-1),highX=clamp(Math.floor((x+radius)/sz),0,nx-1),lowY=clamp(Math.floor((y-radius)/sz),0,ny-1),highY=clamp(Math.floor((y+radius)/sz),0,ny-1);
@@ -96,13 +99,14 @@ function cellPolygons(sites){
  for(const row of adj)row.sort((a,b)=>a-b);
  return {polygons:result,neighbors:adj};
 }
-export function generateMesh(settings){let sites=initialSites(settings),geo;
+export function generateMesh(settings,onProgress=null){let sites=initialSites(settings),geo;
  const passes=clamp(Math.round(settings.relaxation),0,3);
  for(let t=0;t<=passes;t++){
-  geo=cellPolygons(sites);
+  geo=cellPolygons(sites,onProgress?fraction=>onProgress((t+fraction)/(passes+1)):null);
   if(t===passes)break;
   sites=sites.map((p,i)=>{const c=centroid(geo.polygons[i]);return c?[clamp(c[0],0.001,WORLD_WIDTH-0.001),clamp(c[1],0.001,WORLD_HEIGHT-0.001)]:p;});
  }
+ onProgress?.(1);
  const cells=sites.map((p,i)=>({x:+p[0].toFixed(4),y:+p[1].toFixed(4),poly:geo.polygons[i].flat().map(z=>+z.toFixed(4)),neighbors:geo.neighbors[i]}));
  return {width:WORLD_WIDTH,height:WORLD_HEIGHT,cells};
 }
@@ -149,22 +153,139 @@ export function generateCoasts(elevationData,settings){const es=elevationData.el
  const water=es.map(value=>value<seaLevel?1:0);
  return {seaLevel,water,landFraction:water.filter(v=>!v).length/water.length};
 }
-export function generateStage(stage,locked,settings){
+/** Detailed relief is added *without mutating* the locked height/sea layers.
+ * Preserve the layer-4 land/water mask so locked coastlines remain stable.
+ * Class IDs match LANDFORM_NAMES and will remain part of the save schema.
+ */
+export function generateLandforms(mesh,plateData,heightData,coastData,settings){
+ const cells=mesh.cells,base=heightData.elevations,water=coastData.water,sea=coastData.seaLevel;
+ const {plates,owners}=plateData,seed=settings.seed|0;
+ const elevations=new Array(cells.length),ruggedness=new Array(cells.length),classes=new Array(cells.length),volcanoes=[];
+ const ridgePower=clamp(Number(settings.ridge),0,1.6),detailPower=clamp(Number(settings.detail),0,1.6);
+ const valleys=clamp(Number(settings.valleys),0,1.6),volcanism=clamp(Number(settings.volcanism),0,1);
+ for(let i=0;i<cells.length;i++){
+  const c=cells[i],plate=plates[owners[i]];
+  let border=0,convergent=0;
+  for(const j of c.neighbors){
+   if(owners[i]===owners[j])continue;
+   border=1;
+   const other=plates[owners[j]],dx=cells[j].x-c.x,dy=cells[j].y-c.y;
+   convergent=Math.max(convergent,-((other.vx-plate.vx)*dx+(other.vy-plate.vy)*dy)/(Math.hypot(dx,dy)||1));
+  }
+  // Orient successive ridges in the direction of local plate travel.
+  const direction=Math.atan2(plate.vy,plate.vx)+Math.PI/2;
+  const rx=(c.x*Math.cos(direction)+c.y*Math.sin(direction))/105;
+  const ry=(-c.x*Math.sin(direction)+c.y*Math.cos(direction))/340;
+  const coherentRidge=Math.abs(fbm(rx,ry,seed+29,4));
+  const noiseDetail=fbm(c.x/64,c.y/64,seed+431,5);
+  const valleyMask=Math.max(0,1-Math.abs(fbm(c.x/180,c.y/180,seed+149,3))*3.1);
+  const rough=(0.11+detailPower*.26)*(noiseDetail + ridgePower*.7*coherentRidge);
+  const tectonic=border?Math.max(0,convergent)*ridgePower*.13:0;
+  const cut=valleys*.11*valleyMask;
+  let height=base[i]+rough+tectonic-cut;
+  // A coastline is a deliberate locked result, not a byproduct to rewrite.
+  height=water[i]?Math.min(sea-.002,height):Math.max(sea+.002,height);
+  elevations[i]=+clamp(height,-1.8,1.8).toFixed(4);
+ }
+ for(let i=0;i<cells.length;i++){
+  const c=cells[i],height=elevations[i],relative=height-sea;
+  let slope=0;
+  for(const j of c.neighbors)slope+=Math.abs(height-elevations[j])/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)+.001)*42;
+  slope=c.neighbors.length?clamp(slope/c.neighbors.length,0,1):0;
+  ruggedness[i]=+slope.toFixed(4);
+  if(water[i]){classes[i]=relative<-.48?0:1;continue;}
+  const plateEdge=c.neighbors.some(j=>owners[i]!==owners[j]);
+  const volcanic=plateEdge&&hash2(i,owners[i],seed+801)<volcanism*.48;
+  if(volcanic){classes[i]=7;volcanoes.push(i);}
+  else if(relative<.085)classes[i]=2;
+  else if(relative>.70 || (relative>.4&&slope>.55))classes[i]=6;
+  else if(relative>.39)classes[i]=5;
+  else if(slope>.33)classes[i]=4;
+  else if(relative<.17&&slope<.12)classes[i]=8;
+  else classes[i]=3;
+ }
+ const counts=Array(LANDFORM_NAMES.length).fill(0);
+ for(const type of classes)counts[type]++;
+ return {elevations,ruggedness,classes,volcanoes,counts};
+}
+export function generateStage(stage,locked,settings,onProgress=null){
  const mesh=locked[0]?.data;
- if(stage===1)return generateMesh(settings);
+ if(stage===1)return generateMesh(settings,onProgress);
  if(stage===2){if(!mesh)throw Error('Voronoi mesh required');return generatePlates(mesh,settings);}
  if(stage===3){if(!locked[1]?.data)throw Error('Tectonic layer required');return generateElevation(mesh,locked[1].data,settings);}
  if(stage===4){if(!locked[2]?.data)throw Error('Elevation layer required');return generateCoasts(locked[2].data,settings);}
- throw Error('Stage not available in v0.1.0');
+ if(stage===5){if(!locked[3]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[1].data,locked[2].data,locked[3].data,settings);}
+ throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
- return {schema:SCHEMA_VERSION,id:`world-${Date.now()}`,name,created:new Date().toISOString(),updated:new Date().toISOString(),locked:[],working:{stage:1,settings:{...DEFAULTS[1]},data:null,dataSettings:null},viewStage:1,viewMode:'auto',showEdges:true,selected:null};
+ return {schema:SCHEMA_VERSION,id:`world-${Date.now()}`,name,created:new Date().toISOString(),updated:new Date().toISOString(),locked:[],working:{stage:1,settings:{...DEFAULTS[1]},data:null,dataSettings:null},viewStage:1,viewMode:'auto',showEdges:true,showPlateBorders:false,showCoastBorders:false,exploreMode:false,selected:null};
 }
 export function validateWorld(world){
  if(!world||world.schema!==SCHEMA_VERSION||!Array.isArray(world.locked)||world.locked.length>IMPLEMENTED)throw Error('Unsupported or invalid world save');
+ if(typeof world.name!=='string'||world.name.length>200)throw Error('Save has an invalid world name');
  for(let i=0;i<world.locked.length;i++)if(world.locked[i]?.stage!==i+1||!world.locked[i]?.data)throw Error('Save has missing or unordered layers');
  if(!world.working||!Number.isInteger(world.working.stage)||world.working.stage<1||world.working.stage>IMPLEMENTED+1)throw Error('Save has invalid working layer');
- if(world.working.stage!==Math.min(IMPLEMENTED+1,world.locked.length+1))throw Error('Save has inconsistent layer progression');
- if(world.locked.length && (!Array.isArray(world.locked[0].data.cells)||world.locked[0].data.cells.length>4000))throw Error('Save mesh is not supported');
+ if(world.working.stage!==world.locked.length+1)throw Error('Save has inconsistent layer progression');
+ const records=[...world.locked];
+ if(world.working.data)records.push(world.working);
+ const mesh=records.find(r=>r.stage===1)?.data;
+ if(mesh){
+  if(!Array.isArray(mesh.cells)||mesh.cells.length<1||mesh.cells.length>3200)throw Error('Invalid world mesh size');
+  for(const c of mesh.cells){
+   if(!Number.isFinite(c.x)||!Number.isFinite(c.y)||c.x<0||c.x>WORLD_WIDTH||c.y<0||c.y>WORLD_HEIGHT)throw Error('Invalid mesh site');
+   if(!Array.isArray(c.poly)||c.poly.length<6||c.poly.length>256||c.poly.length%2)throw Error('Invalid polygon');
+   if(!Array.isArray(c.neighbors)||c.neighbors.length>80||c.neighbors.some(j=>!Number.isInteger(j)||j<0||j>=mesh.cells.length))throw Error('Invalid mesh neighbors');
+   if(c.poly.some((v,i)=>!Number.isFinite(v)||v<-.01||v>(i%2?WORLD_HEIGHT:WORLD_WIDTH)+.01))throw Error('Invalid polygon coordinates');
+  }
+ }
+ const n=mesh?.cells.length;
+ for(const record of records){
+  if(record.stage===1)continue;
+  if(!n)throw Error('Missing base mesh for a generated layer');
+  const d=record.data;
+  if(record.stage===2&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)))throw Error('Invalid plate data');
+  if((record.stage===3||record.stage===5)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
+  if(record.stage===4&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)))throw Error('Invalid coast data');
+  if(record.stage===5&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)))throw Error('Invalid landform data');
+ }
  return world;
+}
+
+/** Upgrade incomplete settings in older saves without rewriting locked data.
+ * In v0.1.0, stage 5 was only a placeholder and had no parameter defaults.
+ */
+export function upgradeWorld(world){
+ validateWorld(world);
+ const stage=world.working.stage;
+ if(stage<=IMPLEMENTED){
+  const defaults=DEFAULTS[stage];
+  const current=world.working.settings||{};
+  const next={...defaults,...current};
+  for(const [key,baseline] of Object.entries(defaults)){
+   if(typeof baseline==='number'&&(!Number.isFinite(Number(next[key]))||next[key]===''))next[key]=baseline;
+   if(typeof baseline==='string'&&!['jittered','random','clustered'].includes(next[key]))next[key]=baseline;
+  }
+  world.working.settings=next;
+ }
+ if(!['auto','natural','geometry','plates','height','coast','landforms'].includes(world.viewMode))world.viewMode='auto';
+ world.exploreMode=!!world.exploreMode;
+ world.showEdges=world.showEdges!==false;
+ world.showPlateBorders=!!world.showPlateBorders;
+ world.showCoastBorders=!!world.showCoastBorders;
+ return world;
+}
+
+/** Self-contained checkpoint through a selected layer. Later layers never leak in. */
+export function snapshotThroughStage(world,stage){
+ validateWorld(world);
+ if(!Number.isInteger(stage)||stage<1||stage>IMPLEMENTED)throw Error('Invalid checkpoint stage');
+ const target=world.locked[stage-1]||(world.working.stage===stage?world.working:null);
+ if(!target?.data)throw Error('Selected layer has no generated data');
+ const result=structuredClone(world);
+ result.locked=result.locked.filter(record=>record.stage<=stage);
+ if(world.working.stage!==stage){
+  result.working={stage:stage+1,settings:stage+1<=IMPLEMENTED?{...DEFAULTS[stage+1]}:{},data:null,dataSettings:null};
+ }
+ result.viewStage=stage;
+ return result;
 }

@@ -1,4 +1,4 @@
-# WorldGen v0.1.0
+# WorldGen v0.1.1
 
 A layered, offline-capable map generator. Its codebase supports **two separate distributions**:
 
@@ -7,13 +7,29 @@ A layered, offline-capable map generator. Its codebase supports **two separate d
 
 `python3 package.py` builds both outputs. `npm test` runs Node unit tests. `npm run serve` runs the standalone build locally at `http://localhost:8766/`.
 
-## Scope of v0.1.0
+## Working generation layers
 
-Working generation stages: (1) Voronoi geometry with adjustable cell count, distribution, jitter, and Lloyd relaxation, (2) tectonic plates, (3) elevation with broad terrain noise and plate-boundary uplift, (4) sea-level and coastlines. Stages 5–12 appear as clearly unavailable placeholders. v0.1.0 terrain/geology is deliberately simplified: it is **not** a physical tectonic simulator and is **not yet GPU accelerated**; intensive work runs in a Web Worker to keep the interface responsive.
+1. **Voronoi geometry** — editable cell count (100–3200), placement, jitter, relaxation and seed.
+2. **Tectonic plates** — continental/oceanic plate territories, motion, plate boundaries.
+3. **Elevation** — terrain noise, continental elevation and approximate plate-boundary uplift.
+4. **Oceans and coastlines** — explicit sea level derived from requested land coverage.
+5. **Landforms (new in v0.1.1)** — further terrain relief, ridges, valleys, slopes, geological landform classification and volcanic fields. Stage 5 *preserves* stage 4's land/water mask.
 
-The map supports drag, pinch zoom, mouse wheel, fit-to-screen, selectable map modes, a mesh overlay, cell inspection, and viewing earlier locked layers. Generation and viewport rendering are independent. Settings trigger regeneration of only the current stage; a layer must be locked before the next one becomes editable. Revising an earlier stage requires explicit confirmation and removes later stages from the working branch.
+Stages 6–12 (erosion, climate, hydrology, soils, biomes, habitats and local detail) remain non-functional placeholders. The current geology is a procedural approximation, **not** a physical tectonic simulator. It uses a Web Worker, not WebGPU; later stages can introduce higher-resolution terrain fields and GPU computation.
 
-State auto-saves to IndexedDB under `worldgen-v1`. Named checkpoints contain complete states through all locked layers **and any generated working layer** (for example, saving a layer-4 preview includes layers 1–4 even before locking layer 4). Export/import uses standalone, human-readable JSON **including all generated geometry and field data**, not just seeds. Export is strongly recommended for external backups because browser data can be evicted. No external services or accounts are required.
+## Exploration and stage history
+
+Touch gestures support drag/pan, pinch zoom, cell inspection, and zoom-to-fit. The new **Expand map** control opens a full-height exploration view; **Show settings** returns to the generation panel. The floating stage navigator switches between generated layers even while the settings panel is hidden. Display modes include natural, Voronoi geometry, plates, elevation, coastlines, and landforms. An Overlays popover allows independently showing the mesh, tectonic boundaries, and coastlines, and provides a map legend. You can export the currently visible map as a PNG.
+
+World position, zoom, overlay visibility, display selection, and exploration mode are persisted between sessions. Generation is deterministic per stage seed; Voronoi generation reports progress from the worker. Changing settings invalidates only the current working layer's preview, not locked predecessors. Revising a locked earlier layer requires confirmation and truncates the active branch; make a named checkpoint first to keep the previous result.
+
+## Saving and migration
+
+All work is automatically cached in a dedicated IndexedDB namespace (`worldgen-v1`). Slider adjustments use a short save debounce to avoid serializing the whole world on every input event. Full save/export includes generated data **and** parameters, not only random seeds. Named checkpoints are stored as independent records with a small index, rather than rewriting every historical checkpoint whenever a new one is saved.
+
+**Saving while viewing layer N produces a complete checkpoint through layer N**, including all locked layers through N and, where applicable, a generated working preview at N. It does not inadvertently include later stages. Each checkpoint may be restored or independently exported to JSON. When the selected working layer is still regenerating or has stale preview data, saving that working layer is blocked until it finishes. You can still save an earlier locked layer.
+
+Existing v0.1.0 state and checkpoint arrays migrate to the new representation on first load, without changing the older locked layers. In particular, old worlds that ended with layer 4 locked are given default settings for the newly available layer 5. Schema remains 1. Export a downloadable backup periodically; mobile browsers may evict local site data.
 
 ## AppLauncher contract
 
@@ -21,22 +37,15 @@ The module entrypoint is `./app.js` and the style entrypoint is `./styles.css` w
 
 `package.py` deliberately does not place a manifest or SW in `dist/worldgen`; the launcher owns the installed PWA shell, updates and offline precache. WorldGen's storage namespace is distinct from Ciyan's.
 
-## New repository setup
+## Updating the existing GitHub repository
 
-1. Create an **empty** GitHub repository `tanner-voas/WorldGen`, with no generated README or `.gitignore`.
-2. Extract the provided WorldGen repository archive (it contains `.git` with `main` already committed).
-3. Add the GitHub remote if not already present and push `main`:
+This archive retains the original Git history, with v0.1.1 committed above v0.1.0. If `origin` is not already configured in the extracted folder, run `git remote add origin https://github.com/tanner-voas/WorldGen.git`. Then:
 
-   ```bash
-   git remote add origin https://github.com/tanner-voas/WorldGen.git
-   git push -u origin main
-   ```
+```bash
+git push -u origin main
+```
 
-4. In the WorldGen repository, create an Actions secret `APP_LAUNCHER_DISPATCH_TOKEN`: a fine-grained PAT authorized for `tanner-voas/AppLauncher` with **Contents: Read and write** (and access to its repository). This token is needed for the WorldGen -> AppLauncher dispatch. If the first push occurred before adding the secret, use WorldGen **Actions -> Notify AppLauncher of WorldGen update -> Run workflow**.
-5. Push the separately supplied AppLauncher v0.1.3 update, **after** the WorldGen repository exists and its initial `main` commit is available. The launcher references WorldGen as a real Git submodule, not a copied app directory.
-6. Confirm the launcher GitHub Action `update-worldgen.yml` responds to the dispatch and the Cloudflare deployment completes. The launcher should show WorldGen v0.1.0 as an enabled tile. Its standalone site is optional and can be deployed from `dist/standalone` when desired.
-
-GitHub doesn't accept the dispatch secret from a file: configure it in the GitHub repository settings. Do not add any credentials to either archive.
+The existing `notify-launcher.yml` workflow dispatches the new commit to AppLauncher, whose `update-worldgen.yml` workflow advances the submodule and triggers its normal deployment. Ensure `APP_LAUNCHER_DISPATCH_TOKEN` remains configured in WorldGen's GitHub Actions secrets. Alternatively, use the provided AppLauncher archive containing this exact pinned WorldGen commit after pushing WorldGen first.
 
 ## Implementation notes
 

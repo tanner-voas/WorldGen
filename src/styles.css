@@ -91,3 +91,32 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-screen-reader-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 @media(min-width:700px){.wg-console{height:clamp(260px,32dvh,410px)}.wg-map-area{bottom:clamp(260px,32dvh,410px)}.wg-stage-main{padding:15px max(22px,calc((100vw - 900px)/2)) 25px}.wg-progress-row{padding-inline:max(18px,calc((100vw - 900px)/2))}.wg-controls{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-height:610px){.wg-map-area{bottom:250px}.wg-console{height:250px}.wg-stage-main{padding-bottom:10px}.wg-stage-chip{min-height:37px}}
+/* v0.1.1: exploration-first map controls and nonintrusive overlays. */
+.wg-console-handle{height:23px;width:54px;display:flex;align-items:center;justify-content:center;margin:0 auto 1px;background:transparent;border:0;color:#b6d8c0;cursor:pointer}
+.wg-console-handle span{display:block;height:4px;width:36px;border-radius:4px;background:#648275}
+.wg-map-nav{position:absolute;bottom:10px;left:10px;display:flex;align-items:center;gap:2px;max-width:calc(100% - 136px);border:1px solid #52736e8a;border-radius:10px;background:#142f35ed;color:#e8f3ec;backdrop-filter:blur(12px);box-shadow:0 2px 7px #0004;overflow:hidden}
+.wg-map-nav button{width:30px;height:34px;flex-shrink:0;border:0;background:transparent;color:#d9eade;font-size:23px}
+.wg-map-nav button:disabled{opacity:.32}
+.wg-map-nav span{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:162px}
+.wg-explore-toggle{position:absolute;right:10px;bottom:10px;background:#c4e2b1;color:#173727;border:1px solid #e2f3d2;border-radius:10px;padding:8px 11px;font-size:11px!important;font-weight:750!important;min-height:36px;box-shadow:0 2px 8px #071d2780}
+.wg-map-scale{bottom:51px}
+.wg-inspector{bottom:84px}
+.wg-display-bar{z-index:3}
+.wg-overlay-trigger{background:#142f35e8;color:#e6f2ee;border:1px solid #52736e7e;border-radius:10px;height:38px;padding:0 9px;font-size:12px!important;backdrop-filter:blur(10px)}
+.wg-overlays{position:absolute;z-index:4;top:57px;left:12px;min-width:174px;background:#193735f5;border:1px solid #5e8174;border-radius:11px;padding:9px 12px;display:flex;flex-direction:column;gap:10px;box-shadow:0 9px 24px #0008;backdrop-filter:blur(12px)}
+.wg-overlays[hidden]{display:none}
+.wg-overlays label{display:flex;align-items:center;gap:8px;font-size:12px;color:#e9f3e9;min-height:24px}
+.wg-overlays input{accent-color:#b7dba9;width:16px;height:16px}
+.wg-shell.wg-explore .wg-map-area{bottom:0}
+.wg-shell.wg-explore .wg-console{transform:translateY(104%);pointer-events:none}
+.wg-console{transition:transform .24s ease-out}
+.wg-map-area{transition:none}
+.wg-snapshot-list .wg-snapshot>div:last-child{flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:390px){.wg-map-nav span{max-width:100px}.wg-display-bar select{max-width:140px}.wg-inspector{max-width:calc(100% - 24px)}.wg-map-buttons{right:9px}.wg-overlay-trigger{padding:0 7px}}
+@media(prefers-reduced-motion:reduce){.wg-console,.wg-map-area{transition:none}}
+.wg-legend{margin-top:3px;padding-top:10px;border-top:1px solid #56776d;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 12px;max-width:310px}
+.wg-legend strong{grid-column:1/-1;font-size:12px;color:#f1f8ed;margin-bottom:3px}
+.wg-legend span{font-size:10px;display:flex;align-items:center;gap:6px;color:#cbddce;white-space:nowrap}
+.wg-legend i{display:inline-block;flex:0 0 13px;width:13px;height:13px;border-radius:3px;border:1px solid #ffffff44}
+.wg-legend p{grid-column:1/-1;font-size:11px;line-height:1.5;margin:0;color:#aec7bb}
+.wg-height-ramp{grid-column:1/-1;height:10px;border-radius:4px;background:linear-gradient(to right,#183653,#2b6882,#8a9d99,#6e9174,#aca87c,#89735f,#e8ece7)}
