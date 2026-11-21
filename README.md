@@ -1,6 +1,6 @@
-# WorldGen v0.1.25
+# WorldGen v0.1.26
 
-An offline-capable, progressively generated 2D landscape explorer. Build targets:
+An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
 - `dist/worldgen/` — app module for AppLauncher (launcher owns PWA shell/service worker).
 - `dist/standalone/` — self-contained installable PWA with its own manifest/service worker.
@@ -180,3 +180,14 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 - The WebGL2 shader adds restrained, deterministic surface-material texture at two spatial frequencies. Screen-space anti-aliasing suppresses detail that is too small to resolve at a distance. This affects appearance only: no invented terrain elevation, geometry changes, or new generator stages.
 - Double-tap a visible terrain location in the 3D viewer to focus and zoom the orbit camera on it; Fit restores the global view. The focus ray checks the current generated mesh and the exact world outline. Mouse double-click is also supported.
 - Worker output includes a compact shape mask for read-only focus picking, with no changes to stored worlds.
+
+## v0.1.26 — realistic terrain proportions and close-up geometry
+
+- Corrected gross vertical exaggeration in the 3D renderer. Source elevations are not metres; the 3D view now uses a stable world-dimension-based convention (approximately 6 km of relief per model unit, visual exaggeration ×3, with bounds for small/large worlds), replacing the fixed 0.73 multiplier. Ocean, lakes, rivers, tile height bounds, and terrain picking use the same vertical units. No saved elevation data is changed.
+- A smoother, finite-slope, compact interpolation kernel replaces the very sharp inverse-distance weighting that created isolated 3D spikes at individual Voronoi centres.
+- At close zoom, a Web Worker builds **6×6 finer terrain geometry per base grid square** within at most four tiles near the camera target. Detail blends into the original base-grid heights at shared edges, so neighboring coarse and refined meshes do not crack. Fine terrain still follows the original polygon field; it does not add new generated landforms.
+- Zoom can continue until the average original polygon is larger than the field of view. Orbit and pan follow the nearby surface at close range. Up to eight local tiles remain cached while exploring to avoid redundant sampling; leaving the close-up view releases their GPU resources. The global mesh and LOD remain inexpensive.
+- Rendering remains stage-aware (4–12), read-only, offline, and has no user-facing render settings. World generation, checkpoints, save schema, and AppLauncher integration are unchanged.
+- Tests cover realistic scale, smooth interpolation, exact coarse-to-refined tile seams on all world shapes, close zoom limits, worker-based tile upload/reuse/release, and preservation of source elevation values.
+
+**Constraint:** A polygon may now fill the camera view without the coarse base mesh becoming the limiting factor, but the actual topographic information is still limited to the original polygons until local-detail generation is implemented. WebGL2 on iPhone Safari still requires testing on device.

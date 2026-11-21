@@ -1,5 +1,6 @@
 import {lodStepForDistance,adaptiveTileLod,tileVisibleInFrustum} from './terrain-3d-lod.js';
-import {cameraRay,pickTerrainRay} from './terrain-3d-focus.js';
+import {cameraRay,pickTerrainRay,surfaceHeightAt} from './terrain-3d-focus.js';
+import {closeUpCameraLimits,focusedTerrainTiles,LOCAL_TERRAIN_SUBDIVISIONS} from './terrain-3d-detail.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
  * smooth lighting, water and interactive level-of-detail index buffers.
@@ -140,7 +141,10 @@ export class Terrain3DViewer{
   this.pitch=.93;this.yaw=-.69;this.distance=7.5;this.target=[0,0,0];this.mode='orbit';
   this.pointers=new Map();this.gesture=null;this.pendingFrame=0;this.resources=[];
   this.tapStart=null;this.lastTap=null;this.lastFocusTime=0;
-  this.onLost=e=>{e.preventDefault();this.lost=true;this.onStatus('Graphics context interrupted');};
+  this.detailWorker=null;this.detailSignature='';this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSource=null;
+  this.onLost=e=>{e.preventDefault();this.lost=true;
+   this.detailWorker?.terminate();this.detailWorker=null;this.detailSignature='';
+   this.onStatus('Graphics context interrupted');};
   this.onRestored=()=>{this.lost=false;if(this.surface){this._initializeGL();this._uploadSurface();this.drawSoon();}};
   canvas.addEventListener('webglcontextlost',this.onLost);
   canvas.addEventListener('webglcontextrestored',this.onRestored);
@@ -178,6 +182,8 @@ export class Terrain3DViewer{
   });
   if(this.disposed)return;
   this.surface=surface;
+  this.detailSource={geometry,mesh,elevations,appearance:options.appearance||null};
+  this.detailLimits=closeUpCameraLimits(surface.siteSpacing);
   this._initializeGL();
   this._uploadSurface();
   this.resetCamera();
@@ -187,6 +193,7 @@ export class Terrain3DViewer{
   const gl=this.canvas.getContext('webgl2',{alpha:false,depth:true,antialias:true,powerPreference:'high-performance'});
   if(!gl)throw Error('WebGL2 is unavailable. Try Safari 26+ with hardware acceleration enabled.');
   this.gl=gl;this.resources=[];
+  this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSignature='';
   this.program=program(gl);
   this.cameraLocation=gl.getUniformLocation(this.program,'uCamera');
   this.waterLocation=gl.getUniformLocation(this.program,'uWater');
@@ -245,6 +252,87 @@ export class Terrain3DViewer{
   }
   gl.bindVertexArray(null);
  }
+ /** Release only focused refinement buffers; the global terrain remains. */
+ _deleteFocusedPatch(id){
+  const gl=this.gl,p=this.detailPatches.get(id);
+  if(!p)return;
+  if(gl&&!this.lost){
+   gl.deleteBuffer(p.vbo);gl.deleteBuffer(p.ibo);
+   if(p.materialVBO)gl.deleteBuffer(p.materialVBO);
+   gl.deleteVertexArray(p.vao);
+  }
+  this.detailPatches.delete(id);
+ }
+ _releaseFocusedPatches(){
+  for(const id of [...this.detailPatches.keys()])this._deleteFocusedPatch(id);
+  this.activeDetailIds?.clear();
+ }
+ _requestFocusedDetail(){
+  if(!this.surface||!this.detailSource||this.disposed||this.lost)return;
+  const close=this.distance<=(this.detailLimits?.detailDistance||.25);
+  const tiles=close?focusedTerrainTiles(this.surface,this.target):[];
+  const signature=tiles.map(tile=>tile.id).join(',');
+  if(signature===this.detailSignature)return;
+  this.detailWorker?.terminate();this.detailWorker=null;
+  this.activeDetailIds=new Set(tiles.map(tile=>tile.id));
+  this.detailSignature=signature;
+  if(!tiles.length){this._releaseFocusedPatches();return;}
+  // Keep up to eight recently used tiles. Camera moves within a region should
+  // not repeatedly resample and re-upload the same expensive detailed mesh.
+  for(const id of this.activeDetailIds){
+   if(this.detailPatches.has(id)){
+    const cached=this.detailPatches.get(id);
+    this.detailPatches.delete(id);this.detailPatches.set(id,cached);
+   }
+  }
+  const missing=tiles.filter(tile=>!this.detailPatches.has(tile.id));
+  if(!missing.length)return;
+  const source=this.detailSource,s=this.surface;
+  const worker=new Worker(new URL('./terrain-3d-worker.js',import.meta.url),{type:'module'});
+  this.detailWorker=worker;
+  worker.onmessage=({data})=>{
+   if(worker!==this.detailWorker||this.disposed)return;
+   if(data.kind==='detail'&&data.key===signature){
+    worker.terminate();this.detailWorker=null;
+    const gl=this.gl;
+    for(let k=0;k<data.patches.length;k++){
+     const patch=data.patches[k],id=missing[k].id;
+     const vao=gl.createVertexArray();gl.bindVertexArray(vao);
+     const vbo=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
+     gl.bufferData(gl.ARRAY_BUFFER,patch.vertexData,gl.STATIC_DRAW);
+     gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,28,0);
+     gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,3,gl.FLOAT,false,28,12);
+     gl.enableVertexAttribArray(2);gl.vertexAttribPointer(2,1,gl.FLOAT,false,28,24);
+     let materialVBO=null;
+     if(patch.materialColors){
+      materialVBO=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,materialVBO);
+      gl.bufferData(gl.ARRAY_BUFFER,patch.materialColors,gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(3);gl.vertexAttribPointer(3,3,gl.FLOAT,false,12,0);
+     }else{gl.disableVertexAttribArray(3);gl.vertexAttrib3f(3,0,0,0);}
+     const ibo=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibo);
+     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,patch.indices,gl.STATIC_DRAW);
+     this.detailPatches.set(id,{vao,vbo,materialVBO,ibo,count:patch.indices.length});
+    }
+    gl.bindVertexArray(null);
+    while(this.detailPatches.size>8){
+     const old=[...this.detailPatches.keys()].find(id=>!this.activeDetailIds.has(id));
+     if(old===undefined)break;
+     this._deleteFocusedPatch(old);
+    }
+    this.drawSoon();
+   }else if(data.kind==='error'){
+    worker.terminate();this.detailWorker=null;
+    this.onStatus(`Close-up refinement unavailable: ${data.message}`);
+   }
+  };
+  worker.onerror=e=>{if(worker!==this.detailWorker)return;
+   worker.terminate();this.detailWorker=null;
+   this.onStatus(`Close-up refinement unavailable: ${e.message||'worker failed'}`);
+  };
+  worker.postMessage({kind:'detail',key:signature,tiles:missing,grid:{cols:s.cols,rows:s.rows,
+   planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale},
+   ...source});
+ }
  resetCamera(){
   this.pitch=.94;this.yaw=-.72;this.target=[0,0,0];
   const span=Math.max(this.surface?.planeWidth||4.8,this.surface?.planeDepth||3.5);
@@ -252,14 +340,22 @@ export class Terrain3DViewer{
   this.drawSoon();
  }
  setMode(mode){this.mode=mode==='pan'?'pan':'orbit';}
- zoom(factor){this.distance=clamp(this.distance*factor,.65,32);this.drawSoon();}
+ _followTerrain(){
+  if(!this.surface||this.distance>.65)return;
+  const ground=surfaceHeightAt(this.surface,this.target[0],this.target[2]);
+  if(ground===null)return;
+  const sea=(this.surface.seaLevel||0)*(this.surface.heightScale??.73);
+  this.target[1]=Math.max(ground,sea);
+ }
+ zoom(factor){this.distance=clamp(this.distance*factor,this.detailLimits?.minimumDistance||.008,32);
+  this._followTerrain();this.drawSoon();}
  pan(dx,dy){
   const span=this.distance*.0017;
   const right=[Math.cos(this.yaw),-Math.sin(this.yaw)];
   const up=[-Math.sin(this.yaw),-Math.cos(this.yaw)];
   this.target[0]=clamp(this.target[0]-dx*right[0]*span+dy*up[0]*span,-(this.surface?.planeWidth||4.8)*.7,(this.surface?.planeWidth||4.8)*.7);
   this.target[2]=clamp(this.target[2]-dx*right[1]*span+dy*up[1]*span,-(this.surface?.planeDepth||4.8)*.7,(this.surface?.planeDepth||4.8)*.7);
-  this.drawSoon();
+  this._followTerrain();this.drawSoon();
  }
  pointerDown(e){
   if(this.disposed)return;
@@ -308,7 +404,7 @@ export class Terrain3DViewer{
   const ray=cameraRay(eye,this.target,x,y,rect.width,rect.height);
   const point=ray&&pickTerrainRay(this.surface,eye,ray);
   if(!point)return false;
-  this.target=point;this.distance=clamp(this.distance*.78,.65,32);
+  this.target=point;this.distance=clamp(this.distance*.78,this.detailLimits?.minimumDistance||.008,32);
   this.lastFocusTime=now;this.drawSoon();return true;
  }
 
@@ -326,7 +422,8 @@ export class Terrain3DViewer{
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
   const cp=Math.cos(this.pitch),sp=Math.sin(this.pitch),sy=Math.sin(this.yaw),cy=Math.cos(this.yaw);
   const eye=[this.target[0]+this.distance*cp*sy,this.target[1]+this.distance*sp,this.target[2]+this.distance*cp*cy];
-  const projection=perspectiveMatrix(.77,width/height,.04,100);
+  const near=Math.max(.00035,Math.min(.04,this.distance*.045));
+  const projection=perspectiveMatrix(.77,width/height,near,100);
   const view=lookAtMatrix(eye,this.target),camera=multiplyMatrices(projection,view);
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
@@ -335,6 +432,8 @@ export class Terrain3DViewer{
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
   gl.bindVertexArray(this.terrainVAO);
+  this._requestFocusedDetail();
+  const hasFocused=[...(this.detailPatches||new Map()).keys()].some(id=>this.activeDetailIds?.has(id));
   const tiled=this.levelBuffers,baseline=tiled.find(level=>level.step===1);
   let selectedTriangles=0,finest=8,coarsest=1;
   if(baseline?.tiles?.length){
@@ -344,7 +443,8 @@ export class Terrain3DViewer{
    // avoids dense stitched boundaries that are not needed in that view.
    const selectedSteps=baseline.tiles.map(tile=>adaptiveTileLod(eye,tile,span));
    finest=Math.min(...selectedSteps);coarsest=Math.max(...selectedSteps);
-   const uniform=finest===coarsest?this.uniformLevelBuffers?.find(level=>level.step===finest):null;
+   const uniform=finest===coarsest&&!hasFocused?
+    this.uniformLevelBuffers?.find(level=>level.step===finest):null;
    if(uniform){
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,uniform.buffer);
     gl.drawElements(gl.TRIANGLES,uniform.count,gl.UNSIGNED_INT,0);
@@ -353,6 +453,7 @@ export class Terrain3DViewer{
     let currentStep=0;
     for(let i=0;i<baseline.tiles.length;i++){
      const tile=baseline.tiles[i];
+     if(this.activeDetailIds?.has(tile.id)&&this.detailPatches?.has(tile.id))continue;
      // The full elevation range makes this culling conservative even when a
      // tile contains steep mountains. Invisible tiles need no GPU draw call.
      if(!tileVisibleInFrustum(camera,tile,s))continue;
@@ -369,6 +470,14 @@ export class Terrain3DViewer{
    gl.drawElements(gl.TRIANGLES,level.count,gl.UNSIGNED_INT,0);
    selectedTriangles=level.count/3;finest=coarsest=level.step;
   }
+  if(hasFocused){
+   for(const [id,patch] of this.detailPatches){
+    if(!this.activeDetailIds?.has(id))continue;
+    gl.bindVertexArray(patch.vao);
+    gl.drawElements(gl.TRIANGLES,patch.count,gl.UNSIGNED_INT,0);
+    selectedTriangles+=patch.count/3;
+   }
+  }
   gl.uniform1i(this.waterLocation,1);
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
   gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
@@ -380,13 +489,18 @@ export class Terrain3DViewer{
   }
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);
   const detail=finest===coarsest?`LOD ${finest}`:`Adaptive LOD ${finest}–${coarsest}`;
-  const status=`${this.label} · ${detail} · ${selectedTriangles.toLocaleString()} terrain tris · ${s.hydrology?.riverSegments||0} river tris`;
+  const closeDetail=hasFocused?` · ${LOCAL_TERRAIN_SUBDIVISIONS}× close-up tiles`:
+   this.detailWorker?' · refining close-up…':'';
+  const status=`${this.label} · ${detail}${closeDetail} · ${selectedTriangles.toLocaleString()} terrain tris · ${s.hydrology?.riverSegments||0} river tris`;
   if(status!==this.lastDrawStatus){this.lastDrawStatus=status;this.onStatus(status);}
  }
  dispose(){
   if(this.disposed)return;
   this.disposed=true;if(this.pendingFrame)cancelAnimationFrame(this.pendingFrame);
-  this.worker?.terminate();this.worker=null;this.resizeObserver?.disconnect();
+  this.worker?.terminate();this.worker=null;
+  this.detailWorker?.terminate();this.detailWorker=null;
+  this._releaseFocusedPatches();this.detailSource=null;
+  this.resizeObserver?.disconnect();
   const c=this.canvas;
   c.removeEventListener('webglcontextlost',this.onLost);c.removeEventListener('webglcontextrestored',this.onRestored);
   c.removeEventListener('pointerdown',this.onPointerDown);c.removeEventListener('pointermove',this.onPointerMove);

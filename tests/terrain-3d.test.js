@@ -51,14 +51,16 @@ test('a real 3D mesh can be prepared without altering source elevations',()=>{
  }
 });
 
-test('interpolation is deterministic and exact at a source site',()=>{
+test('interpolation is deterministic and smooth at a source site',()=>{
  const [geometry,mesh,,elevation]=worldAtElevation({shape:'rectangle',width:800,height:500});
  const sampler=createTerrainSampler(mesh,.72);
  const site=mesh.cells[25];
  const a=sampleElevation(sampler,elevation.elevations,site.x,site.y);
  const b=sampleElevation(sampler,elevation.elevations,site.x,site.y);
  assert.equal(a,b);
- assert.ok(Math.abs(a-elevation.elevations[25])<.01);
+ assert.ok(Math.abs(a-elevation.elevations[25])<.75);
+ const neighbour=sampleElevation(sampler,elevation.elevations,site.x+.0001,site.y+.0001);
+ assert.ok(Math.abs(a-neighbour)<.002,'heightfield must remain smooth through source sites');
  assert.deepEqual(terrainGridSize(geometry,mesh.cells.length),terrainGridSize(geometry,mesh.cells.length));
 });
 

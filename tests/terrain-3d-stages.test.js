@@ -38,7 +38,7 @@ test('3D ocean plane is located at the actual locked sea level on every world sh
    const rendered=buildElevationSurface(geometry,mesh,source.elevations,()=>{}, {seaLevel:source.seaLevel});
    assert.equal(JSON.stringify(source.elevations),before,'derived mesh must not rewrite locked data');
    assert.equal(rendered.seaLevel,source.seaLevel);
-   for(let i=1;i<rendered.ocean.length;i+=3)assert.ok(Math.abs(rendered.ocean[i]-source.seaLevel*.73)<1e-6);
+   for(let i=1;i<rendered.ocean.length;i+=3)assert.ok(Math.abs(rendered.ocean[i]-source.seaLevel*rendered.heightScale)<1e-6);
    assert.ok(rendered.vertexData.every(Number.isFinite));
   }
  }

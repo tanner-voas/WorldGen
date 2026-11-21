@@ -9,6 +9,18 @@ import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const ELEVATION_RENDER_STAGE=4;
+/** Elevation source values are dimensionless; one model unit represents about
+ * 6 km of relief. Use three-fold visual exaggeration, rather than interpreting
+ * model elevations as hundreds of kilometres of vertical displacement. The
+ * resulting conversion varies with world size, never with camera zoom.
+ */
+export function terrainHeightScale(geometry){
+ const extent=Math.max(geometry?.width||0,geometry?.height||0);
+ if(!Number.isFinite(extent)||extent<=0)throw Error('Invalid terrain extent');
+ const horizontalScale=4.8/extent;
+ return clamp(horizontalScale*18,.004,.24);
+}
+const smoothstep=(a,b,v)=>{const x=clamp((v-a)/(b-a),0,1);return x*x*(3-2*x);};
 
 /** Select the actual saved terrain field for a historical generation stage.
  * Later environmental layers reuse the locked erosion heightfield; their
@@ -46,17 +58,117 @@ export function terrainGridSize(geometry,cellCount){
  * tessellation edges are ever used as a color or height discontinuity. */
 export function sampleElevation(sampler,elevations,x,y){
  let total=0,weighted=0;
- const found=visitTerrainSites(sampler,x,y,(i,weight)=>{
+ // The legacy interpolant used inverse-distance weights (1/r²) and placed
+ // unnaturally steep narrow peaks at Voronoi sites. A compact C2 Wendland
+ // kernel has bounded derivatives at its centre and smoothly tapers out at
+ // its search radius. It intentionally smooths the source field, without
+ // changing any stored elevation values.
+ const radius=sampler.radius;
+ const found=visitTerrainSites(sampler,x,y,i=>{
+  const site=sampler.mesh.cells[i],distance=Math.hypot(site.x-x,site.y-y);
+  const t=clamp(distance/radius,0,1),u=1-t;
+  const weight=u*u*u*u*(1+4*t);
   total+=weight;weighted+=Number(elevations[i])*weight;
  });
  if(found>0&&total>1e-15)return weighted/total;
- // Sparse samples are only expected near the outer geometry boundary.
  let closest=Infinity,best=0;
  for(let i=0;i<sampler.mesh.cells.length;i++){
   const c=sampler.mesh.cells[i],d=(c.x-x)**2+(c.y-y)**2;
   if(d<closest){closest=d;best=i;}
  }
  return Number(elevations[best]);
+}
+
+/** A high-resolution local tile that exactly stitches into the coarse mesh.
+ * At its outer edge height is linear between adjacent base grid vertices;
+ * across a short transition band it becomes the full continuous elevation
+ * field. This prevents open seams while resolving a single Voronoi polygon
+ * with tens of triangles across instead of a handful.
+ */
+export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,options={}){
+ const {cols,rows,planeWidth,planeDepth,heightScale}=grid||{};
+ const {x0,y0,x1,y1}=area||{};
+ const subdivisions=options.subdivisions??8;
+ if(!Number.isInteger(cols)||!Number.isInteger(rows)||cols<=0||rows<=0||
+    !Number.isFinite(planeWidth)||!Number.isFinite(planeDepth)||!Number.isFinite(heightScale)||
+    ![x0,y0,x1,y1,subdivisions].every(Number.isInteger)||x0<0||y0<0||
+    x1>cols||y1>rows||x1<=x0||y1<=y0||subdivisions<2||subdivisions>12||
+    elevations?.length!==mesh?.cells?.length)throw Error('Invalid focused terrain patch');
+ const nx=(x1-x0)*subdivisions,ny=(y1-y0)*subdivisions;
+ const count=(nx+1)*(ny+1),stride=nx+1;
+ const vertexData=new Float32Array(count*7),inside=new Uint8Array(count),raw=new Float32Array(count);
+ const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
+ const materialColors=sourceColors?new Float32Array(count*3):null;
+ const sampler=createTerrainSampler(mesh,.72);
+ // Cache coarse grid corners; the patch can contain more than 65,000
+ // vertices but has only a few hundred coarse-grid anchors.
+ const anchors=new Float32Array((x1-x0+1)*(y1-y0+1));
+ const anchorAt=(x,y)=>anchors[(y-y0)*(x1-x0+1)+x-x0];
+ for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+  anchors[(y-y0)*(x1-x0+1)+x-x0]=sampleElevation(sampler,elevations,geometry.width*x/cols,geometry.height*y/rows);
+ }
+ for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){
+  const gx=x0+i/subdivisions,gy=y0+j/subdivisions;
+  const wx=geometry.width*gx/cols,wy=geometry.height*gy/rows;
+  const xx=(gx/cols-.5)*planeWidth,zz=(gy/rows-.5)*planeDepth;
+  const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
+  const fx=gx-ax,fy=gy-ay;
+  const coarse=(anchorAt(ax,ay)*(1-fx)+anchorAt(ax+1,ay)*fx)*(1-fy)+
+               (anchorAt(ax,ay+1)*(1-fx)+anchorAt(ax+1,ay+1)*fx)*fy;
+  const accurate=sampleElevation(sampler,elevations,wx,wy);
+  const border=Math.min(gx-x0,x1-gx,gy-y0,y1-gy);
+  const fade=smoothstep(0,1.5,border);
+  const id=j*stride+i,offset=id*7;
+  raw[id]=coarse+(accurate-coarse)*fade;
+  vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
+  vertexData[offset+2]=zz;vertexData[offset+6]=raw[id];
+  inside[id]=insideGeometry(wx,wy,geometry)?1:0;
+  if(materialColors)materialColors.set(sampleTerrainColor(sampler,sourceColors,wx,wy),id*3);
+ }
+ // Match the coarse mesh normals as well as its edge heights. Without
+ // this a mathematically crack-free edge could still show a lighting seam.
+ const coarseDx=planeWidth/cols,coarseDz=planeDepth/rows;
+ const normalAnchors=new Float32Array(anchors.length*3);
+ const baseSample=(x,y)=>x>=x0&&x<=x1&&y>=y0&&y<=y1?anchorAt(x,y):
+  sampleElevation(sampler,elevations,geometry.width*x/cols,geometry.height*y/rows);
+ for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+  const l=baseSample(Math.max(0,x-1),y),r=baseSample(Math.min(cols,x+1),y);
+  const u=baseSample(x,Math.max(0,y-1)),d=baseSample(x,Math.min(rows,y+1));
+  const dx0=(r-l)*heightScale/(coarseDx*(x===0||x===cols?1:2));
+  const dz0=(d-u)*heightScale/(coarseDz*(y===0||y===rows?1:2));
+  const len=Math.hypot(dx0,1,dz0),idx=((y-y0)*(x1-x0+1)+x-x0)*3;
+  normalAnchors.set([-dx0/len,1/len,-dz0/len],idx);
+ }
+ const dx=planeWidth/(cols*subdivisions),dz=planeDepth/(rows*subdivisions);
+ for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){
+  const idx=j*stride+i,offset=idx*7;
+  const l=raw[j*stride+Math.max(0,i-1)],r=raw[j*stride+Math.min(nx,i+1)];
+  const u=raw[Math.max(0,j-1)*stride+i],d=raw[Math.min(ny,j+1)*stride+i];
+  const gradX=(r-l)*heightScale/(dx*(i===0||i===nx?1:2));
+  const gradZ=(d-u)*heightScale/(dz*(j===0||j===ny?1:2));
+  const length=Math.hypot(gradX,1,gradZ);
+  const gx=x0+i/subdivisions,gy=y0+j/subdivisions;
+  const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
+  const tx=gx-ax,ty=gy-ay,coarseStride=x1-x0+1;
+  const base=(xx,yy,dim)=>normalAnchors[((yy-y0)*coarseStride+xx-x0)*3+dim];
+  const fade=smoothstep(0,1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy));
+  const blended=[];
+  for(let c=0;c<3;c++){
+   const anchor=(base(ax,ay,c)*(1-tx)+base(ax+1,ay,c)*tx)*(1-ty)+
+    (base(ax,ay+1,c)*(1-tx)+base(ax+1,ay+1,c)*tx)*ty;
+   const fine=[-gradX/length,1/length,-gradZ/length][c];
+   blended.push(anchor*(1-fade)+fine*fade);
+  }
+  const scale=Math.hypot(...blended)||1;
+  for(let c=0;c<3;c++)vertexData[offset+3+c]=blended[c]/scale;
+ }
+ const indices=[];
+ for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
+  const a=j*stride+i,b=a+1,c=a+stride,d=c+1;
+  if(inside[a]&&inside[b]&&inside[c])indices.push(a,c,b);
+  if(inside[b]&&inside[c]&&inside[d])indices.push(b,c,d);
+ }
+ return {vertexData,materialColors,indices:new Uint32Array(indices),x0,y0,x1,y1,subdivisions,vertexCount:count};
 }
 
 /** Generate narrow curved 3D water ribbons and level lake surfaces directly from
@@ -77,8 +189,9 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
  const maxDischarge=Math.max(.001,Number(hydrology.summary?.maxDischarge)||.001);
  const pixelSpacing=Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/n)*scale;
  const toX=x=>(x/geometry.width-.5)*sx,toZ=z=>(z/geometry.height-.5)*sz;
- const centerHeight=(x,y)=>sampleElevation(sampler,elevations,x,y)*.73;
- const point=(x,y,relativeOffset=.012)=>[toX(x),centerHeight(x,y)+relativeOffset,toZ(y)];
+ const heightScale=Number(options.heightScale)||terrainHeightScale(geometry);
+ const centerHeight=(x,y)=>sampleElevation(sampler,elevations,x,y)*heightScale;
+ const point=(x,y,relativeOffset=Math.max(.0002,heightScale*.018))=>[toX(x),centerHeight(x,y)+relativeOffset,toZ(y)];
  const addTriangle=(target,a,b,c)=>target.push(...a,...b,...c);
  const keep=new Set(hydrology.channels.filter(i=>Number.isInteger(i)&&i>=0&&i<n));
  const incoming=new Int32Array(n).fill(-1);
@@ -108,7 +221,7 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
   const bend=.7*len;
   const sections=5;
   const flow=clamp(Math.sqrt(Math.max(0,Number(hydrology.discharge[i]))/maxDischarge),0,1);
-  const width=clamp(.006+pixelSpacing*(.035+.12*flow),.006,Math.min(.045,pixelSpacing*.34));
+  const width=clamp(.001+pixelSpacing*(.014+.07*flow),.001,Math.min(.02,pixelSpacing*.19));
   let previous=null;
   for(let s=0;s<=sections;s++){
    const t=(s/sections)*endFrac,t2=t*t,t3=t2*t;
@@ -124,8 +237,8 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
    const before=evaluate(ta),after=evaluate(tt);
    const ddx=after[0]-before[0],ddy=after[1]-before[1],mag=Math.hypot(ddx,ddy)||1;
    const sideways=[-ddy/mag,ddx/mag],half=width/scale/2;
-   const left=point(x-sideways[0]*half,y-sideways[1]*half,.018);
-   const right=point(x+sideways[0]*half,y+sideways[1]*half,.018);
+   const left=point(x-sideways[0]*half,y-sideways[1]*half);
+   const right=point(x+sideways[0]*half,y+sideways[1]*half);
    if(previous){addTriangle(rivers,previous[0],previous[1],left);addTriangle(rivers,previous[1],right,left);riverSegments+=2;}
    previous=[left,right];
   }
@@ -133,7 +246,7 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
  let lakeCells=0;
  for(const lake of hydrology.lakes){
   if(!lake||!Array.isArray(lake.cells)||!Number.isFinite(lake.level))continue;
-  const lakeY=lake.level*.73+.012;
+  const lakeY=lake.level*heightScale+Math.max(.0002,heightScale*.018);
   for(const id of lake.cells){
    if(!Number.isInteger(id)||id<0||id>=n||hydrology.lakeId[id]!==lake.id)continue;
    const cell=mesh.cells[id],poly=cell.poly;
@@ -158,6 +271,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  if(!Number.isFinite(seaLevel)||Math.abs(seaLevel)>4)throw Error('Invalid 3D sea level');
  const {segmentsX:cols,segmentsY:rows}=terrainGridSize(geometry,mesh.cells.length);
  const count=(cols+1)*(rows+1),vertexData=new Float32Array(count*7);
+ const heightScale=terrainHeightScale(geometry);
  // Position(3) + normal(3) + elevation(1), interleaved for one GPU buffer.
  const raw=new Float32Array(count),inside=new Uint8Array(count);
  let minY=Infinity,maxY=-Infinity;
@@ -172,11 +286,11 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   for(let x=0;x<=cols;x++){
    const wx=geometry.width*x/cols,idx=y*(cols+1)+x,offset=idx*7;
    raw[idx]=sampleElevation(sampler,elevations,wx,wy);
-   minY=Math.min(minY,raw[idx]*.73);maxY=Math.max(maxY,raw[idx]*.73);
+   minY=Math.min(minY,raw[idx]*heightScale);maxY=Math.max(maxY,raw[idx]*heightScale);
    if(materialColors)materialColors.set(sampleTerrainColor(sampler,sourceColors,wx,wy),idx*3);
    inside[idx]=insideGeometry(wx,wy,geometry)?1:0;
    vertexData[offset]=(x/cols-.5)*planeWidth;
-   vertexData[offset+1]=raw[idx]*.73;
+   vertexData[offset+1]=raw[idx]*heightScale;
    vertexData[offset+2]=z;
    vertexData[offset+6]=raw[idx];
   }
@@ -188,8 +302,8 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   const r=raw[y*(cols+1)+Math.min(cols,x+1)];
   const t=raw[Math.max(0,y-1)*(cols+1)+x];
   const b=raw[Math.min(rows,y+1)*(cols+1)+x];
-  const ddx=(r-l)*.73/(dx*(x===0||x===cols?1:2));
-  const ddz=(b-t)*.73/(dz*(y===0||y===rows?1:2));
+  const ddx=(r-l)*heightScale/(dx*(x===0||x===cols?1:2));
+  const ddz=(b-t)*heightScale/(dz*(y===0||y===rows?1:2));
   const size=Math.hypot(ddx,1,ddz);
   vertexData[offset+3]=-ddx/size;
   vertexData[offset+4]=1/size;
@@ -201,14 +315,14 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  for(const tile of levels[0].tiles){
   let min=Infinity,max=-Infinity;
   for(let yy=tile.y0;yy<=tile.y1;yy++)for(let xx=tile.x0;xx<=tile.x1;xx++){
-   const value=raw[yy*(cols+1)+xx]*.73;
+   const value=raw[yy*(cols+1)+xx]*heightScale;
    min=Math.min(min,value);max=Math.max(max,value);
   }
   tile.minY=min-.06;tile.maxY=max+.06;
  }
  const uniformLevels=buildUniformTerrainLevels(cols,rows,inside);
- const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,waterMask:options.waterMask});
- const seaY=seaLevel*.73;
+ const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,heightScale,waterMask:options.waterMask});
+ const seaY=seaLevel*heightScale;
  const ocean=new Float32Array(geometry.shape==='rectangle'?
   [-planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,planeDepth/2,
    -planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,planeDepth/2,-planeWidth/2,seaY,planeDepth/2]:
@@ -223,5 +337,5 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   })());
  onProgress(1);
  return {vertexData,insideMask:inside,outline:geometry,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
-  minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05};
+  minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05,heightScale,siteSpacing:Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/mesh.cells.length)*worldScale};
 }

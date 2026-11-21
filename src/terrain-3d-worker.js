@@ -1,7 +1,13 @@
-import {buildElevationSurface} from './terrain-3d-model.js';
+import {buildElevationSurface,buildFocusedTerrainPatch} from './terrain-3d-model.js';
 self.onmessage=({data})=>{
  try{
   const {geometry,mesh,elevations,seaLevel,hydrology,waterMask,appearance}=data;
+  if(data.kind==='detail'){
+   const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,data.grid,tile,{appearance}));
+   const transfer=patches.flatMap(patch=>[patch.vertexData.buffer,patch.indices.buffer,...(patch.materialColors?[patch.materialColors.buffer]:[])]);
+   self.postMessage({kind:'detail',key:data.key,patches},transfer);
+   return;
+  }
   const result=buildElevationSurface(geometry,mesh,elevations,value=>{
    self.postMessage({kind:'progress',value});
   },{seaLevel,hydrology,waterMask,appearance});
