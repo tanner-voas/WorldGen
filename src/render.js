@@ -2,13 +2,10 @@ export const MIN_RENDER_STAGE=5;
 export const RENDER_SIZE_OPTIONS=[1024,1536,2048,3072,4096];
 
 const MODE_LABELS={
- natural:'Natural terrain',
- coast:'Land and sea',
- landforms:'Landforms',
- temperature:'Temperature',
- rain:'Precipitation',
+ satellite:'Satellite / terrain',
+ relief:'Physical relief',
+ climate:'Climate',
  hydrology:'Hydrology',
- soils:'Soils',
  biomes:'Biomes',
  vegetation:'Vegetation'
 };
@@ -20,32 +17,27 @@ export function defaultRenderSettings(stage){
   mode:defaultRenderMode(resolved),
   longEdge:resolved>=11?2048:1536,
   detail:resolved>=11?'high':'standard',
-  blend:0.55,
-  relief:resolved>=4?0.6:0,
-  coast:0.9,
-  hydro:resolved>=9?0.95:0,
-  climateTint:resolved>=8?0.18:0,
-  biomeTint:resolved>=11?0.2:0,
-  vegetationTint:resolved>=12?0.28:0
+  blend:0.72,
+  relief:resolved>=5?0.85:0,
+  coast:0.85,
+  hydro:resolved>=9?1.05:0,
+  climateTint:resolved>=8?0.24:0,
+  biomeTint:resolved>=11?0.18:0,
+  vegetationTint:resolved>=12?0.34:0
  };
 }
 
 export function defaultRenderMode(stage){
- if(stage>=12)return 'vegetation';
- if(stage>=11)return 'biomes';
- if(stage>=10)return 'soils';
- if(stage>=9)return 'hydrology';
- if(stage>=8)return 'temperature';
- if(stage>=6)return 'landforms';
- return 'coast';
+ if(stage>=12)return 'satellite';
+ if(stage>=11)return 'satellite';
+ if(stage>=9)return 'satellite';
+ return 'satellite';
 }
 
 export function renderModeOptions(stage){
- const ids=['natural','coast'];
- if(stage>=6)ids.push('landforms');
- if(stage>=8)ids.push('temperature','rain');
+ const ids=['satellite','relief'];
+ if(stage>=8)ids.push('climate');
  if(stage>=9)ids.push('hydrology');
- if(stage>=10)ids.push('soils');
  if(stage>=11)ids.push('biomes');
  if(stage>=12)ids.push('vegetation');
  return ids.map(id=>[id,MODE_LABELS[id]||id]);
@@ -53,7 +45,7 @@ export function renderModeOptions(stage){
 
 export function renderOptionSupport(stage){
  return {
-  relief:stage>=4,
+  relief:stage>=5,
   hydro:stage>=9,
   climateTint:stage>=8,
   biomeTint:stage>=11,
@@ -69,11 +61,12 @@ export function outputDimensions(width,height,longEdge){
 
 export function detailPreset(name){
  switch(name){
-  case 'preview':return {sampleStride:2,blur:0.7,riverWidth:0.9};
-  case 'high':return {sampleStride:1,blur:1.15,riverWidth:1.2};
-  case 'ultra':return {sampleStride:1,blur:1.45,riverWidth:1.35};
-  default:return {sampleStride:1,blur:1.0,riverWidth:1.0};
+  case 'preview':return {sampleStep:6,blur:1.05,riverWidth:0.9};
+  case 'high':return {sampleStep:3,blur:1.45,riverWidth:1.2};
+  case 'ultra':return {sampleStep:2,blur:1.7,riverWidth:1.4};
+  default:return {sampleStep:4,blur:1.25,riverWidth:1.0};
  }
 }
 
 export function clamp01(x){return Math.max(0,Math.min(1,Number(x)||0));}
+export function smoothstep(a,b,x){const t=clamp01((x-a)/Math.max(1e-9,b-a));return t*t*(3-2*t);}

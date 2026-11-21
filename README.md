@@ -1,4 +1,4 @@
-# WorldGen v0.1.11
+# WorldGen v0.1.14
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -94,3 +94,8 @@ WorldGen now includes a stage-aware static render mode that can generate higher-
 ## v0.1.13
 
 Fixed the v0.1.12 missing `render.js` deployment module error. Packaging now includes every source JS/CSS module and fails the build if a relative import is absent.
+
+
+## v0.1.14
+
+Render mode is now a true terrain-render pass rather than a lightly blurred cell map. It synthesizes a continuous raster-style terrain image from the completed world layers, adds relief shading, blends coastlines instead of drawing polygon borders, and can optionally emphasize climate, hydrology, biomes, or vegetation depending on how far generation has progressed. The resulting render opens inside an in-app viewer with drag-to-pan and zoom controls; editing still requires leaving render mode and returning to the normal world-generation interface.

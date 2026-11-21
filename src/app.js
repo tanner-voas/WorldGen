@@ -1,8 +1,8 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
-import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01} from './render.js';
+import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,clamp01,smoothstep} from './render.js';
 
-const APP_VERSION='0.1.13',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.14',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -121,7 +121,7 @@ const palettes={
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
 let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
 let persistTimer=null,viewportTimer=null,progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
-let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false,renderDraft=null;
+let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false,renderDraft=null,renderOutputCanvas=null;
 // Path2D objects and polygon extents are cached across map pans and zooms.
 let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
 let measureMode=false,measurePoints=[];
@@ -735,21 +735,21 @@ function showRenderDialog(stage=effectiveStage()){
  if(!choices.length){notice(`Rendering becomes available once layer ${MIN_RENDER_STAGE} is generated`,true);return;}
  renderDraft=blendRenderSettings(renderDraft?.stage?renderDraft:{stage:Math.min(Math.max(stage,choices[0]),choices.at(-1))});
  const supports=renderOptionSupport(renderDraft.stage),modeOptions=renderModeOptions(renderDraft.stage);
- openModal('Render map', `<p class="wg-modal-caption">Generate a heavier, higher-resolution static render from any completed world state from layer ${MIN_RENDER_STAGE} onward. This does not lock a new layer or alter generation history.</p>
+ openModal('Render map', `<p class="wg-modal-caption">Generate a heavier rendered terrain view from any completed world state from layer ${MIN_RENDER_STAGE} onward. Rendering is compute-heavy and produces a continuous, satellite-style map image that you can pan and zoom in-app. It does not create a new layer or alter your world history.</p>
   <div class="wg-render-controls">
    <label class="wg-render-field"><span>Render from layer</span><select data-render-setting="stage">${choices.map(n=>`<option value="${n}" ${n===renderDraft.stage?'selected':''}>${String(n).padStart(2,'0')} · ${escapeHTML(stageText(n))}</option>`).join('')}</select></label>
-   <label class="wg-render-field"><span>Base render mode</span><select data-render-setting="mode">${modeOptions.map(([id,label])=>`<option value="${id}" ${id===renderDraft.mode?'selected':''}>${escapeHTML(label)}</option>`).join('')}</select></label>
+   <label class="wg-render-field"><span>Render style</span><select data-render-setting="mode">${modeOptions.map(([id,label])=>`<option value="${id}" ${id===renderDraft.mode?'selected':''}>${escapeHTML(label)}</option>`).join('')}</select></label>
    <label class="wg-render-field"><span>Longest edge (px)</span><select data-render-setting="longEdge">${RENDER_SIZE_OPTIONS.map(px=>`<option value="${px}" ${px===renderDraft.longEdge?'selected':''}>${shortNumber(px)} px</option>`).join('')}</select></label>
    <label class="wg-render-field"><span>LOD / detail</span><select data-render-setting="detail"><option value="preview" ${renderDraft.detail==='preview'?'selected':''}>Preview</option><option value="standard" ${renderDraft.detail==='standard'?'selected':''}>Standard</option><option value="high" ${renderDraft.detail==='high'?'selected':''}>High</option><option value="ultra" ${renderDraft.detail==='ultra'?'selected':''}>Ultra</option></select></label>
-   <label class="wg-render-field"><span>Boundary blending <output>${Math.round(renderDraft.blend*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.blend}" data-render-setting="blend"></label>
-   <label class="wg-render-field"><span>Relief shading <output>${Math.round(renderDraft.relief*100)}%</output></span><input type="range" min="0" max="1.5" step="0.05" value="${renderDraft.relief}" data-render-setting="relief"></label>
-   ${supports.hydro?`<label class="wg-render-field"><span>River and lake emphasis <output>${Math.round(renderDraft.hydro*100)}%</output></span><input type="range" min="0" max="1.5" step="0.05" value="${renderDraft.hydro}" data-render-setting="hydro"></label>`:''}
+   <label class="wg-render-field"><span>Boundary blending <output>${Math.round(renderDraft.blend*100)}%</output></span><input type="range" min="0.25" max="1.25" step="0.05" value="${renderDraft.blend}" data-render-setting="blend"></label>
+   <label class="wg-render-field"><span>Relief shading <output>${Math.round(renderDraft.relief*100)}%</output></span><input type="range" min="0" max="1.6" step="0.05" value="${renderDraft.relief}" data-render-setting="relief"></label>
+   ${supports.hydro?`<label class="wg-render-field"><span>River and lake emphasis <output>${Math.round(renderDraft.hydro*100)}%</output></span><input type="range" min="0" max="1.6" step="0.05" value="${renderDraft.hydro}" data-render-setting="hydro"></label>`:''}
    ${supports.climateTint?`<label class="wg-render-field"><span>Climate tint <output>${Math.round(renderDraft.climateTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.climateTint}" data-render-setting="climateTint"></label>`:''}
    ${supports.biomeTint?`<label class="wg-render-field"><span>Biome tint <output>${Math.round(renderDraft.biomeTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.biomeTint}" data-render-setting="biomeTint"></label>`:''}
    ${supports.vegetationTint?`<label class="wg-render-field"><span>Vegetation tint <output>${Math.round(renderDraft.vegetationTint*100)}%</output></span><input type="range" min="0" max="1" step="0.05" value="${renderDraft.vegetationTint}" data-render-setting="vegetationTint"></label>`:''}
   </div>
   <div class="wg-actions"><button class="wg-secondary" data-action="render-current-view">Quick view PNG</button><button class="wg-primary" data-action="render-generate">Generate render</button></div>
-  <div id="wg-render-result" class="wg-render-result"><p class="wg-hint">Choose settings, then generate a high-resolution static render. After generation, you can preview it here and export the PNG.</p></div>`, 'wg-render-dialog');
+  <div id="wg-render-result" class="wg-render-result"><p class="wg-hint">Choose settings, then generate a rendered terrain map. Once complete you can pan, zoom and export the PNG here.</p></div>`, 'wg-render-dialog');
 }
 function geometryClipPath(context,geometry,scaleX,scaleY){
  context.beginPath();
@@ -769,96 +769,200 @@ function parseRenderColor(value){
  return nums.slice(0,3);
 }
 function rgbToCss(rgb){return `rgb(${rgb.map(v=>Math.max(0,Math.min(255,Math.round(v)))).join(',')})`;}
-function mixRgb(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function mixRgb(a,b,t){const u=clamp01(t);return [a[0]+(b[0]-a[0])*u,a[1]+(b[1]-a[1])*u,a[2]+(b[2]-a[2])*u];}
 function mulRgb(a,f){return [a[0]*f,a[1]*f,a[2]*f];}
-function renderNaturalColor(i,stage,settings){
- const baseMode=settings.mode||'natural';
- let rgb=parseRenderColor(colorForCell(i,stage,baseMode==='natural'?'auto':baseMode));
- const climate=stage>=8?latestData(8):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null;
- if(climate&&settings.climateTint>0){
-  const dry=[193,165,110],wet=[76,132,151];
-  rgb=mixRgb(rgb,mixRgb(dry,wet,clamp01(climate.moisture[i])),clamp01(settings.climateTint)*0.45);
+function addRgb(a,b,t){return [a[0]+b[0]*t,a[1]+b[1]*t,a[2]+b[2]*t];}
+function buildRenderNeighborhoods(mesh,maxCells=18){
+ return mesh.cells.map((cell,index)=>{
+  const seen=new Set([index]);
+  const out=[index];
+  let frontier=[index];
+  for(let depth=0;depth<2&&out.length<maxCells;depth++){
+   const next=[];
+   for(const current of frontier){
+    for(const nb of mesh.cells[current].neighbors){
+     if(seen.has(nb))continue;
+     seen.add(nb);out.push(nb);next.push(nb);
+     if(out.length>=maxCells)break;
+    }
+    if(out.length>=maxCells)break;
+   }
+   frontier=next;
+   if(!frontier.length)break;
+  }
+  return out;
+ });
+}
+function renderCellStats(stage){
+ const mesh=latestData(2),coasts=stage>=5?latestData(5):null,landforms=stage>=6?latestData(6):null,erosion=stage>=7?latestData(7):null,climate=stage>=8?latestData(8):null,hydrology=stage>=9?latestData(9):null,soils=stage>=10?latestData(10):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null;
+ const elevations=(erosion?.elevations)||(landforms?.elevations)||(coasts?.elevations)||(latestData(4)?.elevations)||new Float32Array(mesh.cells.length);
+ const water=coasts?.water||Array(mesh.cells.length).fill(false),seaLevel=coasts?.seaLevel??0;
+ let minWater=seaLevel,maxLand=seaLevel;
+ for(let i=0;i<mesh.cells.length;i++)if(water[i])minWater=Math.min(minWater,elevations[i]);else maxLand=Math.max(maxLand,elevations[i]);
+ if(!Number.isFinite(minWater))minWater=seaLevel-.4;
+ if(!Number.isFinite(maxLand)||maxLand<=seaLevel)maxLand=seaLevel+.8;
+ const biomeRgb=biomes?mesh.cells.map((_,i)=>parseRenderColor(colorForCell(i,stage,'biomes'))):null;
+ const vegetationRgb=vegetation?mesh.cells.map((_,i)=>parseRenderColor(colorForCell(i,stage,'vegetation'))):null;
+ const avgArea=(mesh.areaKm2||geometryData().width*geometryData().height)/Math.max(1,mesh.cells.length);
+ return {mesh,coasts,climate,hydrology,soils,biomes,vegetation,elevations,water,seaLevel,minWater,maxLand,avgRadius:Math.sqrt(avgArea/Math.PI),neighborhoods:buildRenderNeighborhoods(mesh),biomeRgb,vegetationRgb,geometry:prepareGeometry(mesh)};
+}
+function weightedSample(state,wx,wy,settings){
+ const owner=cellAtPoint(state.geometry.spatial,wx,wy);
+ if(owner==null)return {landFrac:0,elev:state.seaLevel-.18,tempC:8,moist:0.45,rain:700,canopy:0,ground:0.05,biomeRgb:[146,157,124],vegetationRgb:[153,167,128],lake:0,discharge:0,productivity:0.3};
+ const cells=state.mesh.cells,group=state.neighborhoods[owner]||[owner];
+ const sigma=Math.max(1e-6,state.avgRadius*(0.7+settings.blend*1.85));
+ const sigma2=sigma*sigma;
+ let wSum=0,land=0,elev=0,temp=0,moist=0,rain=0,canopy=0,ground=0,lake=0,discharge=0,productivity=0,tree=0;
+ const biome=[0,0,0],veg=[0,0,0];
+ for(const j of group){
+  const c=cells[j],dx=wx-c.x,dy=wy-c.y,d2=dx*dx+dy*dy,w=1/(1+d2/sigma2);
+  wSum+=w;
+  const landCell=state.water[j]?0:1;
+  land+=landCell*w;
+  elev+=state.elevations[j]*w;
+  if(state.climate){temp+=state.climate.meanTemp[j]*w;moist+=state.climate.moisture[j]*w;rain+=state.climate.precipitation[j]*w;}else{temp+=12*w;moist+=0.42*w;rain+=700*w;}
+  let treeHere=0.2,productivityHere=0.38;
+  if(state.biomes){productivityHere=state.biomes.productivity[j];treeHere=state.biomes.treePotential[j];const rgb=state.biomeRgb[j];biome[0]+=rgb[0]*w;biome[1]+=rgb[1]*w;biome[2]+=rgb[2]*w;}
+  productivity+=productivityHere*w;tree+=treeHere*w;
+  if(state.vegetation){canopy+=state.vegetation.canopyCover[j]*w;ground+=state.vegetation.groundCover[j]*w;const rgb=state.vegetationRgb[j];veg[0]+=rgb[0]*w;veg[1]+=rgb[1]*w;veg[2]+=rgb[2]*w;}
+  else if(state.soils){ground+=state.soils.fertility[j]*0.55*w;canopy+=treeHere*0.35*w;}
+  else ground+=(state.climate?state.climate.moisture[j]:0.42)*0.35*w;
+  if(state.hydrology){lake+=(state.hydrology.lakeId[j]>=0?1:0)*w;discharge+=Math.min(1,state.hydrology.discharge[j]/Math.max(.001,state.hydrology.summary.maxDischarge))*w;}
  }
- if(biomes&&settings.biomeTint>0)rgb=mixRgb(rgb,parseRenderColor(colorForCell(i,stage,'biomes')),clamp01(settings.biomeTint)*0.5);
- if(vegetation&&settings.vegetationTint>0)rgb=mixRgb(rgb,parseRenderColor(colorForCell(i,stage,'vegetation')),clamp01(settings.vegetationTint)*0.55);
+ wSum=Math.max(1e-6,wSum);
+ return {landFrac:land/wSum,elev:elev/wSum,tempC:temp/wSum,moist:moist/wSum,rain:rain/wSum,canopy:canopy/wSum,ground:ground/wSum,biomeRgb:biome.map(v=>v/wSum),vegetationRgb:veg.map(v=>v/wSum),lake:lake/wSum,discharge:discharge/wSum,productivity:productivity/wSum,tree:tree/wSum};
+}
+function climateRamp(tempNorm,moist){
+ const cold=[86,120,168],temperate=[175,191,137],warm=[210,178,108],hot=[186,113,73],lush=[67,132,89];
+ let rgb=tempNorm<0.45?mixRgb(cold,temperate,tempNorm/0.45):tempNorm<0.72?mixRgb(temperate,warm,(tempNorm-.45)/.27):mixRgb(warm,hot,(tempNorm-.72)/.28);
+ rgb=mixRgb(rgb,lush,clamp01(moist)*0.45);
  return rgb;
 }
-function renderShadeArray(stage,amount){
- const mesh=latestData(2),heights=(stage>=7?latestData(7)?.elevations:null)||(stage>=6?latestData(6)?.elevations:null)||(stage>=5?latestData(5)?.elevations:null)||latestData(4)?.elevations;
- if(!mesh?.cells||!heights||amount<=0)return null;
- const light=[-0.62,-0.5,1.08];
- const ll=Math.hypot(...light);light[0]/=ll;light[1]/=ll;light[2]/=ll;
- const shade=new Float32Array(mesh.cells.length);
- for(let i=0;i<mesh.cells.length;i++){
-  const c=mesh.cells[i];let gx=0,gy=0;
-  for(const j of c.neighbors){const dx=mesh.cells[j].x-c.x,dy=mesh.cells[j].y-c.y,d=Math.hypot(dx,dy)||1;const de=heights[j]-heights[i];gx+=de*dx/(d*d);gy+=de*dy/(d*d);} 
-  const nx=-gx*65*amount,ny=-gy*65*amount,nz=1;const nl=Math.hypot(nx,ny,nz)||1;const dot=(nx/nl)*light[0]+(ny/nl)*light[1]+(nz/nl)*light[2];shade[i]=Math.max(0.45,Math.min(1.35,0.83+dot*0.42));
+function terrainColorFromSample(sample,state,settings){
+ const mode=settings.mode||'satellite';
+ const landFrac=clamp01(sample.landFrac),tempNorm=clamp01((sample.tempC+15)/50),moist=clamp01(sample.moist),vegness=clamp01(sample.ground*.55+sample.canopy*.45),landHeight=clamp01((sample.elev-state.seaLevel)/Math.max(.001,state.maxLand-state.seaLevel)),depth=clamp01((state.seaLevel-sample.elev)/Math.max(.001,state.seaLevel-state.minWater));
+ let ocean=mixRgb([92,169,184],[11,59,97],Math.pow(depth,.72));
+ ocean=mixRgb(ocean,[109,191,194],(1-smoothstep(.12,.62,depth))*.32);
+ let color;
+ if(mode==='climate')color=landFrac<.5?ocean:climateRamp(tempNorm,moist);
+ else if(mode==='biomes'&&state.biomes)color=landFrac<.5?ocean:sample.biomeRgb;
+ else if(mode==='vegetation'&&state.vegetation)color=landFrac<.5?ocean:sample.vegetationRgb;
+ else if(mode==='relief'){
+  let low=mixRgb([196,186,142],[92,130,88],moist*.65);
+  low=mixRgb(low,[150,140,118],smoothstep(.38,.92,landHeight)*.72);
+  color=mixRgb(low,[241,243,242],smoothstep(.82,1,landHeight));
+ }else{
+  let arid=mixRgb([220,203,155],[181,164,118],landHeight*.4),lush=mixRgb([122,156,97],[67,116,79],clamp01(vegness*.9+moist*.5));
+  color=mixRgb(arid,lush,clamp01(moist*.95+.18*sample.productivity));
+  color=mixRgb(color,[127,114,103],smoothstep(.46,.88,landHeight)*.7);
+  color=mixRgb(color,[164,157,147],smoothstep(.72,1,landHeight)*.35);
+  const beach=(1-smoothstep(.58,.76,landFrac))*clamp01(1-landHeight*3.2);
+  color=mixRgb(color,[223,210,168],beach*.75);
+  if(state.climate&&settings.climateTint>0){
+   const dry=[208,176,116],wet=[78,132,111];
+   color=mixRgb(color,mixRgb(dry,wet,moist),settings.climateTint*.42);
+  }
+  if(state.biomes&&settings.biomeTint>0)color=mixRgb(color,sample.biomeRgb,settings.biomeTint*.44);
+  if(state.vegetation&&settings.vegetationTint>0)color=mixRgb(color,sample.vegetationRgb,settings.vegetationTint*.54);
+  const snow=clamp01((2-sample.tempC)/18 + smoothstep(.8,1,landHeight)*.6);
+  color=mixRgb(color,[242,245,244],snow);
  }
- return shade;
+ if(mode==='hydrology'&&landFrac>=.5){
+  color=mixRgb(color,[85,135,104],.18+.18*sample.productivity);
+  color=mixRgb(color,[72,176,186],clamp01(sample.discharge*.28+sample.lake*.2));
+ }
+ const coastBlend=smoothstep(.32,.68,landFrac);
+ color=mixRgb(ocean,color,coastBlend);
+ if(sample.lake>.25)color=mixRgb(color,[83,168,193],clamp01(sample.lake*.85));
+ return {rgb:color,surface:landFrac>=.5?landHeight:-depth*.38,landFrac};
+}
+function applyReliefShading(image,heightField,landField,width,height,amount){
+ if(amount<=0)return;
+ const data=image.data;
+ for(let y=1;y<height-1;y++)for(let x=1;x<width-1;x++){
+  const i=y*width+x,dx=heightField[i+1]-heightField[i-1],dy=heightField[i+width]-heightField[i-width],slope=Math.hypot(dx,dy),ambient=1-Math.min(.24,slope*.22*amount),lit=1+clamp((-dx*.95-dy*.75)*1.35*amount,-.22,.22),factor=clamp(ambient*lit,landField[i]<.5?.88:.74,landField[i]<.5?1.12:1.24),o=i*4;
+  data[o]=Math.max(0,Math.min(255,data[o]*factor));data[o+1]=Math.max(0,Math.min(255,data[o+1]*factor));data[o+2]=Math.max(0,Math.min(255,data[o+2]*factor));
+ }
 }
 async function generateRenderImage(settings){
  const stage=settings.stage,mesh=latestData(2),geometry=geometryData();
  if(!mesh?.cells||!latestData(stage))throw Error('This stage is not ready to render');
  const dims=outputDimensions(geometry.width,geometry.height,settings.longEdge),preset=detailPreset(settings.detail);
  const hostEl=root.querySelector('#wg-render-result');
- if(hostEl)hostEl.innerHTML=`<div class="wg-render-progress"><div>Rendering ${shortNumber(dims.width)} × ${shortNumber(dims.height)} image…</div><progress id="wg-render-progress" max="100" value="0"></progress></div>`;
- const base=document.createElement('canvas');base.width=dims.width;base.height=dims.height;const bctx=base.getContext('2d',{alpha:false});
- bctx.fillStyle='#11252f';bctx.fillRect(0,0,base.width,base.height);
- const sx=dims.width/geometry.width,sy=dims.height/geometry.height;
- const shade=renderShadeArray(stage,Number(settings.relief)||0);
- const colors=mesh.cells.map((_,i)=>renderNaturalColor(i,stage,settings));
- const progress=root.querySelector('#wg-render-progress');
- const batch=Math.max(40,Math.round(mesh.cells.length/16));
- bctx.save();geometryClipPath(bctx,geometry,sx,sy);bctx.clip();
- for(let start=0;start<mesh.cells.length;start+=batch){
-  const end=Math.min(mesh.cells.length,start+batch);
-  for(let i=start;i<end;i++){
-   const cell=mesh.cells[i],poly=cell.poly;const rgb=shade?mulRgb(colors[i],shade[i]):colors[i];
-   bctx.beginPath();bctx.moveTo(poly[0]*sx,poly[1]*sy);for(let k=2;k<poly.length;k+=2)bctx.lineTo(poly[k]*sx,poly[k+1]*sy);bctx.closePath();bctx.fillStyle=rgbToCss(rgb);bctx.fill();
+ if(hostEl)hostEl.innerHTML=`<div class="wg-render-progress"><div>Rendering ${shortNumber(dims.width)} × ${shortNumber(dims.height)} terrain image…</div><progress id="wg-render-progress" max="100" value="0"></progress></div>`;
+ const sampleW=Math.max(220,Math.round(dims.width/preset.sampleStep)),sampleH=Math.max(160,Math.round(dims.height/preset.sampleStep));
+ const sampleCanvas=document.createElement('canvas');sampleCanvas.width=sampleW;sampleCanvas.height=sampleH;const sctx=sampleCanvas.getContext('2d',{alpha:false});
+ const image=sctx.createImageData(sampleW,sampleH),data=image.data,heightField=new Float32Array(sampleW*sampleH),landField=new Float32Array(sampleW*sampleH),state=renderCellStats(stage),progress=root.querySelector('#wg-render-progress');
+ const rowsPerChunk=Math.max(6,Math.round(sampleH/28));
+ for(let y0=0;y0<sampleH;y0+=rowsPerChunk){
+  const y1=Math.min(sampleH,y0+rowsPerChunk);
+  for(let y=y0;y<y1;y++)for(let x=0;x<sampleW;x++){
+   const wx=(x+.5)/sampleW*geometry.width,wy=(y+.5)/sampleH*geometry.height,index=y*sampleW+x,o=index*4;
+   if(!insideGeometry(geometry,wx,wy)){data[o]=8;data[o+1]=40;data[o+2]=55;data[o+3]=255;heightField[index]=-0.35;landField[index]=0;continue;}
+   const sample=weightedSample(state,wx,wy,settings),mapped=terrainColorFromSample(sample,state,settings),rgb=mapped.rgb;
+   data[o]=Math.round(rgb[0]);data[o+1]=Math.round(rgb[1]);data[o+2]=Math.round(rgb[2]);data[o+3]=255;heightField[index]=mapped.surface;landField[index]=mapped.landFrac;
   }
-  if(progress)progress.value=Math.round(start/mesh.cells.length*55);
+  if(progress)progress.value=Math.round(y1/sampleH*70);
   await new Promise(r=>requestAnimationFrame(r));
  }
- bctx.restore();
- const blurPx=Math.max(0,settings.blend*12*preset.blur*(dims.longEdge?1:1));
- let finalCanvas=base;
- if(blurPx>.1){
-  const smoothed=document.createElement('canvas');smoothed.width=base.width;smoothed.height=base.height;const sctx=smoothed.getContext('2d',{alpha:false});
-  sctx.fillStyle='#11252f';sctx.fillRect(0,0,smoothed.width,smoothed.height);sctx.save();geometryClipPath(sctx,geometry,sx,sy);sctx.clip();sctx.filter=`blur(${blurPx.toFixed(2)}px)`;sctx.drawImage(base,0,0);sctx.restore();sctx.filter='none';finalCanvas=smoothed;
- }
- const fctx=finalCanvas.getContext('2d');
- const coasts=stage>=5?latestData(5):null;
- if(coasts){
-  fctx.save();geometryClipPath(fctx,geometry,sx,sy);fctx.clip();
-  fctx.strokeStyle='rgba(232,239,233,.45)';fctx.lineWidth=Math.max(0.8,1.25+settings.coast*1.8);
-  for(let i=0;i<mesh.cells.length;i++){
-   if(coasts.water[i])continue;const cell=mesh.cells[i];if(!cell.neighbors.some(j=>coasts.water[j]))continue;const poly=cell.poly;
-   fctx.beginPath();fctx.moveTo(poly[0]*sx,poly[1]*sy);for(let k=2;k<poly.length;k+=2)fctx.lineTo(poly[k]*sx,poly[k+1]*sy);fctx.closePath();fctx.stroke();
-  }
-  fctx.restore();
- }
+ applyReliefShading(image,heightField,landField,sampleW,sampleH,Number(settings.relief)||0);
+ sctx.putImageData(image,0,0);
+ const finalCanvas=document.createElement('canvas');finalCanvas.width=dims.width;finalCanvas.height=dims.height;const fctx=finalCanvas.getContext('2d',{alpha:false});
+ fctx.fillStyle='#0b2836';fctx.fillRect(0,0,dims.width,dims.height);fctx.imageSmoothingEnabled=true;fctx.imageSmoothingQuality='high';
+ fctx.save();geometryClipPath(fctx,geometry,dims.width/geometry.width,dims.height/geometry.height);fctx.clip();fctx.drawImage(sampleCanvas,0,0,dims.width,dims.height);fctx.restore();
  if(stage>=9&&settings.hydro>0&&latestData(9)){
-  const hydro=latestData(9),maxVolume=Math.max(.001,hydro.summary.maxDischarge);fctx.save();geometryClipPath(fctx,geometry,sx,sy);fctx.clip();fctx.lineCap='round';fctx.strokeStyle='rgba(102,215,238,.92)';
-  for(const i of hydro.channels){const j=hydro.flowTo[i];if(j<0||hydro.lakeId[i]>=0&&hydro.lakeId[j]===hydro.lakeId[i])continue;const volume=Math.sqrt(Math.max(0,Math.min(1,hydro.discharge[i]/maxVolume)));fctx.lineWidth=(0.8+4.4*volume*settings.hydro*preset.riverWidth);fctx.beginPath();fctx.moveTo(mesh.cells[i].x*sx,mesh.cells[i].y*sy);fctx.lineTo(mesh.cells[j].x*sx,mesh.cells[j].y*sy);fctx.stroke();}
+  const hydro=latestData(9),sx=dims.width/geometry.width,sy=dims.height/geometry.height,maxVolume=Math.max(.001,hydro.summary.maxDischarge);
+  fctx.save();geometryClipPath(fctx,geometry,sx,sy);fctx.clip();fctx.lineCap='round';fctx.lineJoin='round';
+  for(const i of hydro.channels){
+   const j=hydro.flowTo[i];if(j<0||hydro.lakeId[i]>=0&&hydro.lakeId[j]===hydro.lakeId[i])continue;
+   const volume=Math.sqrt(Math.max(0,Math.min(1,hydro.discharge[i]/maxVolume))),width=(.7+3.6*volume*settings.hydro*preset.riverWidth);
+   fctx.strokeStyle='rgba(169,239,245,.42)';fctx.lineWidth=width+1.2;fctx.beginPath();fctx.moveTo(mesh.cells[i].x*sx,mesh.cells[i].y*sy);fctx.lineTo(mesh.cells[j].x*sx,mesh.cells[j].y*sy);fctx.stroke();
+   fctx.strokeStyle='rgba(86,198,223,.92)';fctx.lineWidth=width;fctx.beginPath();fctx.moveTo(mesh.cells[i].x*sx,mesh.cells[i].y*sy);fctx.lineTo(mesh.cells[j].x*sx,mesh.cells[j].y*sy);fctx.stroke();
+  }
   fctx.restore();
  }
  if(progress)progress.value=100;
  return finalCanvas;
 }
-async function renderCurrentView(){
- screenshot();closeModal();
+function renderViewerMarkup(stage){
+ return `<div class="wg-render-viewer-shell"><div class="wg-render-toolbar"><button class="wg-secondary" data-action="render-zoom-out">−</button><button class="wg-secondary" data-action="render-fit">Fit</button><button class="wg-secondary" data-action="render-zoom-in">+</button><button class="wg-primary" data-action="render-download">Download PNG</button></div><div class="wg-render-preview"><div id="wg-render-viewer" class="wg-render-viewport"><canvas id="wg-render-canvas"></canvas></div></div><p class="wg-modal-caption">Rendered terrain view from layer ${stage}. Drag to pan, use the zoom controls to inspect detail, and close the dialog to return to the editable world.</p></div>`;
 }
+function applyRenderViewerTransform(viewer){
+ const state=viewer?viewer._wgState:null,canvasEl=viewer?.querySelector('#wg-render-canvas');if(!state||!canvasEl)return;
+ canvasEl.style.transform=`translate(${state.tx}px,${state.ty}px) scale(${state.scale})`;
+}
+function fitRenderViewer(viewer){
+ const canvasEl=viewer?.querySelector('#wg-render-canvas'),state=viewer?viewer._wgState:null;if(!viewer||!canvasEl||!state)return;
+ const vw=Math.max(1,viewer.clientWidth),vh=Math.max(1,viewer.clientHeight),fit=Math.min(vw/canvasEl.width,vh/canvasEl.height);
+ state.minScale=Math.max(.2,fit);state.maxScale=Math.max(6,fit*10);state.scale=fit;state.tx=(vw-canvasEl.width*fit)/2;state.ty=(vh-canvasEl.height*fit)/2;applyRenderViewerTransform(viewer);
+}
+function nudgeRenderViewer(factor){
+ const viewer=root.querySelector('#wg-render-viewer');const canvasEl=viewer?.querySelector('#wg-render-canvas'),state=viewer?viewer._wgState:null;if(!viewer||!canvasEl||!state)return;
+ const cx=viewer.clientWidth/2,cy=viewer.clientHeight/2,next=clamp(state.scale*factor,state.minScale*.85,state.maxScale),ratio=next/state.scale;state.tx=cx-(cx-state.tx)*ratio;state.ty=cy-(cy-state.ty)*ratio;state.scale=next;applyRenderViewerTransform(viewer);
+}
+function initRenderViewer(viewer){
+ const canvasEl=viewer?.querySelector('#wg-render-canvas');if(!viewer||!canvasEl)return;
+ viewer._wgState={scale:1,minScale:1,maxScale:8,tx:0,ty:0,dragging:false,lastX:0,lastY:0};
+ canvasEl.style.transformOrigin='0 0';canvasEl.style.touchAction='none';
+ const state=viewer._wgState;
+ viewer.onpointerdown=event=>{state.dragging=true;state.lastX=event.clientX;state.lastY=event.clientY;viewer.setPointerCapture?.(event.pointerId);event.preventDefault();};
+ viewer.onpointermove=event=>{if(!state.dragging)return;state.tx+=event.clientX-state.lastX;state.ty+=event.clientY-state.lastY;state.lastX=event.clientX;state.lastY=event.clientY;applyRenderViewerTransform(viewer);event.preventDefault();};
+ viewer.onpointerup=viewer.onpointercancel=event=>{state.dragging=false;viewer.releasePointerCapture?.(event.pointerId);};
+ viewer.onwheel=event=>{event.preventDefault();nudgeRenderViewer(event.deltaY<0?1.15:1/1.15);};
+ requestAnimationFrame(()=>fitRenderViewer(viewer));
+}
+async function renderCurrentView(){screenshot();closeModal();}
 async function runRenderGeneration(){
  try{
-  const canvasOut=await generateRenderImage(renderDraft);
-  const result=root.querySelector('#wg-render-result');if(!result)return;
-  result.innerHTML=`<div class="wg-render-preview"><canvas id="wg-render-canvas"></canvas></div><div class="wg-actions"><button class="wg-secondary" data-action="render-regenerate">Render again</button><button class="wg-primary" data-action="render-download">Download PNG</button></div><p class="wg-modal-caption">Static render from layer ${renderDraft.stage}. It is generated separately from the interactive map and does not change your saved world.</p>`;
-  const target=result.querySelector('#wg-render-canvas');target.width=canvasOut.width;target.height=canvasOut.height;target.getContext('2d').drawImage(canvasOut,0,0);result.dataset.ready='1';
-  notice('High-resolution render ready');
+  const canvasOut=await generateRenderImage(renderDraft),result=root.querySelector('#wg-render-result');if(!result)return;
+  renderOutputCanvas=canvasOut;
+  result.innerHTML=renderViewerMarkup(renderDraft.stage);
+  const target=result.querySelector('#wg-render-canvas');target.width=canvasOut.width;target.height=canvasOut.height;target.getContext('2d').drawImage(canvasOut,0,0);initRenderViewer(result.querySelector('#wg-render-viewer'));result.dataset.ready='1';
+  notice('Rendered terrain map ready');
  }catch(error){const result=root.querySelector('#wg-render-result');if(result)result.innerHTML=`<p class="wg-hint">Render failed: ${escapeHTML(error.message)}</p>`;notice(`Render failed: ${error.message}`,true);}
 }
 function downloadRenderedImage(){
- const canvasOut=root.querySelector('#wg-render-canvas');if(!canvasOut){notice('Generate a render first',true);return;}
+ const canvasOut=renderOutputCanvas||root.querySelector('#wg-render-canvas');if(!canvasOut){notice('Generate a render first',true);return;}
  canvasOut.toBlob(blob=>{if(!blob){notice('PNG export failed',true);return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${renderDraft.stage}-render.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);notice('Rendered PNG downloaded');},'image/png');
 }
 async function saveCheckpoint(){
@@ -904,6 +1008,10 @@ async function handleAction(action,button){
   case 'render-generate':await runRenderGeneration();break;
   case 'render-regenerate':showRenderDialog(renderDraft?.stage||effectiveStage());break;
   case 'render-download':downloadRenderedImage();break;
+  case 'render-zoom-in':nudgeRenderViewer(1.3);break;
+  case 'render-zoom-out':nudgeRenderViewer(1/1.3);break;
+  case 'render-fit':{const viewer=root.querySelector('#wg-render-viewer');if(viewer)fitRenderViewer(viewer);break;}
+
   case 'zoom-in':zoomBy(1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'zoom-out':zoomBy(1/1.45,canvas.clientWidth/2,canvas.clientHeight/2);break;
   case 'reroll':workspace.working.settings.seed=nextSeed();dirty=true;void persist();rebuildUI();scheduleGeneration(20);break;
