@@ -1,4 +1,4 @@
-// WorldGen v0.1.7 — climate-driven river networks and depression-aware lakes.
+// WorldGen v0.1.8 — soil formation on the climate and hydrology fields.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -11,12 +11,13 @@ export const STAGES=[
   ['Erosion','Downhill runoff, sediment transport and thermal weathering'],
   ['Climate','Seasonal temperature, precipitation, ocean moderation and orographic rain shadows'],
   ['Hydrology','Climate-driven runoff, connected rivers, inland lakes and drainage basins'],
-  ['Soils','Future: regolith and groundwater'],
+  ['Soils','Surface depth, texture, organic matter, permeability and groundwater potential'],
   ['Biomes','Future: environmental classification'],
   ['Habitats','Future: vegetation and habitats'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=9;
+export const IMPLEMENTED=10;
+export const SOIL_NAMES=['Open water','Exposed rock','Thin upland','Coarse / sandy','Loam','Clay-rich','Organic wetland','Volcanic','Arid mineral','Cold / tundra'];
 export const MAX_CELLS=5000;
 export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
@@ -28,7 +29,8 @@ export const DEFAULTS={
   6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
   7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607},
  8:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829},
- 9:{runoffScale:1,infiltration:0.32,evaporation:0.52,riverThreshold:4,lakeDepth:0.008,minLakeCells:1,seed:314160}
+ 9:{runoffScale:1,infiltration:0.32,evaporation:0.52,riverThreshold:4,lakeDepth:0.008,minLakeCells:1,seed:314160},
+ 10:{weathering:1,organicInput:1,alluvialInput:1,permeabilityBias:1,groundwaterRecharge:1,seed:173206}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
@@ -687,6 +689,64 @@ export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgres
  onProgress?.(1);return result;
 }
 
+/** First-order soils derived from locked geology, topography, climate and water.
+ * Each cell stores an interpretable surface/regolith estimate rather than a
+ * geological timescale simulator. A lake or ocean cell cannot accumulate soil.
+ * Calculations are deterministic, bounded, and never mutate earlier layers.
+ */
+export function generateSoils(mesh,plates,landforms,coasts,erosion,climate,hydrology,settings,onProgress=null){
+ const cells=mesh?.cells,n=cells?.length||0;
+ if(!n||plates?.owners?.length!==n||landforms?.classes?.length!==n||landforms?.ruggedness?.length!==n||coasts?.water?.length!==n||erosion?.elevations?.length!==n||erosion?.erosionDepth?.length!==n||erosion?.deposition?.length!==n||climate?.meanTemp?.length!==n||climate?.precipitation?.length!==n||climate?.moisture?.length!==n||hydrology?.flowTo?.length!==n||hydrology?.catchmentArea?.length!==n||hydrology?.lakeId?.length!==n)throw Error('Soils require matching geology, terrain, climate and hydrology layers');
+ const weathering=clamp(Number(settings.weathering),0,2),organicInput=clamp(Number(settings.organicInput),0,2),alluvialInput=clamp(Number(settings.alluvialInput),0,2),permeabilityBias=clamp(Number(settings.permeabilityBias),.25,2),groundwaterRecharge=clamp(Number(settings.groundwaterRecharge),0,2),seed=(Number(settings.seed)|0);
+ const soilType=new Array(n),depthM=new Array(n),organicMatter=new Array(n),permeability=new Array(n),fertility=new Array(n),groundwater=new Array(n),erosionRisk=new Array(n);
+ const areas=cells.map(cellArea),maxCatchment=Math.max(1,...hydrology.catchmentArea);
+ const areaCount=new Array(SOIL_NAMES.length).fill(0),landCounts={land:0,deep:0,veryFertile:0},total={depth:0,fertility:0,groundwater:0,area:0,fertileArea:0};
+ for(let i=0;i<n;i++){
+  const noSoil=!!coasts.water[i]||hydrology.lakeId[i]>=0;
+  if(noSoil){soilType[i]=0;depthM[i]=0;organicMatter[i]=0;permeability[i]=0;fertility[i]=0;groundwater[i]=0;erosionRisk[i]=0;areaCount[0]++;continue;}
+  const c=cells[i],temp=climate.meanTemp[i],precip=climate.precipitation[i],moist=clamp(climate.moisture[i],0,1),rough=clamp(landforms.ruggedness[i],0,1);
+  const continental=!!plates.plates[plates.owners[i]]?.continental;
+  const volcanic=landforms.classes[i]===7;
+  const polar=clamp((-temp+4)/20,0,1),dry=clamp((350-precip)/350,0,1),temperature=clamp((temp+8)/35,0,1);
+  const slope=clamp(c.neighbors.reduce((sum,j)=>sum+Math.abs(erosion.elevations[i]-erosion.elevations[j]),0)/Math.max(1,c.neighbors.length)*.95,0,1);
+  const proximity=clamp(Math.log1p(hydrology.catchmentArea[i])/Math.log1p(maxCatchment),0,1);
+  const floodplain=clamp((1-slope)*(1-rough*.7)*(.33+proximity*.67),0,1);
+  const deposited=clamp(erosion.deposition[i]*9,0,1),stripped=clamp(erosion.erosionDepth[i]*5,0,1);
+  const mineral=clamp(.42+.22*(continental?1:0)+.2*(volcanic?1:0)+noise(c.x/300,c.y/300,seed+31)*.12,0,1);
+  const wetWeathering=clamp(.2+.8*moist,0,1)*(.38+.62*temperature)*(1-polar*.75);
+  const buildup=weathering*wetWeathering*(.45+.55*mineral)*(1-slope*.6);
+  const accumulation=alluvialInput*(floodplain*.5+deposited*.9);
+  const depth=clamp(.32+4.0*buildup+3.0*accumulation-.65*stripped-.65*slope-.35*polar,0,7);
+  const variable=clamp((noise(c.x/170,c.y/170,seed+79)+1)*.5,0,1);
+  const clay=clamp(.18+wetWeathering*.6+(1-variable)*.22-.3*(slope+.5*dry),0,1);
+  const coarse=clamp(variable*.6+dry*.3+slope*.45-clay*.45,0,1);
+  const organic=clamp(organicInput*(.05+moist*.35+floodplain*.12)*(1-.55*dry)*(1-.55*polar)+.1*deposited,0,1);
+  const drainage=clamp(permeabilityBias*(.2+coarse*.68-clay*.36+.12*slope)-.35*floodplain*moist,0,1);
+  const groundwaterPotential=clamp(groundwaterRecharge*(.13+.46*moist+.21*floodplain+.15*proximity)*(.85+.15*drainage)*(1-.55*slope),0,1);
+  const richness=clamp(1.35*(.17+.44*mineral+.27*organic+.12*deposited)*Math.min(1,.25+depth/1.65)*(.5+.5*moist)*(1-.7*polar)*(1-.3*dry),0,1);
+  const risk=clamp((.38*slope+.22*rough+.22*stripped+.2*precip/3000)*(1-.45*organic)*(1-.32*Math.min(depth/3,1)),0,1);
+  let kind=4;
+  if(depth<.22)kind=1;
+  else if(depth<.65&&(slope>.35||rough>.65))kind=2;
+  else if(polar>.58)kind=9;
+  else if(dry>.55)kind=8;
+  else if(volcanic&&depth>.55)kind=7;
+  else if(groundwaterPotential>.66&&moist>.6&&floodplain>.4)kind=6;
+  else if(clay>.59&&drainage<.45)kind=5;
+  else if(coarse>.62)kind=3;
+  soilType[i]=kind;areaCount[kind]++;
+  depthM[i]=+depth.toFixed(3);organicMatter[i]=+organic.toFixed(4);permeability[i]=+drainage.toFixed(4);fertility[i]=+richness.toFixed(4);groundwater[i]=+groundwaterPotential.toFixed(4);erosionRisk[i]=+risk.toFixed(4);
+  const a=areas[i];landCounts.land++;if(depth>1.5)landCounts.deep++;if(richness>.5)landCounts.veryFertile++;
+  total.depth+=depth*a;total.fertility+=richness*a;total.groundwater+=groundwaterPotential*a;total.area+=a;if(richness>.5)total.fertileArea+=a;
+  if(i%128===0)onProgress?.(.9*i/n);
+ }
+ onProgress?.(1);
+ return {soilType,depthM,organicMatter,permeability,fertility,groundwater,erosionRisk,counts:areaCount,
+  summary:{landCells:landCounts.land,deepSoilCells:landCounts.deep,highFertilityCells:landCounts.veryFertile,
+   meanDepthM:+(total.depth/Math.max(1,total.area)).toFixed(3),meanFertility:+(total.fertility/Math.max(1,total.area)).toFixed(4),
+   meanGroundwater:+(total.groundwater/Math.max(1,total.area)).toFixed(4),highFertilityAreaKm2:+total.fertileArea.toFixed(1)}};
+}
+
 export function generateStage(stage,locked,settings,onProgress=null){
  const geometry=locked[0]?.data,mesh=locked[1]?.data;
  if(stage===1)return generateGeometry(settings);
@@ -698,6 +758,7 @@ export function generateStage(stage,locked,settings,onProgress=null){
  if(stage===7){if(!locked[5]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[4].data,locked[5].data,settings,onProgress);}
  if(stage===8){if(!locked[6]?.data)throw Error('Erosion layer required');return generateClimate(mesh,locked[4].data,locked[6].data,settings,onProgress);}
  if(stage===9){if(!locked[7]?.data)throw Error('Climate layer required');return generateHydrology(mesh,locked[4].data,locked[6].data,locked[7].data,settings,onProgress);}
+ if(stage===10){if(!locked[8]?.data)throw Error('Hydrology layer required');return generateSoils(mesh,locked[2].data,locked[5].data,locked[4].data,locked[6].data,locked[7].data,locked[8].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
@@ -774,6 +835,18 @@ export function validateWorld(world){
     if(j>=0&&state[j]===1)throw Error('Invalid hydrology drainage cycle');
     for(const k of path)state[k]=2;
    }
+  }
+  if(record.stage===10){
+   const fields={depthM:[0,7],organicMatter:[0,1],permeability:[0,1],fertility:[0,1],groundwater:[0,1],erosionRisk:[0,1]};
+   if(!Array.isArray(d.soilType)||d.soilType.length!==n||d.soilType.some(v=>!Number.isInteger(v)||v<0||v>=SOIL_NAMES.length)||!Array.isArray(d.counts)||d.counts.length!==SOIL_NAMES.length||d.counts.some(v=>!Number.isInteger(v)||v<0)||d.counts.reduce((a,b)=>a+b,0)!==n)throw Error('Invalid soil classification');
+   for(const [key,[lo,hi]] of Object.entries(fields))if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(x=>!Number.isFinite(x)||x<lo||x>hi))throw Error(`Invalid soil field: ${key}`);
+   const hyd=records.find(r=>r.stage===9)?.data,coast=records.find(r=>r.stage===5)?.data;
+   if(!hyd||!coast||d.soilType.some((v,i)=>(!!coast.water[i]||hyd.lakeId[i]>=0)!==(v===0)))throw Error('Invalid soil water mask');
+   for(let i=0;i<n;i++)if(d.soilType[i]===0&&Object.keys(fields).some(key=>d[key][i]!==0))throw Error('Invalid soil on water');
+   const expected=Array.from({length:SOIL_NAMES.length},(_,kind)=>d.soilType.filter(v=>v===kind).length);
+   if(d.counts.some((v,i)=>v!==expected[i]))throw Error('Invalid soil counts');
+   if(!d.summary||d.summary.landCells!==n-expected[0]||d.summary.deepSoilCells<0||d.summary.deepSoilCells>d.summary.landCells||d.summary.highFertilityCells<0||d.summary.highFertilityCells>d.summary.landCells)throw Error('Invalid soil summary');
+   for(const [key,max] of [['meanDepthM',7],['meanFertility',1],['meanGroundwater',1],['highFertilityAreaKm2',mesh.areaKm2*1.001]])if(!Number.isFinite(d.summary[key])||d.summary[key]<0||d.summary[key]>max)throw Error(`Invalid soil summary ${key}`);
   } }
  return world;
 }
@@ -786,7 +859,8 @@ const INPUT_RANGES={
  6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
  7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]},
  8:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]},
- 9:{runoffScale:[0.1,2.5],infiltration:[0,0.95],evaporation:[0,1.5],riverThreshold:[2,120],lakeDepth:[0.002,0.3],minLakeCells:[1,15]}
+ 9:{runoffScale:[0.1,2.5],infiltration:[0,0.95],evaporation:[0,1.5],riverThreshold:[2,120],lakeDepth:[0.002,0.3],minLakeCells:[1,15]},
+ 10:{weathering:[0,2],organicInput:[0,2],alluvialInput:[0,2],permeabilityBias:[0.25,2],groundwaterRecharge:[0,2]}
 };
 /** Convert 0.1.0–0.1.3 saves into complete layer-1 geometry + shifted layers.
  * Do not regenerate any locked content; existing 2048 × 1024 data is still km-space. */
@@ -846,7 +920,7 @@ export function upgradeWorld(world){
   if(stage!==1){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
   world.working.settings=next;
  }
- if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds'].includes(world.viewMode))world.viewMode='auto';
+ if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds','soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion'].includes(world.viewMode))world.viewMode='auto';
  world.exploreMode=!!world.exploreMode;
  world.showEdges=world.showEdges!==false;
  world.showPlateBorders=!!world.showPlateBorders;

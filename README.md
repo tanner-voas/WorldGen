@@ -1,4 +1,4 @@
-# WorldGen v0.1.7
+# WorldGen v0.1.8
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -21,7 +21,9 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 
 9. **Hydrology** — priority-flood drainage over the locked erosion elevations, with annual climate-driven runoff, infiltration, temperature-based evapotranspiration, river threshold and approximate topographic lakes. Each non-ocean cell has an acyclic outlet route; catchment area and annual flow are available for inspection. Rivers are center-to-center lines on the Voronoi graph, not high-resolution river geometry. Lake occupancy requires natural closed topographic basins and may be absent from some worlds. This layer does not modify the locked coasts, erosion or climate.
 
-Future stages: soils, biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
+10. **Soils** — derived soil thickness, texture class, organic matter potential, permeability, fertility potential, groundwater recharge potential, and erosion susceptibility. Soil formation uses geology, terrain, erosion/deposition, climate, and hydrology. Ocean and lake cells do not receive soil. Five controls tune weathering, organic accumulation, alluvium, permeability and recharge. Soil maps and per-cell inspection are available without changing earlier layers.
+
+Future stages: biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
 ## Parameter controls
 
@@ -43,7 +45,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.6 → v0.1.7 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.7 → v0.1.8 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test

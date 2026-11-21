@@ -14,7 +14,7 @@ function worldAt(stage=9,count=340,geometry={shape:'rectangle',width:1500,height
  return w;
 }
 test('stage 9 hydrology works and earlier layers are immutable',()=>{
- assert.equal(IMPLEMENTED,9);
+ assert.ok(IMPLEMENTED>=9);
  const w=worldAt();const original=JSON.stringify(w.locked.slice(0,8));
  const hydro=w.locked[8].data;
  assert.equal(hydro.flowTo.length,w.locked[1].data.cells.length);
