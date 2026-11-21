@@ -1,4 +1,4 @@
-# WorldGen v0.1.5
+# WorldGen v0.1.6
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -13,11 +13,13 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–5,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
 3. **Tectonic plates** — plate territories, crust type and motion.
 4. **Elevation** — terrain noise, tectonic uplift and relief.
-5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. An optional *edge ocean bias* pushes the immediate outer boundary underwater for rectangles, circles, and ellipses. Its smooth falloff is adjustable in typical cell widths; the default is narrow (1.5 cell widths), capped at 12% of the shorter world dimension. Boundary-touching cells are always water while this setting is enabled, and the land-area target accounts for that forced edge water. Existing locked heights and older saved coastlines remain unchanged.
+5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. The original *edge ocean bias* keeps the outermost ring of polygons underwater with its narrow 1.5-cell-width taper. An independent *continental setback* (default strength 1.15, width 10 cell widths; capped to 16% of the shorter world dimension) gently depresses a much broader band, discouraging continents from following the world outline. Both effects fade smoothly, the interior elevation layer stays unchanged, and sea level is recalculated to preserve the desired land-area percentage. Border-touching polygons remain water while edge ocean bias is enabled. Existing locked heights and older saved coastlines remain unchanged.
 6. **Landforms** — ridges, valleys, ruggedness, volcanoes; preserves the locked coast mask.
 7. **Erosion** — preliminary rainfall/runoff, sediment transfer, slope weathering, drainage channels; preserves earlier layers and locked coastlines.
 
-Future stages: climate, hydrology, soils, biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
+8. **Climate** — deterministic, notional-latitude temperature, prevailing-wind rain shadows, annual precipitation, moisture index, and January/July temperatures. Coastal proximity moderates seasonal temperature swings; the model does not simulate global atmospheric circulation. Climate map overlays and per-cell inspection show all fields. Earlier locked erosion runoff remains preliminary and is not silently recomputed.
+
+Future stages: hydrology, soils, biomes, habitats and local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
 ## Parameter controls
 
@@ -31,7 +33,7 @@ v0.1.5 also fixes the JavaScript `ReferenceError: Can't find variable: stored` s
 
 ## Navigation, saving and compatibility
 
-Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
+Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion/climate modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
 
 Automatic caching and named checkpoints preserve all generated layers, parameters, seeds and data. A checkpoint saved through layer N contains every layer 1–N; revising a locked layer creates a new working branch after confirmation. Exports are complete JSON records; keep an external copy because mobile browser storage may be evicted.
 
@@ -39,7 +41,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.4 → v0.1.5 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.5 → v0.1.6 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test

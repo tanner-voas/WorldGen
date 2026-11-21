@@ -1,6 +1,6 @@
 import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,WORLD_WIDTH,WORLD_HEIGHT,LANDFORM_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 
-const APP_VERSION='0.1.5',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.6',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -29,9 +29,10 @@ const OPTIONS={
  ],
  3:[['plates','Plates','range',3,50,1,'linear'],['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear']],
  4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation','range',0.05,0.8,0.025,'linear']],
- 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (cell widths)','range',0.5,5,0.25,'linear']],
+ 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (cell widths)','range',0.5,5,0.25,'linear'],['setbackStrength','Continental setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Continental setback width (cells)','range',2,18,0.5,'linear']],
  6:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
- 7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']]
+ 7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
+ 8:[['equatorTemp','Equatorial temperature (°C)','range',10,40,0.5,'linear'],['latitudeCenter','Central latitude (°)','range',-70,70,2,'linear'],['latitudeSpan','Latitude span (°)','range',20,180,5,'linear'],['axialTilt','Axial tilt (°)','range',0,45,0.5,'linear'],['rainfall','Annual rainfall baseline (mm)','range',100,4000,50,'linear'],['windDirection','Wind direction (°)','range',-180,180,5,'linear'],['rainShadow','Mountain rain shadow','range',0,2,0.05,'linear'],['maritime','Ocean moderation','range',0,1.5,0.05,'linear']]
 };
 const PARAM_HELP={
  shape:['World outline','Rectangle creates a four-sided map. Circle creates a map with equal horizontal and vertical radii. Ellipse lets you control each radius independently. All three are flat 2D worlds with no depth.'],
@@ -52,16 +53,25 @@ const PARAM_HELP={
  continentalHeight:['Crust elevation','Relative starting height difference between continental and oceanic plates. Higher values lift continents and deepen relative crust contrast; lower values flatten that contrast.'],
  land:['Land coverage target','Desired share of the world surface ABOVE sea level by geographic area. Higher values expose more land; lower values flood more land. It is approximate at the resolution of individual cells. An enabled edge-ocean buffer takes priority if the outermost cells already exceed the water target.'],
  edgeOcean:['Edge ocean bias','Strength of the ocean-promoting effect at the outer world boundary. Higher values lower near-edge terrain relative to sea level, making a broader water margin without changing distant inland heights. When greater than zero, polygons touching the world boundary are guaranteed to be water. Zero disables this feature.'],
- edgeFade:['Edge falloff width','How far the edge-ocean influence extends inland, measured in typical Voronoi cell widths. Smaller values concentrate the effect close to the map border; larger values make the transition gentler. The reach is capped to protect the center of narrow worlds.'],
+ edgeFade:['Edge falloff width','Width of the narrow ocean rim in typical cell widths. The outermost polygon stays underwater if Edge ocean bias is enabled. This narrow rim does not by itself move whole continents inward; use Continental setback for that.'],
+ setbackStrength:['Continental setback strength','A broad, smoothly fading downward bias on terrain near the world boundary. Increasing it makes large landmasses less likely to run parallel to the outline. Zero disables the broad effect without disabling the one-cell water rule. It changes only the coast layer, not the locked elevation layer.'],
+ setbackWidth:['Continental setback width','How many average Voronoi cell widths the broad continental bias reaches inward. Increasing it creates a more natural expanse of ocean between the continents and the artificial boundary. The reach is limited to 16% of the shorter world dimension so the interior stays unaffected.'],
  ridge:['Ridge strength','Strength of coherent mountainous ridges during landform refinement. Higher produces stronger belts and peaks; lower makes ridges subtler. Locked coastlines remain fixed.'],
  detail:['Terrain variation','Fine-scale variation added to existing elevations. Higher gives rougher and more diverse local terrain; lower keeps smoother landscapes.'],
  valleys:['Valley incision','How strongly valley-like features cut into the terrain. More produces deeper local valleys; less preserves uplands.'],
  volcanism:['Volcanic activity','Likelihood of volcanic landforms near suitable plate boundaries. Increasing it produces more volcanic cells; decreasing it reduces them.'],
- rainfall:['Approximate rainfall','Preliminary runoff input to the erosion model. More creates stronger erosion and greater discharge; less reduces water-driven change. Full climate is a future layer.'],
+ rainfall:['Rainfall','At layer 7: preliminary runoff input for erosion, increasing drainage and sediment transport. At layer 8: baseline annual rainfall in mm, which scales the climate rainfall field without changing earlier erosion.'],
  hydraulic:['Water erosion','How strongly downhill flowing water cuts into the terrain. More carves deeper flow routes and increases sediment transport; less leaves landforms closer to their input.'],
  thermal:['Slope weathering','Movement of material from steep slopes to nearby lower cells. More smooths and redistributes slopes; less preserves sharp terrain changes.'],
  hardness:['Rock resistance','How resistant material is to erosion and weathering. Higher values reduce removal rates; lower values allow stronger erosion.'],
  iterations:['Erosion passes','Number of approximate erosion simulation updates. More passes generally accumulate greater change and require more processing time.'],
+ equatorTemp:['Equatorial temperature','Reference mean temperature near 0° latitude in Celsius. Increasing it makes all regions warmer; cooler settings increase snow and cold-climate potential. Elevation reduces temperature.'],
+ latitudeCenter:['Central latitude','Notional latitude of the middle of this flat map. Increase it to move the world toward the northern hemisphere, or decrease for the southern hemisphere. It is an environmental coordinate, not spherical geometry.'],
+ latitudeSpan:['Latitude span','How many degrees of latitude the map covers from north to south. Larger spans create greater temperature differences across the world; smaller spans give more uniform climates. Values are capped at the poles.'],
+ axialTilt:['Axial tilt','Approximate seasonal contrast. Higher tilt produces hotter summers and colder winters away from the equator; zero tilt removes seasonal temperature differences. Climate is a stylized model, not a full astronomy simulation.'],
+ windDirection:['Prevailing wind direction','Direction the prevailing wind blows TOWARD, in degrees: 0 east, 90 north, 180 west, and −90 south. Changing it relocates windward rainfall and leeward rain shadows.'],
+ rainShadow:['Mountain rain shadow','Strength of moisture loss as air rises over terrain. Increasing it tends to make windward mountains wetter and leeward regions drier. Zero minimizes this orographic effect.'],
+ maritime:['Ocean moderation','How strongly adjacent seas moderate seasonal temperature changes. Increasing the value makes coastal climates less extreme. Lower values produce more continental climates.'],
  seed:['Random seed','An integer that controls repeatable randomness in this layer. The same seed with the same inputs creates the same result. Reroll chooses a different seed.']
 };
 function geometryData(){return latestData(1)||(currentStage()===1?workspace.working.data:null)||generateGeometry(DEFAULTS[1]);}
@@ -78,7 +88,7 @@ function areaToSlider(value,min,max){return Math.round(1000*Math.log(clamp(value
 function sliderToArea(position,min,max){return min*Math.pow(max/min,Number(position)/1000);}
 function formatNumber(n){return Number(Number(n).toFixed(6));}
 const palettes={
-  natural:'Natural',geometry:'Cell geometry',plates:'Tectonic plates',height:'Elevation',coast:'Land / sea',landforms:'Landforms',erosion:'Erosion / deposition',flow:'Drainage flow'
+  natural:'Natural',geometry:'Cell geometry',plates:'Tectonic plates',height:'Elevation',coast:'Land / sea',landforms:'Landforms',erosion:'Erosion / deposition',flow:'Drainage flow',temperature:'Mean temperature',rain:'Annual precipitation',moisture:'Moisture index',seasonality:'Seasonal contrast',january:'January temperature',july:'July temperature'
 };
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
 let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
@@ -187,7 +197,8 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0])))).map(settingRow).join('')}${stage===1?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button class="wg-info" data-info="seed" aria-label="About random seed">i</button><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div>`}</div>`;
-  if(stage===7)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Rainfall is preliminary; full climate and rivers are separate future layers. Locked coastlines remain fixed.</p>';
+  if(stage===7)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Its runoff input is preliminary; climate is calculated later and does not retroactively alter locked erosion or coastlines.</p>';
+  if(stage===8)html+='<p class="wg-hint">Planar climate approximation using notional latitude, winds, elevation and ocean proximity. January/July are opposite seasons; this layer does not change existing terrain.</p>';
   html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
  }else if(row){
   html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p><div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
@@ -266,9 +277,10 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
  case 2:return `${shortNumber(data.cells.length)} Voronoi cells across ${shortNumber(Math.round(data.areaKm2))} km².`;
  case 3:return `${data.plates.length} tectonic plates with distinct crust properties and motion.`;
  case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift.`;
- case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% land area · ${data.edgeWaterCells||0} protected outer-edge water cells${data.edgeWaterCells?` · fade ${data.edgeWidthKm} km`:''}.`;}
+ case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km.`;}
  case 6:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
  case 7:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)}.`;
+ case 8:return `${shortNumber(data.meanTemp.length)} climate cells · mean temperature ${data.summary.avgTemp.toFixed(1)} °C · mean precipitation ${Math.round(data.summary.avgRain)} mm/year.`;
  default:return '';
 }}
 function nextSeed(){return Math.floor(Math.random()*0xffffffff);}
@@ -320,7 +332,7 @@ function reviseStage(stage){
  if(!confirm(`Revise layer ${stage}? This creates a new branch from that layer. ${later?`${later} later locked layer(s) will be removed from the working branch.`:'Later layers will be regenerated from this revision.'} Save a checkpoint first if you want to preserve the current branch.`))return;
  requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;
  workspace.locked=workspace.locked.slice(0,stage-1);
- workspace.working={stage,settings:structuredClone(earlier.settings),data:structuredClone(earlier.data),dataSettings:structuredClone(earlier.settings)};dirty=false;
+ workspace.working={stage,settings:{...defaultsForStage(stage),...structuredClone(earlier.settings)},data:structuredClone(earlier.data),dataSettings:structuredClone(earlier.settings)};dirty=JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings);
  workspace.viewStage=stage;selectedId=null;resetBorderCache();
  void persist();rebuildUI();notice(`Layer ${stage} is editable again`);
 }
@@ -365,6 +377,18 @@ function colorForCell(i,stage,display){
  const elev=(stage>=7?erosion?.elevations[i]:undefined)??(stage>=6?landforms?.elevations[i]:undefined)??(stage>=5?coasts?.elevations?.[i]:undefined)??heights?.elevations[i]??0;
  if(display==='geometry'||stage===1){const h=((i*137.508)%360);return `hsl(${150+(h%55)},${18+(i%4)*2}%,${36+(i%7)*3}%)`;}
  if((display==='plates'||stage===3)&&plates){const owner=plates.owners[i],plate=plates.plates[owner],h=(owner*137.508+22)%360;return `hsl(${h},${plate.continental?32:42}%,${plate.continental?49:34}%)`;}
+ if(stage>=8){
+  const climate=latestData(8);
+  if(climate){
+   if(display==='temperature'||display==='january'||display==='july'){
+    const t=display==='january'?climate.janTemp[i]:display==='july'?climate.julTemp[i]:climate.meanTemp[i];
+    return gradient((t+35)/75,[[0,[49,79,139]],[.22,[101,154,193]],[.41,[213,234,219]],[.57,[213,210,132]],[.77,[211,130,72]],[1,[164,58,47]]]);
+   }
+   if(display==='rain')return gradient(Math.log1p(climate.precipitation[i])/Math.log1p(4800),[[0,[193,153,96]],[.3,[206,186,123]],[.55,[150,183,126]],[.78,[77,149,158]],[1,[37,80,143]]]);
+   if(display==='moisture')return gradient(climate.moisture[i],[[0,[172,136,92]],[.35,[202,192,125]],[.6,[129,170,124]],[1,[44,105,87]]]);
+   if(display==='seasonality')return gradient(climate.seasonalRange[i]/39,[[0,[65,129,152]],[.45,[171,189,153]],[.75,[224,174,104]],[1,[183,91,72]]]);
+  }
+ }
  if(display==='landforms'&&stage>=6&&landforms)return landformColors[landforms.classes[i]]||'#6e9d6d';
  if(display==='erosion'&&stage>=7&&erosion){const delta=elev-landforms.elevations[i];return delta<-.004?gradient(Math.min(1,-delta/.15),[[0,[105,111,105]],[1,[190,98,65]]]):delta>.004?gradient(Math.min(1,delta/.15),[[0,[105,111,105]],[1,[67,163,151]]]):'#78827b';}
  if(display==='flow'&&stage>=7&&erosion){if(coasts.water[i])return '#245773';const volume=erosion.discharge[i]/Math.max(1,erosion.summary.maxDischarge);return gradient(Math.pow(volume,.28),[[0,[104,115,100]],[.3,[115,145,132]],[1,[74,175,216]]]);}
@@ -374,11 +398,15 @@ function colorForCell(i,stage,display){
 }
 function displayMode(stage){const mode=workspace.viewMode;return mode==='auto'||mode==='natural'?'auto':mode;}
 function updateLegend(){
- const stage=effectiveStage(),mode=displayMode(stage),selected=mode==='auto'?stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':stage===6?'landforms':'coast':mode;
- const actual=(selected==='plates'&&stage<3)||(selected==='height'&&stage<4)||(selected==='coast'&&stage<5)||(selected==='landforms'&&stage<6)||((selected==='erosion'||selected==='flow')&&stage<7)?stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':'landforms':selected;
+ const stage=effectiveStage(),mode=displayMode(stage),selected=mode==='auto'?stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':stage===6?'landforms':stage===8?'temperature':'coast':mode;
+ const actual=(selected==='plates'&&stage<3)||(selected==='height'&&stage<4)||(selected==='coast'&&stage<5)||(selected==='landforms'&&stage<6)||((selected==='erosion'||selected==='flow')&&stage<7)||(['temperature','rain','moisture','seasonality','january','july'].includes(selected)&&stage<8)?stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':'landforms':selected;
  const el=root.querySelector('#wg-legend');if(!el)return;
  if(actual==='erosion')el.innerHTML='<strong>Terrain height change</strong><span><i style="background:#be6241"></i>Material removed</span><span><i style="background:#43a397"></i>Net deposition</span><span><i style="background:#78827b"></i>Little change</span>';
  else if(actual==='flow')el.innerHTML='<strong>Runoff accumulation</strong><p>Blue indicates greater estimated downhill water flow. Optional channel lines trace the strongest drainage routes.</p>';
+ else if(actual==='temperature'||actual==='january'||actual==='july')el.innerHTML='<strong>Temperature (°C)</strong><div class="wg-climate-temp-ramp"></div><p>Cold blue → temperate green → warm orange/red. January and July represent opposite seasons.</p>';
+ else if(actual==='rain')el.innerHTML='<strong>Precipitation (mm/year)</strong><div class="wg-climate-rain-ramp"></div><p>Arid tan → wet blue. Orographic effects vary with prevailing wind.</p>';
+ else if(actual==='moisture')el.innerHTML='<strong>Moisture availability</strong><p>Tan = dry, green = greater water available after temperature effects.</p>';
+ else if(actual==='seasonality')el.innerHTML='<strong>Seasonal temperature range</strong><p>Blue = mild seasonal contrast; orange = larger summer/winter temperature swing.</p>';
  else if(actual==='landforms')el.innerHTML='<strong>Landform types</strong>'+LANDFORM_NAMES.map((name,i)=>`<span><i style="background:${landformColors[i]}"></i>${name}</span>`).join('');
  else if(actual==='coast')el.innerHTML='<strong>Land / sea</strong><span><i style="background:#4487a2"></i>Water</span><span><i style="background:#799570"></i>Land</span>';
  else if(actual==='plates')el.innerHTML='<strong>Tectonic plates</strong><p>Colors distinguish neighboring plate territories; use plate boundaries to trace edges.</p>';
@@ -405,10 +433,10 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
  }
  ctx.save();ctx.setTransform(dpr*view.scale,0,0,dpr*view.scale,dpr*view.x,dpr*view.y);
  const explicit=displayMode(stage);
- const mode=explicit==='auto'?(stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':stage===6?'landforms':'coast'):explicit;
+ const mode=explicit==='auto'?(stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':stage===6?'landforms':stage===8?'temperature':'coast'):explicit;
  // Hide overlays that require layers which do not exist at the selected stage.
  const fallback=stage<=2?'geometry':stage===3?'plates':stage===4?'height':stage===5?'coast':'landforms';
- const allowed=(mode==='plates'&&stage<3)||(mode==='height'&&stage<4)||(mode==='coast'&&stage<5)||(mode==='landforms'&&stage<6)||((mode==='erosion'||mode==='flow')&&stage<7)?fallback:mode;
+ const allowed=(mode==='plates'&&stage<3)||(mode==='height'&&stage<4)||(mode==='coast'&&stage<5)||(mode==='landforms'&&stage<6)||((mode==='erosion'||mode==='flow')&&stage<7)||(['temperature','rain','moisture','seasonality','january','july'].includes(mode)&&stage<8)?fallback:mode;
  const stroke=workspace.showEdges,points=mesh.cells,geometry=prepareGeometry(mesh),record=stageRecord(stage)?.data;
  if(colorCache.mesh!==mesh||colorCache.record!==record||colorCache.stage!==stage||colorCache.mode!==allowed){
   colorCache={mesh,record,stage,mode:allowed,colors:points.map((_,i)=>colorForCell(i,stage,allowed))};
@@ -469,6 +497,7 @@ function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!p
  if(stage>=5&&sea)details.push(sea.water[selectedId]?'Ocean cell':'Land cell');
  if(stage>=6&&latestData(6)){const l=latestData(6);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
  if(stage>=7&&latestData(7)){const e=latestData(7);details.push(`Eroded depth: ${e.erosionDepth[selectedId].toFixed(4)}`);details.push(`Deposited depth: ${e.deposition[selectedId].toFixed(4)}`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
+ if(stage>=8&&latestData(8)){const c=latestData(8);details.push(`Latitude: ${c.latitudes[selectedId].toFixed(1)}°`);details.push(`Mean temperature: ${c.meanTemp[selectedId].toFixed(1)} °C`);details.push(`January / July: ${c.janTemp[selectedId].toFixed(1)} / ${c.julTemp[selectedId].toFixed(1)} °C`);details.push(`Precipitation: ${Math.round(c.precipitation[selectedId])} mm/year`);details.push(`Moisture index: ${Math.round(c.moisture[selectedId]*100)}%`);}
  details.push(`Cell area: ${shortNumber(Math.round(cellArea(c)))} km²`);
  panel.hidden=false;panel.innerHTML=`<button class="wg-inspector-close" data-action="close-inspector" aria-label="Close inspection">×</button><strong>Cell ${selectedId+1}</strong>${details.map(s=>`<span>${escapeHTML(s)}</span>`).join('')}`;
 }

@@ -15,7 +15,7 @@ function makeWorld(count=220){
 
 test('stage 6 produces deterministic erosion, drainage and sediment arrays',()=>{
  const world=makeWorld(),mesh=world.locked[1].data,erosion=world.locked[6].data;
- assert.equal(IMPLEMENTED,7);
+ assert.ok(IMPLEMENTED>=7);
  for(const name of ['elevations','erosionDepth','deposition','flowTo','discharge'])assert.equal(erosion[name].length,mesh.cells.length);
  assert.ok(erosion.erosionDepth.some(v=>v>0),'erosion is measurable');
  assert.ok(erosion.channels.length>0,'flow channels exist');

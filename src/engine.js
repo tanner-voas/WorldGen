@@ -1,4 +1,4 @@
-// WorldGen v0.1.5 — tapered ocean boundary and deterministic landscape engine.
+// WorldGen v0.1.6 — continental setback and first climate pass.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -9,14 +9,14 @@ export const STAGES=[
   ['Oceans & coasts','Sea level, water coverage and coastlines'],
   ['Landforms','Mountains, valleys, geology and fine terrain variation'],
   ['Erosion','Downhill runoff, sediment transport and thermal weathering'],
-  ['Climate','Future: seasonal atmosphere and oceans'],
+  ['Climate','Seasonal temperature, precipitation, ocean moderation and orographic rain shadows'],
   ['Hydrology','Future: drainage, lakes and rivers'],
   ['Soils','Future: regolith and groundwater'],
   ['Biomes','Future: environmental classification'],
   ['Habitats','Future: vegetation and habitats'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=7;
+export const IMPLEMENTED=8;
 export const MAX_CELLS=5000;
 export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
@@ -24,9 +24,10 @@ export const DEFAULTS={
   2:{averageArea:2300,distribution:'jittered',jitter:0.74,relaxation:1,seed:271828},
   3:{plates:15,continental:0.42,motion:0.7,seed:314159},
   4:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
-  5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,seed:141421},
+  5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,setbackStrength:1.15,setbackWidth:10,seed:141421},
   6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
-  7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607}
+  7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607},
+ 8:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
@@ -256,14 +257,14 @@ function boundaryCells(mesh,outline){
  return {near,touches};
 }
 /** Select geographic-area-weighted sea level with an edge-local ocean bias.
- * The bias gently fades over a few average cell widths, leaving the interior
- * elevation field unchanged. All actual boundary-contacting polygons remain
+ * A narrow rim and a broader continental setback fade independently; the
+ * inner elevation field remains unchanged beyond both influence widths. All actual boundary-contacting polygons remain
  * water, even when a high continental plate reaches the edge. Edge water is
  * counted toward the target rather than silently increasing overall ocean
  * coverage whenever sufficient non-edge cells are available.
  *
- * With no mesh (legacy direct API) or zero edgeOcean, the old unmodified
- * threshold behavior is preserved. This layer owns its adjusted elevations:
+ * With no mesh (legacy direct API), or with both edge strengths zero, the
+ * original sea-level threshold behavior is preserved. This layer owns its adjusted elevations:
  * the locked tectonic/elevation layers are never modified. Later landforms
  * consume this coastal field so land/sea and heights remain consistent.
  */
@@ -275,23 +276,31 @@ export function generateCoasts(elevationData,settings,mesh=null){
  const total=weights.reduce((a,b)=>a+b,0);
  if(!(total>0))throw Error('Invalid geographic cell areas');
  const strength=clamp(Number(settings.edgeOcean)||0,0,1.5);
- const fade=clamp(Number(settings.edgeFade)||1.5,.5,5);
+ const fade=clamp(Number(settings.edgeFade??1.5),.5,5);
+ // The guaranteed one-polygon wet rim is deliberately separate from this
+ // broad, low-frequency continental setback. The broad component weakens
+ // gradually with distance, without any noise tied to the map outline.
+ const setbackStrength=clamp(Number(settings.setbackStrength??0),0,1.8);
+ const setbackWidth=clamp(Number(settings.setbackWidth??9),2,18);
  const protectedCells=new Array(es.length).fill(false);
  const elevations=es.slice();
- let edgeWidthKm=0;
- if(mesh&&strength>0){
+ let edgeWidthKm=0,retreatWidthKm=0;
+ if(mesh&&(strength>0||setbackStrength>0)){
   const outline=boundaryPolygon(mesh);
   const {near,touches}=boundaryCells(mesh,outline);
   const averageCellWidth=Math.sqrt(total/es.length);
   // Prevent the ocean rim from engulfing thin maps or very coarse meshes.
   edgeWidthKm=Math.min(fade*averageCellWidth,Math.min(mesh.width,mesh.height)*.12);
+  retreatWidthKm=Math.min(setbackWidth*averageCellWidth,Math.min(mesh.width,mesh.height)*.16);
   for(let i=0;i<es.length;i++){
-   protectedCells[i]=touches[i];
-   const normalized=clamp(1-near[i]/edgeWidthKm,0,1);
+   protectedCells[i]=strength>0&&touches[i];
+   const normalized=clamp(1-near[i]/Math.max(.001,edgeWidthKm),0,1);
    const smooth=normalized*normalized*(3-2*normalized);
+   const inland=clamp(1-near[i]/Math.max(.001,retreatWidthKm),0,1);
+   const broad=inland*inland*(3-2*inland);
    // No noise is added along the edge: the underlying geology supplies
    // variation, while smoothstep prevents an artificial concentric ridge.
-   elevations[i]=+clamp(es[i]-strength*smooth,-1.8,1.8).toFixed(4);
+   elevations[i]=+clamp(es[i]-strength*smooth-setbackStrength*broad,-1.8,1.8).toFixed(4);
   }
  }
  const available=es.map((_,i)=>i).filter(i=>!protectedCells[i]);
@@ -321,7 +330,7 @@ export function generateCoasts(elevationData,settings,mesh=null){
  const landFraction=water.filter(v=>!v).length/water.length;
  const landAreaFraction=mesh?landAreaFractionFromWeights(weights,water,total):landFraction;
  const edgeWaterCells=protectedCells.filter(Boolean).length;
- return {seaLevel,water,landFraction,landAreaFraction,elevations,edgeWaterCells,edgeWidthKm:+edgeWidthKm.toFixed(2)};
+ return {seaLevel,water,landFraction,landAreaFraction,elevations,edgeWaterCells,edgeWidthKm:+edgeWidthKm.toFixed(2),retreatWidthKm:+retreatWidthKm.toFixed(2)};
 }
 
 function landAreaFractionFromWeights(weights,water,total){
@@ -478,6 +487,102 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
   summary:{channels:channels.length,exportedSediment:+exported.toFixed(2),meanErosion:+(erosionDepth.reduce((a,b)=>a+b,0)/n).toFixed(4),
    maxDischarge:+Math.max(0,...discharge).toFixed(2)}};
 }
+/** Deterministic first-pass climate on the existing Voronoi graph. This is a
+ * geography-aware climate field, not a global fluid dynamics solver. Y is
+ * mapped to a configurable notional latitude: the underlying world is planar.
+ * Locked coastlines, erosion, and drainage are not rewritten.
+ */
+export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
+ const cells=mesh.cells,n=cells.length,water=coasts.water,heights=erosion.elevations;
+ if(!n||water.length!==n||heights.length!==n)throw Error('Climate requires completed ocean and erosion layers');
+ const span=clamp(Number(settings.latitudeSpan),20,180);
+ const center=clamp(Number(settings.latitudeCenter),-70,70);
+ const equatorTemp=clamp(Number(settings.equatorTemp),10,40);
+ const tilt=clamp(Number(settings.axialTilt),0,45);
+ const baseRain=clamp(Number(settings.rainfall),100,4000);
+ const shadow=clamp(Number(settings.rainShadow),0,2);
+ const maritime=clamp(Number(settings.maritime),0,1.5);
+ const angle=clamp(Number(settings.windDirection),-180,180)*Math.PI/180;
+ const wx=Math.cos(angle),wy=-Math.sin(angle),seed=settings.seed|0;
+ // Ocean adjacency dampens seasonal variability over ~5 cell widths.
+ const steps=new Int16Array(n);steps.fill(1000);
+ const queue=[];
+ for(let i=0;i<n;i++)if(water[i]){steps[i]=0;queue.push(i);}
+ for(let k=0;k<queue.length;k++){
+  const i=queue[k];if(steps[i]>=12)continue;
+  for(const j of cells[i].neighbors)if(steps[j]>steps[i]+1){steps[j]=steps[i]+1;queue.push(j);}
+ }
+ onProgress?.(.12);
+ const meanTemp=new Array(n),seasonalRange=new Array(n),latitudes=new Array(n),precipitation=new Array(n);
+ const janTemp=new Array(n),julTemp=new Array(n),janRain=new Array(n),julRain=new Array(n);
+ const airMoisture=new Float64Array(n),humidity=new Array(n),moisture=new Array(n);
+ const projection=cells.map((c,i)=>({i,d:c.x*wx+c.y*wy}));
+ projection.sort((a,b)=>a.d-b.d||a.i-b.i);
+ for(let i=0;i<n;i++){
+  const c=cells[i],lat=clamp(center+(mesh.height*.5-c.y)/mesh.height*span,-90,90);
+  latitudes[i]=+lat.toFixed(2);
+  const at=Math.abs(lat)*Math.PI/180;
+  const altitude=water[i]?0:Math.max(0,heights[i]-coasts.seaLevel)*2.7;
+  const oceanEffect=clamp(1-steps[i]/6,0,1)*maritime;
+  const landSwing=clamp(2.5+Math.pow(Math.abs(lat)/90,1.3)*22+(water[i]?0:6*(1-oceanEffect*.65))*(.15+Math.abs(lat)/90),0,33);
+  const swing=tilt/23.5*landSwing;
+  const noiseTemp=fbm(c.x/360,c.y/360,seed+71,3)*1.8;
+  const t=equatorTemp-52*Math.pow(Math.sin(at),1.27)-6.2*altitude+noiseTemp+(water[i]?1:0)*oceanEffect*.7;
+  meanTemp[i]=+clamp(t,-65,55).toFixed(2);
+  seasonalRange[i]=+clamp(swing,0,39).toFixed(2);
+  // January is northern winter, July is northern summer; the two are equal
+  // at zero axial tilt and reverse sign for southern latitudes.
+  const hemisphere=lat>0?1:lat<0?-1:0;
+  janTemp[i]=+clamp(t-swing*hemisphere,-90,75).toFixed(2);
+  julTemp[i]=+clamp(t+swing*hemisphere,-90,75).toFixed(2);
+ }
+ onProgress?.(.32);
+ // Downwind transport: the nearest upwind neighbors supply a weighted humidity
+ // value. Sea cells refill the air; mountains precipitate moisture before it
+ // reaches the leeward side. This creates coherent rain shadows, not random
+ // per-cell spots. A small background moisture term avoids absolute dry traps.
+ for(const {i} of projection){
+  const c=cells[i];
+  if(water[i]){airMoisture[i]=1;continue;}
+  let supply=0,weight=0,uphill=0;
+  for(const j of c.neighbors){
+   const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;
+   if(d<=1e-6)continue;
+   const w=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);
+   supply+=airMoisture[j]*w;weight+=w;
+   uphill+=Math.max(0,heights[i]-heights[j])*w;
+  }
+  const incoming=weight>0?supply/weight:.43;
+  const rise=weight>0?uphill/weight:0;
+  const depletion=shadow*clamp(rise*1.9,0,.76);
+  airMoisture[i]=clamp(incoming*(.91-depletion)+.06,0,1.3);
+ }
+ onProgress?.(.60);
+ let totalRain=0,totalTemp=0,totalArea=0,minTemp=Infinity,maxTemp=-Infinity;
+ for(let i=0;i<n;i++){
+  const c=cells[i],at=Math.abs(latitudes[i]),w=water[i];
+  const tropics=1+.92*Math.exp(-(((at)/16)**2))-.67*Math.exp(-(((at-28)/14)**2))+.32*Math.exp(-(((at-55)/14)**2));
+  let ascent=0,weight=0;
+  for(const j of c.neighbors){const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;if(d<=0)continue;const ww=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);ascent+=Math.max(0,heights[i]-heights[j])*ww;weight+=ww;}
+  const rise=weight?ascent/weight:0;
+  const relative=clamp(tropics*(.18+airMoisture[i]*1.12)*(1+shadow*Math.min(1.3,rise*2.3))*(.85+.25*noise(c.x/300,c.y/300,seed+3)),.015,4.4);
+  const mm=clamp(baseRain*relative,8,12000);
+  precipitation[i]=+mm.toFixed(1);
+  // Summer rainfall is mildly more concentrated over continental areas;
+  // this is an explicit approximation rather than a circulation solver.
+  const season=clamp((tilt/45)*.24*(w?.3:1)*Math.sin(latitudes[i]*Math.PI/180),-.24,.24);
+  janRain[i]=+(mm/12*(1-2*season)).toFixed(1);
+  julRain[i]=+(mm/12*(1+2*season)).toFixed(1);
+  humidity[i]=+clamp(airMoisture[i]/1.3,0,1).toFixed(4);
+  // Simple availability proxy for the later vegetation/biome layer.
+  moisture[i]=+clamp(mm/(mm+350+Math.max(0,meanTemp[i])*28),0,1).toFixed(4);
+  const area=cellArea(c);totalArea+=area;totalRain+=mm*area;totalTemp+=meanTemp[i]*area;minTemp=Math.min(minTemp,meanTemp[i]);maxTemp=Math.max(maxTemp,meanTemp[i]);
+ }
+ onProgress?.(1);
+ return {meanTemp,seasonalRange,latitudes,precipitation,humidity,moisture,janTemp,julTemp,janRain,julRain,
+  summary:{avgTemp:+(totalTemp/totalArea).toFixed(1),avgRain:+(totalRain/totalArea).toFixed(1),minTemp,maxTemp}};
+}
+
 export function generateStage(stage,locked,settings,onProgress=null){
  const geometry=locked[0]?.data,mesh=locked[1]?.data;
  if(stage===1)return generateGeometry(settings);
@@ -487,6 +592,7 @@ export function generateStage(stage,locked,settings,onProgress=null){
  if(stage===5){if(!locked[3]?.data)throw Error('Elevation layer required');return generateCoasts(locked[3].data,settings,mesh);}
  if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[2].data,locked[3].data,locked[4].data,settings);}
  if(stage===7){if(!locked[5]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[4].data,locked[5].data,settings,onProgress);}
+ if(stage===8){if(!locked[6]?.data)throw Error('Erosion layer required');return generateClimate(mesh,locked[4].data,locked[6].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
@@ -537,6 +643,11 @@ export function validateWorld(world){
     ||d.channels.some(x=>!Number.isInteger(x)||x<0||x>=n)
     ||!d.summary||!Number.isFinite(d.summary.meanErosion)||!Number.isFinite(d.summary.maxDischarge))throw Error('Invalid erosion data');
   }
+  if(record.stage===8){
+   const bounded={meanTemp:[-65,55],seasonalRange:[0,39],latitudes:[-90,90],precipitation:[8,12000],humidity:[0,1],moisture:[0,1],janTemp:[-90,75],julTemp:[-90,75],janRain:[0,12000],julRain:[0,12000]};
+   for(const [key,[min,max]] of Object.entries(bounded))if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(x=>!Number.isFinite(x)||x<min||x>max))throw Error(`Invalid climate data: ${key}`);
+   if(!d.summary||!Number.isFinite(d.summary.avgTemp)||!Number.isFinite(d.summary.avgRain)||!Number.isFinite(d.summary.minTemp)||!Number.isFinite(d.summary.maxTemp))throw Error('Invalid climate summary');
+  }
  }
  return world;
 }
@@ -545,9 +656,10 @@ const INPUT_RANGES={
  2:{jitter:[0,1.7],relaxation:[0,3]},
  3:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
  4:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
- 5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5]},
+ 5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5],setbackStrength:[0,1.8],setbackWidth:[2,18]},
  6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
- 7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]}
+ 7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]},
+ 8:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]}
 };
 /** Convert 0.1.0–0.1.3 saves into complete layer-1 geometry + shifted layers.
  * Do not regenerate any locked content; existing 2048 × 1024 data is still km-space. */
@@ -607,7 +719,7 @@ export function upgradeWorld(world){
   if(stage!==1){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
   world.working.settings=next;
  }
- if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow'].includes(world.viewMode))world.viewMode='auto';
+ if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july'].includes(world.viewMode))world.viewMode='auto';
  world.exploreMode=!!world.exploreMode;
  world.showEdges=world.showEdges!==false;
  world.showPlateBorders=!!world.showPlateBorders;

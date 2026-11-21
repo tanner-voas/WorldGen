@@ -63,7 +63,7 @@ test('edge falloff preserves inland heights and can be disabled',()=>{
  }
  assert.ok(unchanged>mesh.cells.length/2,`interior untouched: ${unchanged}`);
  assert.ok(changed>0,'edge is adjusted');
- const off=generateCoasts(heights,{...DEFAULTS[5],edgeOcean:0},mesh);
+ const off=generateCoasts(heights,{...DEFAULTS[5],edgeOcean:0,setbackStrength:0},mesh);
  assert.deepEqual(off.elevations,heights.elevations);
  assert.equal(off.edgeWaterCells,0);
  assert.equal(off.edgeWidthKm,0);
