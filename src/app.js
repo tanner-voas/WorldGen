@@ -1,6 +1,7 @@
-import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,WORLD_WIDTH,WORLD_HEIGHT,LANDFORM_NAMES,SOIL_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
+import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
+import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 
-const APP_VERSION='0.1.8',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.9',DB_NAME='worldgen-v1',KEY='workspace';
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -108,7 +109,7 @@ let generating=false,dirty=false,storageHealthy=true,storageWarned=false,request
 let persistTimer=null,viewportTimer=null,progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
 let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false;
 // Path2D objects and polygon extents are cached across map pans and zooms.
-let geometryCache={mesh:null,paths:null,bounds:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
+let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
 let measureMode=false,measurePoints=[];
 function db(){
  if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
@@ -116,6 +117,10 @@ function db(){
   const req=indexedDB.open(DB_NAME,1);
   req.onupgradeneeded=()=>{const database=req.result;if(!database.objectStoreNames.contains('data'))database.createObjectStore('data');};
   req.onerror=()=>reject(req.error||Error('Storage unavailable'));req.onsuccess=()=>resolve(req.result);
+  req.onblocked=()=>reject(Error('Local storage is blocked by another tab'));
+ }).catch(error=>{
+  // A temporary open failure must not permanently poison future saves.
+  dbPromise=null;throw error;
  });
  return dbPromise;
 }
@@ -238,7 +243,7 @@ function applyParameter(key,raw,rebuild=false){
  if(row[2]==='select')value=raw;
  else{
   const [min,max]=controlBounds(currentStage(),key);
-  if(raw===''||!Number.isFinite(Number(raw))){notice('Enter a valid number',true);rebuildUI();return;}
+  if(raw===''||raw===null||raw===undefined||!Number.isFinite(Number(raw))){notice('Enter a valid number',true);rebuildUI();return;}
   value=clamp(Number(raw),min,max);
   if(['plates','iterations','relaxation','minLakeCells'].includes(key))value=Math.round(value);
   value=formatNumber(value);
@@ -368,7 +373,7 @@ function prepareGeometry(mesh){
   for(let k=2;k<p.length;k+=2){shape.lineTo(p[k],p[k+1]);left=Math.min(left,p[k]);right=Math.max(right,p[k]);top=Math.min(top,p[k+1]);bottom=Math.max(bottom,p[k+1]);}
   shape.closePath();paths.push(shape);bounds.push([left,top,right,bottom]);
  }
- geometryCache={mesh,paths,bounds};return geometryCache;
+ geometryCache={mesh,paths,bounds,spatial:buildCellIndex(mesh,bounds)};return geometryCache;
 }
 function borderSegments(mesh,labels){
  const out=[],cells=mesh.cells;
@@ -496,8 +501,12 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
  }
  const bounds={x0:-view.x/view.scale,y0:-view.y/view.scale,x1:(width-view.x)/view.scale,y1:(height-view.y)/view.scale};
  if(stroke){ctx.strokeStyle='rgba(5,20,28,.31)';ctx.lineWidth=.55/view.scale;}
- for(let i=0;i<points.length;i++){
-  const [x0,y0,x1,y1]=geometry.bounds[i];if(x1<bounds.x0||x0>bounds.x1||y1<bounds.y0||y0>bounds.y1)continue;
+ // At full-world zoom a simple linear pass is cheaper; zoomed-in views
+ // visit only intersecting cells through the spatial bucket index.
+ const visible=(bounds.x1-bounds.x0)*(bounds.y1-bounds.y0)>mesh.width*mesh.height*.35
+  ? null:cellsInBounds(geometry.spatial,bounds.x0,bounds.y0,bounds.x1,bounds.y1);
+ for(const i of visible||points.keys()){
+  if(!visible){const [x0,y0,x1,y1]=geometry.bounds[i];if(x1<bounds.x0||x0>bounds.x1||y1<bounds.y0||y0>bounds.y1)continue;}
   const path=geometry.paths[i];ctx.fillStyle=colorCache.colors[i];ctx.fill(path);
   if(stroke)ctx.stroke(path);
  }
@@ -548,8 +557,11 @@ function worldToScreen(x,y){return{x:x*view.scale+view.x,y:y*view.scale+view.y};
 function screenToWorld(x,y){return{x:(x-view.x)/view.scale,y:(y-view.y)/view.scale};}
 function zoomBy(factor,x,y){const p=screenToWorld(x,y);view.scale=clamp(view.scale*factor,minimumZoom(),8);view.x=x-p.x*view.scale;view.y=y-p.y*view.scale;rememberViewport();schedulePaint();}
 function pickCell(x,y){const mesh=latestData(2)||(currentStage()===2?workspace.working.data:null);if(!mesh?.cells||effectiveStage()<2)return null;const p=screenToWorld(x,y);if(!insideGeometry(p.x,p.y,geometryData()))return null;
- // Closest Voronoi site owns this point; stable even at exact shared edges.
- let closest=-1,d2=Infinity;for(let i=0;i<mesh.cells.length;i++){const c=mesh.cells[i],score=(p.x-c.x)**2+(p.y-c.y)**2;if(score<d2){d2=score;closest=i;}}
+ // Use the polygon index so taps remain fast on 5,000-cell worlds.
+ // A global nearest-site fallback handles rare rounded-coordinate seams.
+ const picked=cellAtPoint(prepareGeometry(mesh).spatial,p.x,p.y);
+ if(picked!==null)return picked;
+ let closest=null,d2=Infinity;for(let i=0;i<mesh.cells.length;i++){const c=mesh.cells[i],score=(p.x-c.x)**2+(p.y-c.y)**2;if(score<d2){d2=score;closest=i;}}
  return closest;
 }
 function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!panel)return;
@@ -706,14 +718,21 @@ function bindEvents(){
  });
  root.addEventListener('change',event=>{
   const el=event.target;
-  if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,Number(el.value),true);return;}
+  if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,el.value,true);return;}
   if(el.dataset?.setting){applyParameter(el.dataset.setting,el.value,true);return;}
   if(el.id==='wg-edges'){workspace.showEdges=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-coast-borders'){workspace.showCoastBorders=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-flow'){workspace.showFlow=el.checked;void persist();schedulePaint();}
   if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;void persist();updateLegend();schedulePaint();}
-  if(el.id==='wg-seed'){workspace.working.settings.seed=clamp(Number(el.value)||0,0,0xffffffff);dirty=true;void persist();showBusy(generating);scheduleGeneration(40);}
+  if(el.id==='wg-seed'){
+   const value=el.value.trim(),seed=Number(value);
+   if(!value||!Number.isSafeInteger(seed)||seed<0||seed>0xffffffff){
+    notice('Enter a whole-number seed from 0 to 4,294,967,295',true);
+    el.value=String(workspace.working.settings.seed);return;
+   }
+   if(seed!==workspace.working.settings.seed){workspace.working.settings.seed=seed;dirty=true;void persist();showBusy(generating);scheduleGeneration(40);}
+  }
   if(el.id==='wg-import')void handleImport(el.files?.[0]);
  });
  canvas.addEventListener('pointerdown',pointerStart);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerEnd);canvas.addEventListener('pointercancel',pointerEnd);

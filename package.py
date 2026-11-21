@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 APP=ROOT/'dist/worldgen'
 STANDALONE=ROOT/'dist/standalone'
-FILES=['app.js','engine.js','compute-worker.js','styles.css']
+FILES=['app.js','engine.js','spatial.js','compute-worker.js','styles.css']
 
 def main():
     for name in FILES:

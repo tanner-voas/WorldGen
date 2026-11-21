@@ -1,4 +1,4 @@
-# WorldGen v0.1.8
+# WorldGen v0.1.9
 
 An offline-capable, progressively generated 2D landscape explorer. Build targets:
 
@@ -43,9 +43,17 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 **Save schema v2:** Existing WorldGen v0.1.0–v0.1.3 saves are upgraded on import or local load. Migration prepends a 2,048 × 1,024 km rectangular geometry layer, increases all previous layer numbers by one, and retains generated polygon coordinates, tectonic data, elevations, coastlines, landforms, and erosion data rather than regenerating them. Previously saved checkpoints and a working Voronoi preview are supported. The internal IndexedDB namespace remains `worldgen-v1` to preserve upgrades.
 
+## v0.1.9 refinement and performance pass
+
+- Indexed bounds-grid culls most off-screen Voronoi polygons when zoomed in. Full-world rendering retains the cheap sequential scan. Cell taps use the same spatial index rather than examining every site in normal cases. This index is purely transient: it does not change the cell count, shape, polygon data, save schema or regeneration seeds.
+- Voronoi graph construction only accepts a neighbor when an actual site bisector produces a polygon edge; clipped outer-boundary segments cannot be mistaken for connecting edges.
+- Blank number input no longer silently becomes zero, and invalid seeds are rejected and restored in the control instead of changing the world inadvertently.
+- The IndexedDB connection can retry after transient open failures. Saving remains self-contained and existing world/checkpoint data is not rewritten by the index.
+- Regression tests compare indexed lookups with an exhaustive scan on rectangles, circles and ellipses, verify cell picking and preserve historical checkpoint data.
+
 ## Deployment
 
-Apply the single v0.1.7 → v0.1.8 `git am` patch to the existing WorldGen repository, then run:
+Apply the single v0.1.8 → v0.1.9 `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test

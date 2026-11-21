@@ -1,4 +1,4 @@
-// WorldGen v0.1.8 — soil formation on the climate and hydrology fields.
+// WorldGen v0.1.9 — geometry and rendering reliability refinements.
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -162,7 +162,12 @@ function cellPolygons(sites,geometry,onProgress=null){
    if((mx<1e-6&&Math.abs(a[0]-b[0])<1e-6)||(mx>width-1e-6&&Math.abs(a[0]-b[0])<1e-6)||(my<1e-6&&Math.abs(a[1]-b[1])<1e-6)||(my>height-1e-6&&Math.abs(a[1]-b[1])<1e-6))continue;
    let best=-1,score=Infinity;
    for(const k of processed){const dd=(sites[k][0]-mx)**2+(sites[k][1]-my)**2;if(dd<score){score=dd;best=k;}}
-   if(best>=0)neighbors.add(best);
+   // The outer clipping boundary also contributes polygon edges. They do
+   // not correspond to a Voronoi bisector and must not create spurious
+   // graph connections (especially on circles and ellipses). Only accept
+   // an edge when another site is genuinely equidistant at its midpoint.
+   const own=(x-mx)**2+(y-my)**2;
+   if(best>=0&&Math.abs(score-own)<=Math.max(1,own)*1e-7)neighbors.add(best);
   }
   adj[i]=Array.from(neighbors).sort((a,b)=>a-b);
  }
