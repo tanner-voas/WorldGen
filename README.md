@@ -1,4 +1,4 @@
-# WorldGen v0.1.33
+# WorldGen v0.1.34
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -245,3 +245,7 @@ Schema v2 retains its existing encoded elevations: **1 unit = 2.7 km = 2,700 m**
 ## v0.1.33 — Geographic resolution independence
 
 New generation uses a fixed 42 km reference distance (1,764 km² reference area) rather than the current average polygon size. Layer 4 propagates signed tectonic pressure by geographic graph distance; layer 5 accepts kilometre-based coastal fade and setback widths, subject to existing world-size caps. Layer 7 integrates preliminary runoff by physical area and scales sediment deposition by travel distance. Layer 8 uses a 252 km maritime reach and distance/ascent-dependent atmospheric moisture transport. Layer 9 uses an absolute catchment threshold (default 7,056 km², plus minimum discharge), layer 10 uses distance-normalized soil gradients, and layers 11–12 use fixed geographic patch scales and a 126 km land-connected riparian reach. The guaranteed boundary-water rule and minimum lake polygon count remain deliberately mesh-dependent. Existing stored parameter keys and numeric encodings are retained; revised settings apply to newly generated results, not historical terrain or water data. Different Voronoi meshes remain approximations, not identical landscapes. See `RELEASE_v0.1.33.md`.
+
+## v0.1.34 — Generation constraints
+
+Extreme world aspect ratios now receive an advisory in layer 1. The layer 2 mesh reports the geographic area that could remain land with the protected boundary rim enabled; layer 5 displays the requested and attainable land coverage, actual generated land area, and any world-size limits on coastline widths. The rim remains mandatory whenever Edge ocean bias is positive. Sea-level selection considers all attainable area-weighted thresholds, including the endpoints, and never splits equal-height groups. Historical worlds remain unchanged. See `RELEASE_v0.1.34.md`.

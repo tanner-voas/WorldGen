@@ -198,3 +198,9 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-recovery-errors p:last-child{margin-bottom:0}
 .wg-recovery>button{min-height:44px;flex:none;border-radius:11px;padding:10px 14px}
 .wg-recovery-status{min-height:1.4em;overflow-wrap:anywhere}
+
+/* Geographic feasibility feedback stays in the generation controls. */
+.wg-constraint-report{margin:10px 0;padding:9px 11px;border:1px solid #4d7164;border-radius:8px;background:#203b36;color:#c9ded1;font-size:12px;line-height:1.5}
+.wg-constraint-report[hidden]{display:none}
+.wg-constraint-report p{margin:0 0 5px}.wg-constraint-report p:last-child{margin:0}
+.wg-constraint-warning{border-color:#b18b50;color:#f1d9a8;background:#3a3428}

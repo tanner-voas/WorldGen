@@ -1,6 +1,6 @@
 {
   "name": "worldgen-pwa",
-  "version": "0.1.33",
+  "version": "0.1.34",
   "type": "module",
   "private": true,
   "description": "Layered procedural world generator for AppLauncher and standalone PWA.",

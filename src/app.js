@@ -1,3 +1,4 @@
+import {geometryConstraintReport,meshConstraintReport,coastConstraintReport} from './generation-constraints.js';
 import {REFERENCE_AREA_KM2} from './geographic-units.js';
 import {DEFAULTS,STAGES,IMPLEMENTED,stageUsesSeed,newWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
@@ -9,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.1.33',DB_NAME='worldgen-v1';
+const APP_VERSION='0.1.34',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -257,6 +258,7 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0])))).map(settingRow).join('')}${!stageUsesSeed(stage)?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button class="wg-info" data-info="seed" aria-label="About random seed">i</button><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div>`}</div>`;
+  if(stage===1||stage===2||stage===5)html+='<div id="wg-constraints" hidden></div>';
   if(stage===4)html+='<p class="wg-hint">Physical height uses 2,700 m per saved elevation unit. Until layer 5 establishes sea level, heights refer to a provisional zero datum.</p>';
   if(stage===5)html+='<p class="wg-hint">Coastlines are deterministic for the same locked elevation and coastline settings. Change the parameters above to reshape them; this layer has no independent random seed.</p>';
   if(stage===7)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Its runoff input is preliminary; climate is calculated later and does not retroactively alter locked erosion or coastlines.</p>';
@@ -266,9 +268,10 @@ function rebuildUI(){
   if(stage===12)html+='<p class="wg-hint">This is a deterministic, static vegetation and habitat snapshot. Canopy, ground cover, and biomass are modelled indices, not actual plant counts or a time-stepped ecosystem. Locked biomes, soils and rivers are preserved.</p>';
   html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
  }else if(row){
-  html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p><div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
+  html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p>${[1,2,5].includes(stage)?'<div id="wg-constraints" hidden></div>':''}<div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
  }else{html+='<p class="wg-hint">Generate and lock the preceding layer to continue.</p>';}
  root.querySelector('#wg-stage-main').innerHTML=html;
+ updateConstraintReport();
  const renderButton=root.querySelector('[data-action="render"]');
  if(renderButton){renderButton.disabled=effectiveStage()<ELEVATION_RENDER_STAGE;renderButton.title='Open selected layer in 3D (layer 4+)';}
  const shown=effectiveStage(),palette=root.querySelector('#wg-palette');
@@ -284,6 +287,20 @@ function rebuildUI(){
  root.querySelector('[data-action="prev-stage"]').disabled=stage<=1;
  root.querySelector('[data-action="next-stage"]').disabled=stage>=Math.min(IMPLEMENTED,currentStage())||!latestData(stage+1);
  updateLegend();updateMeasurement();showBusy(generating);updateInspector();schedulePaint();
+}
+function updateConstraintReport(){
+ const el=root.querySelector('#wg-constraints');if(!el)return;
+ const stage=viewStage(),record=stageRecord(stage),editable=stage===currentStage();
+ const pending=editable&&(dirty||!record?.data);
+ let report=null;
+ try{
+  if(stage===1)report=geometryConstraintReport(editable?generateGeometry(activeSettings()):record?.data);
+  else if(stage===2&&!pending)report=meshConstraintReport(record?.data);
+  else if(stage===5)report=coastConstraintReport(latestData(2),editable?activeSettings():record?.settings,record?.data,{pending,historical:!editable||(!pending&&!record?.data?.coverage)});
+ }catch{report={warning:true,messages:['Geographic feasibility could not be calculated for this world.']};}
+ el.hidden=!report;
+ el.className=report?.warning?'wg-constraint-report wg-constraint-warning':'wg-constraint-report';
+ el.innerHTML=report?report.messages.map(message=>`<p>${escapeHTML(message)}</p>`).join(''):'';
 }
 function applyParameter(key,raw,rebuild=false){
  if(currentStage()>IMPLEMENTED)return;
@@ -304,6 +321,7 @@ function applyParameter(key,raw,rebuild=false){
   // Shape/dimensions can invalidate the viewport and every dependent map.
   if(rebuild){rebuildUI();fitMap();}else syncControl(key);
  }else if(rebuild)rebuildUI();else syncControl(key);
+ updateConstraintReport();
  scheduleGeneration(row[2]==='select'?50:row[2]==='area'?650:380);
 }
 function syncControl(key){
@@ -346,7 +364,7 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
  case 2:return `${shortNumber(data.cells.length)} Voronoi cells across ${shortNumber(Math.round(data.areaKm2))} km².`;
  case 3:return `${data.plates.length} tectonic plates with distinct crust properties and motion.`;
  case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift · provisional height range ${shortNumber(Math.round(elevationToMetres(Math.min(...data.elevations))))} to ${shortNumber(Math.round(elevationToMetres(Math.max(...data.elevations))))} m.`;
- case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km · sea datum ${shortNumber(Math.round(elevationToMetres(data.seaLevel)))} m relative to layer-4 zero.`;}
+ case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${+((area??data.landFraction)*100).toFixed(2)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km · sea datum ${shortNumber(Math.round(elevationToMetres(data.seaLevel)))} m relative to layer-4 zero.`;}
  case 6:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
  case 7:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)} · mean eroded depth ${elevationToMetres(data.summary.meanErosion).toFixed(1)} m${Number.isFinite(data.summary.exportedSediment)?` · exported sediment estimate ${sedimentToKm3(data.summary.exportedSediment).toFixed(1)} km³`:""}.`;
  case 8:return `${shortNumber(data.meanTemp.length)} climate cells · mean temperature ${data.summary.avgTemp.toFixed(1)} °C · mean precipitation ${Math.round(data.summary.avgRain)} mm/year.`;

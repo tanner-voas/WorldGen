@@ -272,6 +272,22 @@ function boundaryCells(mesh,outline){
  }
  return {near,touches};
 }
+/** The protected rim is a topological constraint, not a width in km. The
+ * bound uses actual clipped polygon areas, including on elongated worlds. */
+export function boundaryLandCapacity(mesh){
+ const weights=mesh.cells.map(cellArea),total=weights.reduce((a,b)=>a+b,0);
+ if(!(total>0))throw Error('Invalid geographic cell areas');
+ const {touches}=boundaryCells(mesh,boundaryPolygon(mesh));
+ return rimCapacity(weights,total,touches);
+}
+function rimCapacity(weights,total,protectedCells){
+ let availableArea=0,protectedCount=0;
+ for(let i=0;i<weights.length;i++){
+  if(protectedCells[i])protectedCount++;else availableArea+=weights[i];
+ }
+ return {protectedCount,availableCount:weights.length-protectedCount,
+  maxLandFraction:clamp(availableArea/total,0,1)};
+}
 /** Select geographic-area-weighted sea level with an edge-local ocean bias.
  * A narrow rim and a broader continental setback fade independently; the
  * inner elevation field remains unchanged beyond both influence widths. All actual boundary-contacting polygons remain
@@ -286,6 +302,7 @@ function boundaryCells(mesh,outline){
  */
 export function generateCoasts(elevationData,settings,mesh=null){
  const es=elevationData.elevations,landTarget=clamp(Number(settings.land),0.05,0.9);
+ if(!Number.isFinite(landTarget))throw Error('Land coverage target must be finite');
  if(!Array.isArray(es)||!es.length)throw Error('Elevation samples required');
  if(mesh&&mesh.cells.length!==es.length)throw Error('Elevation and mesh dimensions differ');
  const weights=mesh?mesh.cells.map(cellArea):es.map(()=>1);
@@ -318,24 +335,28 @@ export function generateCoasts(elevationData,settings,mesh=null){
    elevations[i]=+clamp(es[i]-strength*smooth-setbackStrength*broad,-1.8,1.8).toFixed(4);
   }
  }
+ const capacity=rimCapacity(weights,total,protectedCells);
  const available=es.map((_,i)=>i).filter(i=>!protectedCells[i]);
- const forcedArea=weights.reduce((sum,a,i)=>sum+(protectedCells[i]?a:0),0);
- const target=clamp(total*(1-landTarget)-forcedArea,0,total-forcedArea);
+ const availableArea=available.reduce((sum,i)=>sum+weights[i],0);
+ const target=clamp(availableArea-total*landTarget,0,availableArea);
  const indices=available.sort((a,b)=>elevations[a]-elevations[b]||a-b);
  let seaLevel;
  if(!indices.length)seaLevel=0;
  else if(target<=0)seaLevel=elevations[indices[0]]-.000001;
- else if(target>=total-forcedArea)seaLevel=elevations[indices.at(-1)]+.000001;
+ else if(target>=availableArea)seaLevel=elevations[indices.at(-1)]+.000001;
  else{
-  let accumulated=0,bestDifference=Infinity,bestSplit=-1;
-  // A threshold may not split cells of identical elevation.
-  for(let k=1;k<indices.length;k++){
+  // Consider both endpoints as well as each distinct elevation boundary.
+  // Equal-height groups cannot be split by a single sea-level datum. At an
+  // exact tie prefer the smaller water area; never split a plateau arbitrarily.
+  let accumulated=0,bestDifference=target,bestSplit=0;
+  for(let k=1;k<=indices.length;k++){
    accumulated+=weights[indices[k-1]];
-   if(elevations[indices[k-1]]===elevations[indices[k]])continue;
+   if(k<indices.length&&elevations[indices[k-1]]===elevations[indices[k]])continue;
    const difference=Math.abs(accumulated-target);
    if(difference<bestDifference){bestDifference=difference;bestSplit=k;}
   }
-  seaLevel=bestSplit<0?elevations[indices[0]]+.000001:
+  seaLevel=bestSplit===0?elevations[indices[0]]-.000001:
+   bestSplit===indices.length?elevations[indices.at(-1)]+.000001:
    (elevations[indices[bestSplit-1]]+elevations[indices[bestSplit]])*.5;
  }
  const water=elevations.map((value,i)=>protectedCells[i]||value<seaLevel?1:0);
@@ -345,7 +366,7 @@ export function generateCoasts(elevationData,settings,mesh=null){
  const landFraction=water.filter(v=>!v).length/water.length;
  const landAreaFraction=mesh?landAreaFractionFromWeights(weights,water,total):landFraction;
  const edgeWaterCells=protectedCells.filter(Boolean).length;
- return {seaLevel,water,landFraction,landAreaFraction,elevations,edgeWaterCells,edgeWidthKm:+edgeWidthKm.toFixed(2),retreatWidthKm:+retreatWidthKm.toFixed(2)};
+ return {seaLevel,water,landFraction,landAreaFraction,elevations,edgeWaterCells,coverage:{target:landTarget,maxLandFraction:capacity.maxLandFraction,availableCount:capacity.availableCount},edgeWidthKm:+edgeWidthKm.toFixed(2),retreatWidthKm:+retreatWidthKm.toFixed(2)};
 }
 
 function landAreaFractionFromWeights(weights,water,total){
