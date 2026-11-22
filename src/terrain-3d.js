@@ -315,11 +315,14 @@ function compile(gl,kind,source){
  return shader;
 }
 function program(gl){
- const vert=compile(gl,gl.VERTEX_SHADER,TERRAIN_VERTEX_SHADER),frag=compile(gl,gl.FRAGMENT_SHADER,TERRAIN_FRAGMENT_SHADER);
- const p=gl.createProgram();gl.attachShader(p,vert);gl.attachShader(p,frag);gl.linkProgram(p);
- gl.deleteShader(vert);gl.deleteShader(frag);
- if(!gl.getProgramParameter(p,gl.LINK_STATUS)){const log=gl.getProgramInfoLog(p);gl.deleteProgram(p);throw Error(`3D program link failed: ${log}`);}
- return p;
+ let vert,frag,p;
+ try{
+  vert=compile(gl,gl.VERTEX_SHADER,TERRAIN_VERTEX_SHADER);frag=compile(gl,gl.FRAGMENT_SHADER,TERRAIN_FRAGMENT_SHADER);
+  p=gl.createProgram();gl.attachShader(p,vert);gl.attachShader(p,frag);gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(`3D program link failed: ${gl.getProgramInfoLog(p)}`);
+  return p;
+ }catch(error){if(p)gl.deleteProgram(p);throw error;}
+ finally{if(vert)gl.deleteShader(vert);if(frag)gl.deleteShader(frag);}
 }
 
 export class Terrain3DViewer{
@@ -333,10 +336,15 @@ export class Terrain3DViewer{
   // Height control is viewer-only. Saved elevation and GPU buffers stay unchanged.
   this.heightSteps=0;this.heightMultiplier=1;this.heightTimer=null;this.heightStateCallback=null;
   this.detailWorker=null;this.detailState=null;this.detailSignature='';this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSource=null;this.detailFailure=null;
-  this.onLost=e=>{e.preventDefault();this.lost=true;this.renderedFrame=null;this.clearanceCache=null;
+  this.onLost=e=>{e.preventDefault();if(this.disposed)return;this.lost=true;this.renderedFrame=null;this.clearanceCache=null;
+   if(this.pendingFrame){cancelAnimationFrame(this.pendingFrame);this.pendingFrame=0;}
+   this._releaseFocusedPatches();
    this.detailWorker?.terminate();this.detailWorker=null;this.detailState=null;this.detailSignature='';
    this.onStatus('Graphics context interrupted');};
-  this.onRestored=()=>{this.lost=false;if(this.surface){this._initializeGL();this._uploadSurface();this.drawSoon();}};
+  this.onRestored=()=>{if(this.disposed)return;this.lost=false;if(this.surface){
+   try{this._initializeGL();this._uploadSurface();this.drawSoon();}
+   catch(error){this.lost=true;this.onStatus(`Graphics recovery failed: ${error.message}. Close and reopen the 3D viewer.`);}
+  }};
   canvas.addEventListener('webglcontextlost',this.onLost);
   canvas.addEventListener('webglcontextrestored',this.onRestored);
   this.onPointerDown=e=>this.pointerDown(e);
@@ -387,6 +395,7 @@ export class Terrain3DViewer{
      else finish(Error(data.message||'Elevation mesh failed'));
     };
     worker.onerror=e=>finish(Error(e.message||'3D worker failed'));
+    worker.onmessageerror=()=>finish(Error('3D worker response could not be decoded'));
     worker.postMessage({geometry,mesh,elevations,seaLevel,hydrology:options.hydrology||null,
      waterMask:options.waterMask||null,appearance:options.appearance||null});
    }catch(error){finish(error);}
@@ -632,6 +641,7 @@ export class Terrain3DViewer{
     }else if(data.kind==='error')this._failFocusedDetail(data.message);
    };
    worker.onerror=e=>{if(this.detailWorker===worker)this._failFocusedDetail(e.message||'worker failed');};
+   worker.onmessageerror=()=>{if(this.detailWorker===worker)this._failFocusedDetail('Close-up worker response could not be decoded');};
    worker.postMessage({kind:'init-detail',...source,grid:{cols:s.cols,rows:s.rows,
     planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale,insideMask:s.insideMask,riverMask:s.hydrology?.riverMask||null}});
   }catch(error){

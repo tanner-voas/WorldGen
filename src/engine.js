@@ -1010,9 +1010,13 @@ export function validateWorld(world){
  for(let i=0;i<world.locked.length;i++)if(world.locked[i]?.stage!==i+1||!world.locked[i]?.data)throw Error('Save has missing or unordered layers');
  if(!world.working||!Number.isInteger(world.working.stage)||world.working.stage<1||world.working.stage>IMPLEMENTED+1)throw Error('Save has invalid working layer');
  if(world.working.stage!==world.locked.length+1)throw Error('Save has inconsistent layer progression');
+ if(world.working.data!=null&&(typeof world.working.data!=='object'||Array.isArray(world.working.data)||world.working.stage>IMPLEMENTED))throw Error('Invalid working layer data');
  const records=[...world.locked];if(world.working.data)records.push(world.working);
+ if(records.some(r=>!r.data||typeof r.data!=='object'||Array.isArray(r.data)))throw Error('Invalid generated layer data');
  const geom=records.find(r=>r.stage===1)?.data;
  if(geom){
+  if(!['rectangle','circle','ellipse'].includes(geom.shape)||![geom.width,geom.height,geom.areaKm2].every(v=>Number.isFinite(v)&&v>0))throw Error('Invalid world geometry');
+  if(geom.shape!=='rectangle'&&(!Number.isFinite(geom.radiusX)||!Number.isFinite(geom.radiusY)||(geom.shape==='circle'&&geom.radiusX!==geom.radiusY)))throw Error('Invalid world geometry radii');
   let check;
   try{check=generateGeometry(geom.shape==='circle'?{shape:'circle',radius:geom.radiusX}:geom.shape==='ellipse'?{shape:'ellipse',radiusX:geom.radiusX,radiusY:geom.radiusY}:{shape:'rectangle',width:geom.width,height:geom.height});}
   catch{throw Error('Invalid world geometry');}
@@ -1021,7 +1025,7 @@ export function validateWorld(world){
  const mesh=records.find(r=>r.stage===2)?.data;
  if(mesh){
   if(!geom||!Array.isArray(mesh.cells)||mesh.cells.length<1||mesh.cells.length>MAX_CELLS||mesh.width!==geom.width||mesh.height!==geom.height)throw Error('Invalid world mesh size');
-  if(mesh.shape!==geom.shape)throw Error('Mesh geometry mismatch');
+  if(mesh.shape!==geom.shape||!Number.isFinite(mesh.areaKm2)||Math.abs(mesh.areaKm2-geom.areaKm2)>Math.max(1,geom.areaKm2)*1e-7)throw Error('Mesh geometry mismatch');
   for(const c of mesh.cells){
    if(!Number.isFinite(c.x)||!Number.isFinite(c.y)||!insideGeometry(c.x,c.y,geom))throw Error('Invalid mesh site');
    if(!Array.isArray(c.poly)||c.poly.length<6||c.poly.length>512||c.poly.length%2)throw Error('Invalid polygon');
@@ -1187,6 +1191,10 @@ export function upgradeWorld(world){
  if(world?.schema===1)migrateLegacyWorld(world);
  validateWorld(world);
  const stage=world.working.stage;
+ // Interface metadata is recoverable: invalid selections must never strand
+ // an imported or restored world outside its available generation history.
+ world.viewStage=clamp(Number.isFinite(Number(world.viewStage))?Math.round(Number(world.viewStage)):Math.min(stage,IMPLEMENTED),1,Math.min(stage,IMPLEMENTED));
+ if(world.viewport&&(!Number.isFinite(world.viewport.scale)||world.viewport.scale<=0||!Number.isFinite(world.viewport.centerX)||!Number.isFinite(world.viewport.centerY)))delete world.viewport;
  if(stage<=IMPLEMENTED){
   const defaults=stage===2?{...DEFAULTS[2],averageArea:(world.locked[0]?.data?.areaKm2||generateGeometry(DEFAULTS[1]).areaKm2)/1200}:DEFAULTS[stage],current=world.working.settings||{},next={...defaults,...current};
   for(const [key,baseline] of Object.entries(defaults)){

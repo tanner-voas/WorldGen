@@ -1,4 +1,4 @@
-# WorldGen v0.1.44
+# WorldGen v0.1.45
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -289,3 +289,7 @@ The 3D viewer fits conservative world bounds into both viewport axes and refits 
 ## v0.1.44 — Performance optimization
 
 The mesh worker skips retired uniform index buffers and transfers compact horizontal bounds for exact terrain and water picking. Close-up worker replies retain tiles that still match the current detail plan, and repeated camera clearance queries reuse unchanged results. The 2D map caches immutable boundary paths. Geometry, materials, refinement budgets, and save formats are unchanged. See `RELEASE_v0.1.44.md`.
+
+## v0.1.45 — Full stabilization
+
+Strengthened saved-world validation and interface-state recovery; kept invalid checkpoint replacement from cancelling the current generation; handled worker message failures, graphics-context interruption and lost pointer capture. The final regression pass covers complete worlds, historical checkpoints, and all supported 3D stages. No generation or visual-profile changes. See `RELEASE_v0.1.45.md`.
