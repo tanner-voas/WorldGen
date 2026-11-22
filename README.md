@@ -1,4 +1,4 @@
-# WorldGen v0.1.39
+# WorldGen v0.1.40
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -269,3 +269,7 @@ Close-up terrain requests are selected using the camera frustum, projected scree
 ## v0.1.39 — Boundary refinement
 
 Close-up refinement now includes every nonempty boundary tile in circular and elliptical worlds. The detail worker subdivides the original base triangles rather than clipping against a second outline. Heights and material colors taper to the base mesh at boundary edges, preserving the world footprint during zoom and keeping the existing coastline, lake and river constraints. The screen-space triangle and GPU buffer budgets remain unchanged. See `RELEASE_v0.1.39.md`.
+
+## v0.1.40 — Seamless LOD
+
+Global terrain detail and close-up refinement now use 220 ms eased geometric transitions, with shared elevation, normal and material reference textures constructed from the stitched terrain triangles. Local replacements fade through the base shape; retiring patches are retained only when the existing triangle budget permits. Settled uniform views batch the same stitched geometry in a single draw. No terrain generation or saved-world data changes. See `RELEASE_v0.1.40.md`.

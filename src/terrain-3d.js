@@ -1,6 +1,7 @@
+import {advanceLodMorph,advanceDetailMorph,morphWeight} from './terrain-3d-morph.js';
 import {lodStepForDistance,adaptiveTileLod,tileVisibleInFrustum} from './terrain-3d-lod.js';
 import {cameraRay,pickTerrainRay,surfaceHeightAt} from './terrain-3d-focus.js';
-import {closeUpCameraLimits,planFocusedTerrainTiles,DETAIL_CACHE_BYTE_BUDGET,focusedTileTriangles} from './terrain-3d-detail.js';
+import {closeUpCameraLimits,planFocusedTerrainTiles,DETAIL_CACHE_BYTE_BUDGET,DETAIL_TRIANGLE_BUDGET,focusedTileTriangles} from './terrain-3d-detail.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
  * smooth lighting, water and interactive level-of-detail index buffers.
@@ -38,16 +39,60 @@ layout(location=2) in float aElevation;
 layout(location=3) in vec3 aMaterial;
 uniform mat4 uCamera;
 uniform float uHeightMultiplier;
+uniform int uMorphMode;
+uniform int uMorphFrom;
+uniform int uMorphTo;
+uniform float uMorphWeight;
+uniform float uBaseHeightScale;
+uniform float uMaterialStrength;
+uniform vec2 uPlane;
+uniform highp sampler2DArray uTerrainFields;
+uniform highp sampler2DArray uMaterialFields;
 out vec3 vMaterial;
 out vec3 vNormal;
 out vec3 vPosition;
 out float vElevation;
+// Sample the base triangulation, including its diagonal, not a bilinear
+// height texture. Local morph endpoints therefore meet the base triangles.
+vec4 triangleField(highp sampler2DArray field,vec2 grid,int layer){
+ ivec2 size=textureSize(field,0).xy;
+ ivec2 cell=clamp(ivec2(floor(grid)),ivec2(0),size-ivec2(2));
+ vec2 f=clamp(grid-vec2(cell),0.0,1.0);
+ vec4 a=texelFetch(field,ivec3(cell,layer),0);
+ vec4 b=texelFetch(field,ivec3(cell+ivec2(1,0),layer),0);
+ vec4 c=texelFetch(field,ivec3(cell+ivec2(0,1),layer),0);
+ vec4 d=texelFetch(field,ivec3(cell+ivec2(1,1),layer),0);
+ return f.x+f.y<=1.0?a+(b-a)*f.x+(c-a)*f.y:d+(c-d)*(1.0-f.x)+(b-d)*(1.0-f.y);
+}
 void main(){
  vec3 position=vec3(aPosition.x,aPosition.y*uHeightMultiplier,aPosition.z);
  vNormal=normalize(vec3(aNormal.x*uHeightMultiplier,aNormal.y,aNormal.z*uHeightMultiplier));
  vMaterial=aMaterial;
  vPosition=position;
  vElevation=aElevation;
+ if(uMorphMode!=0){
+  vec2 grid=(aPosition.xz/uPlane+.5)*vec2(textureSize(uTerrainFields,0).xy-ivec2(1));
+  vec4 sourceField,destField;
+  vec3 fromMaterial=aMaterial,toMaterial=aMaterial;
+  if(uMorphMode==1){
+   ivec2 vertex=ivec2(round(grid));
+   sourceField=texelFetch(uTerrainFields,ivec3(vertex,uMorphFrom),0);
+   destField=texelFetch(uTerrainFields,ivec3(vertex,uMorphTo),0);
+   if(uMaterialStrength>0.0){
+    fromMaterial=texelFetch(uMaterialFields,ivec3(vertex,uMorphFrom),0).rgb;
+    toMaterial=texelFetch(uMaterialFields,ivec3(vertex,uMorphTo),0).rgb;
+   }
+  }else{
+   sourceField=triangleField(uTerrainFields,grid,0);
+   destField=vec4(aElevation,aNormal);
+   if(uMaterialStrength>0.0)fromMaterial=triangleField(uMaterialFields,grid,0).rgb;
+  }
+  vec4 blended=mix(sourceField,destField,uMorphWeight);
+  position.y=blended.x*uBaseHeightScale*uHeightMultiplier;
+  vPosition=position;vElevation=blended.x;
+  vNormal=normalize(vec3(blended.y*uHeightMultiplier,blended.z,blended.w*uHeightMultiplier));
+  vMaterial=mix(fromMaterial,toMaterial,uMorphWeight);
+ }
  gl_Position=uCamera*vec4(position,1.0);
 }`;
 export const TERRAIN_FRAGMENT_SHADER=`#version 300 es
@@ -224,6 +269,8 @@ export class Terrain3DViewer{
   this.seaLocation=gl.getUniformLocation(this.program,'uSeaLevel');
   this.materialLocation=gl.getUniformLocation(this.program,'uMaterialStrength');
   this.heightLocation=gl.getUniformLocation(this.program,'uHeightMultiplier');
+  this.morphLocations=Object.fromEntries(['Mode','From','To','Weight','BaseHeightScale','Plane','TerrainFields','MaterialFields'].map(name=>[name,gl.getUniformLocation(this.program,`u${name.startsWith('Base')||name==='Plane'||name.endsWith('Fields')?name:'Morph'+name}`)]));
+  this.morphTextures=null;this.globalMorphs=new Map();this.detailDraining=false;
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
   gl.disable(gl.CULL_FACE);
@@ -248,8 +295,9 @@ export class Terrain3DViewer{
    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,level.indices,gl.STATIC_DRAW);
    this.levelBuffers.push({buffer,count:level.indices.length,step:level.step,tiles:level.tiles||null});
   }
+  this._uploadMorphFields();
   this.uniformLevelBuffers=[];
-  for(const level of s.uniformLevels||[]){
+  for(const level of this.morphTextures?[]:s.uniformLevels||[]){
    const buffer=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buffer);
    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,level.indices,gl.STATIC_DRAW);
    this.uniformLevelBuffers.push({buffer,count:level.indices.length,step:level.step});
@@ -275,6 +323,61 @@ export class Terrain3DViewer{
    this.hydroGeometry.push({kind,vao,buffer,count:vertices.length/3});
   }
   gl.bindVertexArray(null);
+ }
+ /** Shared immutable references. No per-frame geometry uploads. */
+ _uploadMorphFields(){
+  const gl=this.gl,s=this.surface,fields=s.morphFields;
+  if(!fields)return;
+  const texture=(data,unit)=>{
+   const t=gl.createTexture();gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D_ARRAY,t);
+   gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+   gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+   gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+   gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+   gl.texImage3D(gl.TEXTURE_2D_ARRAY,0,gl.RGBA32F,s.cols+1,s.rows+1,fields.layers,0,gl.RGBA,gl.FLOAT,data);
+   return t;
+  };
+  const terrain=texture(fields.terrain,0),material=fields.material?texture(fields.material,1):null;
+  this.morphTextures={terrain,material};
+  // A complete dummy binding is needed even without material data.
+  gl.activeTexture(gl.TEXTURE0+1);gl.bindTexture(gl.TEXTURE_2D_ARRAY,material||terrain);
+  gl.activeTexture(gl.TEXTURE0);
+ }
+ _setMorph(mode,from=0,to=0,weight=1){
+  if(!this.morphTextures)return;
+  const gl=this.gl,l=this.morphLocations;
+  gl.uniform1i(l.Mode,mode);
+  if(mode){gl.uniform1i(l.From,from);gl.uniform1i(l.To,to);gl.uniform1f(l.Weight,weight);}
+ }
+ /** Fade an old patch to the base before replacing its GPU allocation.
+  * Keep retiring patches only when the new plan has budget for them. */
+ _updateFocusedMorphs(now){
+  const plan=this.detailPlan||new Map(),tiles=this.detailTiles||[];
+  let spare=DETAIL_TRIANGLE_BUDGET-tiles.reduce((sum,t)=>sum+focusedTileTriangles(t),0);
+  let animating=false;
+  for(const [id,p] of this.detailPatches){
+   const desired=plan.get(id),exact=desired===p.subdivisions;
+   const global=this.globalMorphs?.get(id);
+   // A rapid jump from overview to close-up must finish the global
+   // transition to step 1 before the local patch takes over.
+   if(exact&&!p.visible&&global&&(global.from!==1||global.to!==1)){
+    p.phase=0;p.morphTime=null;animating=true;continue;
+   }
+   const tile=tiles.find(t=>t.id===id),reserved=tile?focusedTileTriangles(tile):0;
+   const extra=Math.max(0,p.count/3-reserved);
+   const retiring=!exact&&p.visible&&p.phase>0&&extra<=spare;
+   if(retiring)spare-=extra;
+   if(!exact&&!retiring){p.phase=0;p.visible=false;p.morphTime=null;continue;}
+   p.phase=advanceDetailMorph(p.phase,p.morphTime,exact,now);p.morphTime=now;
+   p.visible=exact||p.phase>0;
+   if(!p.visible)p.morphTime=null;
+   if(exact?p.phase<1:p.phase>0)animating=true;
+  }
+  if(this.detailDraining&&![...this.detailPatches.values()].some(p=>p.visible)){
+   this._releaseFocusedPatches();this.detailDraining=false;
+  }
+  this._trimFocusedPatches();this._dispatchFocusedDetail();
+  return animating;
  }
  /** Release only focused refinement buffers; the global terrain remains. */
  _deleteFocusedPatch(id){
@@ -316,9 +419,10 @@ export class Terrain3DViewer{
   this.detailPlan=new Map(tiles.map(tile=>[tile.id,tile.subdivisions]));
   if(!tiles.length){
    this.detailWorker?.terminate();this.detailWorker=null;this.detailState=null;
-   this._releaseFocusedPatches();
+   if(this.morphTextures)this.detailDraining=true;else this._releaseFocusedPatches();
    return;
   }
+  this.detailDraining=false;
   for(const id of this.activeDetailIds){
    if(this.detailPatches.has(id)){
     const cached=this.detailPatches.get(id);
@@ -375,7 +479,10 @@ export class Terrain3DViewer{
  _dispatchFocusedDetail(){
   const state=this.detailState;
   if(!state?.ready||state.busy||!this.detailWorker||this.disposed||this.lost)return;
-  const missing=(this.detailTiles||[]).filter(tile=>this.detailPatches.get(tile.id)?.subdivisions!==tile.subdivisions);
+  const missing=(this.detailTiles||[]).filter(tile=>{
+   const p=this.detailPatches.get(tile.id);
+   return p?.subdivisions!==tile.subdivisions&&!(this.morphTextures&&p?.visible&&p.phase>0);
+  });
   if(!missing.length)return;
   state.busy=true;
   state.key=this.detailSignature;
@@ -402,20 +509,21 @@ export class Terrain3DViewer{
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,patch.indices,gl.STATIC_DRAW);
   gl.bindVertexArray(null);
   this.detailPatches.set(id,{vao,vbo,materialVBO,ibo,count:patch.indices.length,subdivisions:patch.subdivisions,
-   bytes:patch.vertexData.byteLength+patch.indices.byteLength+(patch.materialColors?.byteLength||0)});
+   bytes:patch.vertexData.byteLength+patch.indices.byteLength+(patch.materialColors?.byteLength||0),phase:0,morphTime:null,visible:false});
  }
  // A cached lower-resolution patch can remain visible during an upgrade.
  // A higher-resolution patch must not exceed the new plan's budget: fall back
  // to the global mesh until its smaller replacement is ready.
  _activeFocusedPatch(id){
   const desired=this.detailPlan?.get(id),patch=this.detailPatches?.get(id);
+  if(this.morphTextures)return patch?.visible?patch:null;
   return desired&&patch&&patch.subdivisions<=desired?patch:null;
  }
  _trimFocusedPatches(){
   let bytes=0;
   for(const patch of this.detailPatches.values())bytes+=patch.bytes||0;
   while(bytes>DETAIL_CACHE_BYTE_BUDGET||this.detailPatches.size>32){
-   const old=[...this.detailPatches.keys()].find(id=>!this._activeFocusedPatch(id));
+   const old=[...this.detailPatches.keys()].find(id=>!this._activeFocusedPatch(id)&&(!this.morphTextures||this.detailPlan?.get(id)!==this.detailPatches.get(id)?.subdivisions));
    if(old===undefined)break; // the active geometry is independently bounded
    bytes-=this.detailPatches.get(old).bytes||0;
    this._deleteFocusedPatch(old);
@@ -551,11 +659,19 @@ export class Terrain3DViewer{
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
   gl.uniform1f(this.materialLocation,s.materialColors?.length?0.88:0);
   gl.uniform1f(this.heightLocation,this.heightMultiplier??1);
+  const now=performance.now();let animating=false;
+  if(this.morphTextures){
+   const l=this.morphLocations;
+   gl.uniform1i(l.TerrainFields,0);gl.uniform1i(l.MaterialFields,1);
+   gl.uniform1f(l.BaseHeightScale,s.heightScale);gl.uniform2f(l.Plane,s.planeWidth,s.planeDepth);
+   this._setMorph(0);
+  }
   const selected=meshLod(this.distance);
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
   gl.bindVertexArray(this.terrainVAO);
   this._requestFocusedDetail(camera,width,height);
+  if(this.morphTextures)animating=this._updateFocusedMorphs(now);
   const activePatches=[...(this.detailPatches||new Map()).keys()].map(id=>this._activeFocusedPatch(id)).filter(Boolean);
   const hasFocused=activePatches.length>0;
   const tiled=this.levelBuffers,baseline=tiled.find(level=>level.step===1);
@@ -563,16 +679,25 @@ export class Terrain3DViewer{
   if(baseline?.tiles?.length){
    const span=Math.max(s.planeWidth/s.cols,s.planeDepth/s.rows)*32;
    // Determine LOD for each tile before drawing. When every tile requests
-   // the same detail, a single uniform draw is substantially cheaper and
-   // avoids dense stitched boundaries that are not needed in that view.
+   // the same settled detail, a single draw batches the stitched indices.
    const history=this.tileLodHistory||(this.tileLodHistory=new Map());
    const selectedSteps=baseline.tiles.map(tile=>{
     const step=adaptiveTileLod(eye,tile,span,history.get(tile.id));
     history.set(tile.id,step);return step;
    });
-   finest=Math.min(...selectedSteps);coarsest=Math.max(...selectedSteps);
-   const uniform=finest===coarsest&&!hasFocused&&this.distance>(this.detailLimits?.detailDistance||.25)?
-    this.uniformLevelBuffers?.find(level=>level.step===finest):null;
+   const morphs=this.morphTextures?baseline.tiles.map((tile,i)=>{
+    // Local refinement uses the base (step 1) surface as its bridge.
+    const desired=this._activeFocusedPatch(tile.id)||this.detailPlan?.has(tile.id)?1:selectedSteps[i];
+    const state=advanceLodMorph(this.globalMorphs.get(tile.id),desired,now);
+    this.globalMorphs.set(tile.id,state);
+    if(state.from!==state.to)animating=true;
+    return state;
+   }):null;
+   const drawSteps=morphs?morphs.map(m=>m.from===m.to?m.to:1):selectedSteps;
+   finest=Math.min(...drawSteps);coarsest=Math.max(...drawSteps);
+   // Use the identical stitched mesh in batched and mixed-detail paths.
+   const uniform=finest===coarsest&&!hasFocused&&!morphs?.some(m=>m.from!==m.to)&&this.distance>(this.detailLimits?.detailDistance||.25)?
+    (this.morphTextures?tiled:this.uniformLevelBuffers)?.find(level=>level.step===finest):null;
    if(uniform){
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,uniform.buffer);
     gl.drawElements(gl.TRIANGLES,uniform.count,gl.UNSIGNED_INT,0);
@@ -587,7 +712,10 @@ export class Terrain3DViewer{
      const scale=this.heightMultiplier||1;
      const visibleTile=scale===1?tile:{...tile,minY:tile.minY*scale,maxY:tile.maxY*scale};
      if(!tileVisibleInFrustum(camera,visibleTile,s))continue;
-     const step=selectedSteps[i],level=tiled.find(row=>row.step===step)||baseline;
+     const m=morphs?.[i];
+     if(m&&m.from!==m.to)this._setMorph(1,Math.log2(m.from),Math.log2(m.to),morphWeight(m.phase));
+     else this._setMorph(0);
+     const step=drawSteps[i],level=tiled.find(row=>row.step===step)||baseline;
      const range=level.tiles?.[i];if(!range?.count)continue;
      if(currentStep!==step){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);currentStep=step;}
      gl.drawElements(gl.TRIANGLES,range.count,gl.UNSIGNED_INT,range.offset*4);
@@ -602,6 +730,7 @@ export class Terrain3DViewer{
   }
   if(hasFocused){
    for(const patch of activePatches){
+    this._setMorph(patch.phase<1?2:0,0,0,morphWeight(patch.phase??1));
     gl.bindVertexArray(patch.vao);
     gl.drawElements(gl.TRIANGLES,patch.count,gl.UNSIGNED_INT,0);
     selectedTriangles+=patch.count/3;
@@ -609,6 +738,7 @@ export class Terrain3DViewer{
   }
   // Coplanar decals use a depth-buffer bias, not a physical height offset.
   // Draw water afterward so it covers submerged portions of lake outlets.
+  this._setMorph(0);
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
   for(const water of this.hydroGeometry||[]){
    if(water.kind!==2)continue;
@@ -632,6 +762,7 @@ export class Terrain3DViewer{
    this.detailWorker?' · refining close-up…':this.detailFailure?' · close-up unavailable':'';
   const status=`${this.label} · ${detail}${closeDetail} · ${selectedTriangles.toLocaleString()} terrain tris · ${s.hydrology?.riverSegments||0} river tris`;
   if(status!==this.lastDrawStatus){this.lastDrawStatus=status;this.onStatus(status);}
+  if(animating)this.drawSoon();
  }
  dispose(){
   if(this.disposed)return;
@@ -659,9 +790,11 @@ export class Terrain3DViewer{
    if(this.waterVBO)gl.deleteBuffer(this.waterVBO);
    if(this.terrainVAO)gl.deleteVertexArray(this.terrainVAO);
    if(this.waterVAO)gl.deleteVertexArray(this.waterVAO);
+   if(this.morphTextures){gl.deleteTexture(this.morphTextures.terrain);if(this.morphTextures.material)gl.deleteTexture(this.morphTextures.material);}
    if(this.program)gl.deleteProgram(this.program);
    gl.getExtension?.('WEBGL_lose_context')?.loseContext?.();
   }
+  this.morphTextures=null;this.globalMorphs?.clear();
   this.surface=null;
  }
 }

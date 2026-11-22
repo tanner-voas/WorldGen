@@ -1,4 +1,5 @@
 import {buildElevationSurface,buildFocusedTerrainPatch,createSurfaceSampler} from './terrain-3d-model.js';
+import {buildMorphFields} from './terrain-3d-morph.js';
 import {buildTerrainSiteColors} from './terrain-3d-material.js';
 
 // A close-up worker owns one immutable copy of the world. Camera movement only
@@ -29,11 +30,13 @@ self.onmessage=({data})=>{
   const result=buildElevationSurface(geometry,mesh,elevations,value=>{
    self.postMessage({kind:'progress',value});
   },{seaLevel,hydrology,waterMask,appearance});
-  const transfer=[result.vertexData.buffer,result.insideMask.buffer,result.ocean.buffer,
+  result.morphFields=buildMorphFields(result);
+  const transfer=[result.morphFields.terrain.buffer,result.vertexData.buffer,result.insideMask.buffer,result.ocean.buffer,
    result.hydrology.rivers.buffer,result.hydrology.lakes.buffer,
    ...result.levels.map(level=>level.indices.buffer),
    ...result.uniformLevels.map(level=>level.indices.buffer)];
   if(result.materialColors)transfer.push(result.materialColors.buffer);
+  if(result.morphFields.material)transfer.push(result.morphFields.material.buffer);
   if(result.hydrology.riverMask)transfer.push(result.hydrology.riverMask.buffer);
   self.postMessage({kind:'success',result},transfer);
  }catch(error){
