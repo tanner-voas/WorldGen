@@ -1,4 +1,4 @@
-# WorldGen v0.1.45
+# WorldGen v0.2.0
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -293,3 +293,7 @@ The mesh worker skips retired uniform index buffers and transfers compact horizo
 ## v0.1.45 — Full stabilization
 
 Strengthened saved-world validation and interface-state recovery; kept invalid checkpoint replacement from cancelling the current generation; handled worker message failures, graphics-context interruption and lost pointer capture. The final regression pass covers complete worlds, historical checkpoints, and all supported 3D stages. No generation or visual-profile changes. See `RELEASE_v0.1.45.md`.
+
+## v0.2.0 — Mobile settings layout and manual layer workflow
+
+Shared generation controls now occupy one row per parameter and use a draggable, persistently sized bottom sheet. Action labels wrap inside buttons, and the always-visible map dock exposes Lock / Unlock independently of the settings panel. Unlocking has no confirmation; unlocking a non-latest locked stage first creates a checkpoint of the previous branch. Inapplicable map display modes and overlays are omitted until their source layers exist, including hiding all display controls at layer 1. See `RELEASE_v0.2.0.md`.

@@ -204,3 +204,51 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-constraint-report[hidden]{display:none}
 .wg-constraint-report p{margin:0 0 5px}.wg-constraint-report p:last-child{margin:0}
 .wg-constraint-warning{border-color:#b18b50;color:#f1d9a8;background:#3a3428}
+
+/* v0.2.0: one setting per row and a vertically resizable generation drawer. */
+.wg-shell{--wg-console-height:clamp(272px,36dvh,430px)}
+.wg-map-area{bottom:var(--wg-console-height)}
+.wg-console{height:var(--wg-console-height);display:flex;flex-direction:column;min-height:0}
+.wg-console-handle{flex:0 0 35px;width:100%;height:35px;margin:0;touch-action:none;cursor:ns-resize;align-self:stretch}
+.wg-console-handle span{width:54px;height:5px;background:#789d8e}
+.wg-progress-row{flex:none;min-height:0}
+.wg-stage-main{flex:1;height:auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.wg-controls{grid-template-columns:minmax(0,1fr);gap:18px;max-width:760px}
+.wg-form-field{gap:10px;min-width:0}
+.wg-form-field .wg-field-title{font-size:13px;min-height:34px;gap:12px}
+.wg-form-field .wg-field-title>span{min-width:0;overflow-wrap:anywhere}
+.wg-form-field input[type=range]{min-height:32px}
+.wg-form-field select{min-height:44px}
+.wg-value-controls{gap:9px}
+.wg-value-controls button{flex:0 0 44px;min-width:44px;width:44px;height:44px}
+.wg-value-controls input[type=number]{height:44px;font-size:14px!important}
+.wg-seed-row{grid-column:1;display:grid;grid-template-columns:minmax(0,1fr) 38px;gap:8px 10px;align-items:center}
+.wg-seed-row label{white-space:normal}
+.wg-seed-row .wg-info{justify-self:end}
+#wg-seed{max-width:none;min-width:0;min-height:44px}
+.wg-seed-row button[data-action="reroll"]{min-height:44px;min-width:0}
+.wg-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-width:760px;margin:20px 0 14px}
+.wg-actions button,.wg-actions button[data-action="reset-settings"]{flex:none;width:100%;min-width:0;height:auto;min-height:48px;line-height:1.25;padding:10px 12px;overflow-wrap:break-word;white-space:normal}
+.wg-actions:has(>button:only-child){grid-template-columns:minmax(0,1fr)}
+#worldgen-root .wg-actions button,#worldgen-root .wg-seed-row button,#worldgen-root .wg-library-actions button,#worldgen-root .wg-snapshot button,#worldgen-root .wg-3d-bar button{min-width:0;overflow-wrap:anywhere;white-space:normal;line-height:1.25}
+.wg-map-action-dock{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:8px;align-items:stretch;width:min(178px,43vw);z-index:3}
+.wg-map-action-dock button{position:static;width:100%;min-height:44px;border-radius:10px;padding:8px 10px;font-size:12px!important;font-weight:730!important;line-height:1.25;white-space:normal;box-shadow:0 2px 8px #071d2780}
+.wg-layer-toggle{background:#c4e2b1;color:#173727;border:1px solid #e2f3d2}
+.wg-layer-toggle.wg-unlock{background:#2b5348;color:#e9f4e8;border-color:#88b39b}
+.wg-layer-toggle[hidden],.wg-display-bar[hidden],.wg-overlays [hidden]{display:none}
+.wg-explore-toggle{background:#c4e2b1;color:#173727;border:1px solid #e2f3d2}
+.wg-map-nav{max-width:calc(100% - min(178px,43vw) - 30px)}
+.wg-map-scale{bottom:110px;max-width:calc(100% - 24px)}
+.wg-inspector{bottom:142px}
+.wg-overlays{max-width:calc(100% - 24px)}
+.wg-legend{grid-template-columns:minmax(0,1fr)}
+.wg-legend span{white-space:normal}
+.wg-shell.wg-explore .wg-map-scale{bottom:110px}
+@media(min-width:700px){.wg-controls{grid-template-columns:minmax(0,1fr)}.wg-stage-main{padding-inline:max(22px,calc((100vw - 900px)/2))}.wg-map-area{bottom:var(--wg-console-height)}.wg-console{height:var(--wg-console-height)}}
+@media(max-height:610px){.wg-map-area{bottom:var(--wg-console-height)}.wg-console{height:var(--wg-console-height)}}
+@media(max-width:430px){.wg-controls{gap:16px}.wg-value-controls{gap:8px}.wg-value-controls button{flex-basis:44px;min-width:44px;width:44px}.wg-actions{gap:8px}.wg-stage-main{padding-inline:14px}.wg-map-action-dock{width:min(160px,42vw)}.wg-map-nav{max-width:calc(100% - min(160px,42vw) - 30px)}}
+.wg-shell.wg-map-compact .wg-map-buttons{top:64px;right:10px;flex-direction:row;gap:5px}
+.wg-shell.wg-map-compact .wg-map-buttons button{width:36px;min-width:36px;height:36px}
+.wg-shell.wg-map-compact .wg-map-scale{bottom:58px;max-width:calc(100% - min(178px,43vw) - 20px)}
+.wg-shell.wg-map-compact .wg-overlays{top:107px;max-height:min(45dvh,240px)}
+@media(max-width:430px){.wg-shell.wg-map-compact .wg-map-scale{max-width:calc(100% - min(160px,42vw) - 20px)}}

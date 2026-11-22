@@ -1002,7 +1002,7 @@ export function generateStage(stage,locked,settings,onProgress=null){
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
- return {schema:SCHEMA_VERSION,id:`world-${Date.now()}`,name,created:new Date().toISOString(),updated:new Date().toISOString(),locked:[],working:{stage:1,settings:{...DEFAULTS[1]},data:null,dataSettings:null},viewStage:1,viewMode:'auto',showEdges:true,showPlateBorders:false,showCoastBorders:false,showFlow:false,exploreMode:false,selected:null};
+ return {schema:SCHEMA_VERSION,id:`world-${Date.now()}`,name,created:new Date().toISOString(),updated:new Date().toISOString(),locked:[],working:{stage:1,settings:{...DEFAULTS[1]},data:null,dataSettings:null},viewStage:1,viewMode:'auto',showEdges:true,showPlateBorders:false,showCoastBorders:false,showFlow:false,exploreMode:false,consoleHeightRatio:.36,selected:null};
 }
 export function validateWorld(world){
  if(!world||world.schema!==SCHEMA_VERSION||!Array.isArray(world.locked)||world.locked.length>IMPLEMENTED)throw Error('Unsupported or invalid world save');
@@ -1215,6 +1215,7 @@ export function upgradeWorld(world){
  }
  if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds','soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion','biomes','productivity','treePotential','waterStress','growingSeason','ecotones','vegetation','canopyCover','groundCover','biomass','habitatComplexity','habitats','riparian'].includes(world.viewMode))world.viewMode='auto';
  world.exploreMode=!!world.exploreMode;
+ world.consoleHeightRatio=Number.isFinite(world.consoleHeightRatio)?clamp(world.consoleHeightRatio,.1,.95):.36;
  world.showEdges=world.showEdges!==false;
  world.showPlateBorders=!!world.showPlateBorders;
  world.showCoastBorders=!!world.showCoastBorders;

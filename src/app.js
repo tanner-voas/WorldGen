@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.1.45',DB_NAME='worldgen-v1';
+const APP_VERSION='0.2.0',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -131,6 +131,7 @@ let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false;
 // Path2D objects and polygon extents are cached across map pans and zooms.
 let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
 let measureMode=false,measurePoints=[];
+let drawerDrag=null,suppressHandleClick=false,unlocking=false;
 function db(){
  if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
   if(!('indexedDB' in globalThis)){reject(Error('IndexedDB unavailable'));return;}
@@ -209,7 +210,58 @@ function showBusy(busy){
  const el=root.querySelector('#wg-status'),status=autosave.status;
  const label=status==='error'?'Save failed · Export backup':busy?`Generating${progressPercent?' '+progressPercent+'%':'…'}`:status==='saving'?'Saving…':status==='pending'?'Save pending':dirty?'Preview pending':'Cached locally';
  if(el)el.innerHTML=`<span class="${label==='Cached locally'?'wg-saved-dot':'wg-busy-dot'}"></span> ${label}`;
- const lock=root.querySelector('[data-action="lock"]');if(lock)lock.disabled=busy||dirty||!workspace.working.data;
+ const lock=root.querySelector('[data-action="lock-or-unlock"]');
+ if(lock&&viewStage()===currentStage())lock.disabled=busy||dirty||!workspace.working.data;
+}
+
+// The generation drawer and map share one resizable boundary. Store a ratio
+// instead of device pixels so rotation and viewport changes remain usable.
+function consoleBounds(){
+ const viewport=root.clientHeight||innerHeight||700;
+ const header=root.querySelector('.wg-header')?.getBoundingClientRect().height||70;
+ const minimum=Math.min(210,Math.max(145,(viewport-header)*.26));
+ const maximum=Math.max(minimum,viewport-header-210);
+ return {viewport,minimum,maximum};
+}
+function applyConsoleHeight(){
+ const shell=root.querySelector('#worldgen-root');if(!shell)return;
+ const {viewport,minimum,maximum}=consoleBounds();
+ const ratio=Number.isFinite(workspace.consoleHeightRatio)?workspace.consoleHeightRatio:.36;
+ const height=clamp(viewport*ratio,minimum,maximum);
+ shell.style.setProperty('--wg-console-height',`${Math.round(height)}px`);
+ shell.classList.toggle('wg-map-compact',!workspace.exploreMode&&viewport-(root.querySelector('.wg-header')?.getBoundingClientRect().height||70)-height<350);
+}
+function bindDrawerDrag(){
+ const handle=root.querySelector('.wg-console-handle');
+ handle.addEventListener('pointerdown',event=>{
+  if(event.button!==0&&event.pointerType==='mouse')return;
+  const height=root.querySelector('.wg-console').getBoundingClientRect().height;
+  drawerDrag={id:event.pointerId,startY:event.clientY,startHeight:height,moved:false};
+  handle.setPointerCapture(event.pointerId);
+ });
+ handle.addEventListener('pointermove',event=>{
+  if(!drawerDrag||drawerDrag.id!==event.pointerId)return;
+  const delta=drawerDrag.startY-event.clientY;
+  if(Math.abs(delta)>5)drawerDrag.moved=true;
+  if(!drawerDrag.moved)return;
+  const {viewport,minimum,maximum}=consoleBounds();
+  const height=clamp(drawerDrag.startHeight+delta,minimum,maximum);
+  const center=screenToWorld(canvas.clientWidth/2,canvas.clientHeight/2);
+  workspace.consoleHeightRatio=height/viewport;
+  applyConsoleHeight();
+  view.x=canvas.clientWidth/2-center.x*view.scale;
+  view.y=canvas.clientHeight/2-center.y*view.scale;
+  resizeCanvas();
+ });
+ const finish=event=>{
+  if(!drawerDrag||drawerDrag.id!==event.pointerId)return;
+  const moved=drawerDrag.moved;drawerDrag=null;
+  if(handle.hasPointerCapture(event.pointerId))handle.releasePointerCapture(event.pointerId);
+  if(moved){suppressHandleClick=true;setTimeout(()=>{suppressHandleClick=false;},0);persist('preferences');rememberViewport();}
+ };
+ handle.addEventListener('pointerup',finish);
+ handle.addEventListener('pointercancel',finish);
+ handle.addEventListener('lostpointercapture',finish);
 }
 
 function buildShell(){
@@ -224,16 +276,16 @@ function buildShell(){
    <main class="wg-map-area">
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
     <div class="wg-map-buttons"><button data-action="fit" aria-label="Fit world to view" title="Fit entire world">⤢</button><button data-action="zoom-in" aria-label="Zoom in">+</button><button data-action="zoom-out" aria-label="Zoom out">−</button><button data-action="locate-cell" aria-label="Go to cell number" title="Go to cell number">⌖</button><button data-action="measure" aria-label="Measure distance" aria-pressed="false" title="Measure two-point distance">↔</button></div>
-    <div class="wg-display-bar"><label for="wg-palette" class="wg-screen-reader-only">Map display</label><select id="wg-palette" aria-label="Map display mode">${Object.entries(palettes).map(([id,name])=>`<option value="${id}">${name}</option>`).join('')}</select><button class="wg-overlay-trigger" data-action="toggle-overlays" aria-expanded="false">Overlays</button></div>
-    <div class="wg-overlays" id="wg-overlays" hidden><label><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label><input id="wg-coast-borders" type="checkbox"> Coastlines</label><label><input id="wg-flow" type="checkbox"> Drainage / rivers (layers 7+)</label><details class="wg-legend-details"><summary>Map legend</summary><div id="wg-legend" class="wg-legend"></div></details></div>
+    <div class="wg-display-bar"><label for="wg-palette" class="wg-screen-reader-only">Map display</label><select id="wg-palette" aria-label="Map display mode"></select><button class="wg-overlay-trigger" data-action="toggle-overlays" aria-expanded="false">Overlays</button></div>
+    <div class="wg-overlays" id="wg-overlays" hidden><label data-overlay-stage="2"><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label data-overlay-stage="3"><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label data-overlay-stage="5"><input id="wg-coast-borders" type="checkbox"> Coastlines</label><label data-overlay-stage="7"><input id="wg-flow" type="checkbox"> Drainage / rivers</label><details class="wg-legend-details"><summary>Map legend</summary><div id="wg-legend" class="wg-legend"></div></details></div>
     <div class="wg-map-scale" id="wg-map-scale">World width: 2,048 km</div>
     <div class="wg-measure-readout" id="wg-measure-readout" aria-live="polite" hidden></div>
     <div class="wg-map-nav"><button data-action="prev-stage" aria-label="Previous completed stage">‹</button><span id="wg-map-layer">Layer 01</span><button data-action="next-stage" aria-label="Next completed stage">›</button></div>
-    <button class="wg-explore-toggle" data-action="toggle-explore" aria-label="Toggle generation controls">Expand map</button>
+    <div class="wg-map-action-dock"><button class="wg-layer-toggle" data-action="lock-or-unlock" aria-label="Lock current generation layer">Lock layer 1 →</button><button class="wg-explore-toggle" data-action="toggle-explore" aria-label="Toggle generation controls">Expand map</button></div>
     <div class="wg-inspector" id="wg-inspector" hidden></div>
    </main>
    <section class="wg-console" aria-label="World generation stages">
-    <button class="wg-console-handle" data-action="toggle-explore" aria-label="Expand map or show settings"><span></span></button>
+    <button class="wg-console-handle" data-action="toggle-explore" aria-label="Drag to resize settings, or tap to expand map" title="Drag up or down to resize settings"><span></span></button>
     <div class="wg-progress-row"><div class="wg-stage-heading"><span class="wg-section-caption">GENERATION PIPELINE</span><span id="wg-status" role="status"><span class="wg-busy-dot"></span> Loading…</span></div><div class="wg-stage-scroll" id="wg-stage-scroll"></div></div>
     <div class="wg-stage-main" id="wg-stage-main"></div>
    </section>
@@ -266,23 +318,37 @@ function rebuildUI(){
   if(stage===9)html+='<p class="wg-hint">Climate-aware runoff follows depression-resolved drainage paths to the ocean. Lakes require natural topographic basins. The resulting channels are Voronoi-scale approximations, not sub-cell rivers. Earlier layers remain locked.</p>';
   if(stage===11)html+='<p class="wg-hint">Biomes represent potential natural environments inferred from temperature, precipitation, topography, hydrology and soil. Tree cover and ecological productivity are suitability estimates, not an evolving vegetation or animal simulation. Climate and terrain stay locked.</p>';
   if(stage===12)html+='<p class="wg-hint">This is a deterministic, static vegetation and habitat snapshot. Canopy, ground cover, and biomass are modelled indices, not actual plant counts or a time-stepped ecosystem. Locked biomes, soils and rivers are preserved.</p>';
-  html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button><button class="wg-primary" data-action="lock" ${generating||dirty||!workspace.working.data?'disabled':''}>Lock layer ${stage} →</button></div>`;
+  html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button></div>`;
  }else if(row){
-  html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history.</p>${[1,2,5].includes(stage)?'<div id="wg-constraints" hidden></div>':''}<div class="wg-actions"><button class="wg-secondary" data-action="edit-earlier">Revise this layer</button><button class="wg-primary" data-action="save">Save checkpoint</button></div>`;
+  html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history. Use Unlock layer to edit it.</p>${[1,2,5].includes(stage)?'<div id="wg-constraints" hidden></div>':''}<div class="wg-actions"><button class="wg-secondary" data-action="save">Save checkpoint</button></div>`;
  }else{html+='<p class="wg-hint">Generate and lock the preceding layer to continue.</p>';}
  root.querySelector('#wg-stage-main').innerHTML=html;
  updateConstraintReport();
  const renderButton=root.querySelector('[data-action="render"]');
  if(renderButton){renderButton.disabled=effectiveStage()<ELEVATION_RENDER_STAGE;renderButton.title='Open selected layer in 3D (layer 4+)';}
  const shown=effectiveStage(),palette=root.querySelector('#wg-palette');
- for(const option of palette.options)option.disabled=paletteStages[option.value]>shown;
- palette.value=workspace.viewMode!=='auto'&&paletteStages[workspace.viewMode]<=shown?workspace.viewMode:'natural';
+ // Build the actual available options. Disabled options remain visible in the
+ // native iOS picker, making early generation layers needlessly confusing.
+ const availablePalettes=shown>=2?Object.entries(palettes).filter(([id])=>paletteStages[id]<=shown):[];
+ palette.innerHTML=availablePalettes.map(([id,name])=>`<option value="${id}">${escapeHTML(name)}</option>`).join('');
+ if(availablePalettes.length)palette.value=workspace.viewMode!=='auto'&&paletteStages[workspace.viewMode]<=shown?workspace.viewMode:'natural';
+ const displayBar=root.querySelector('.wg-display-bar'),overlayTrigger=root.querySelector('[data-action="toggle-overlays"]'),overlays=root.querySelector('#wg-overlays');
+ displayBar.hidden=shown<2;
+ root.querySelectorAll('[data-overlay-stage]').forEach(label=>{label.hidden=Number(label.dataset.overlayStage)>shown;});
+ if(shown<2){overlays.hidden=true;overlayTrigger.setAttribute('aria-expanded','false');}
  root.querySelector('#wg-edges').checked=workspace.showEdges;
  root.querySelector('#wg-plate-borders').checked=!!workspace.showPlateBorders;
  root.querySelector('#wg-coast-borders').checked=!!workspace.showCoastBorders;
  root.querySelector('#wg-flow').checked=!!workspace.showFlow;
  root.querySelector('#worldgen-root').classList.toggle('wg-explore',!!workspace.exploreMode);
  root.querySelector('.wg-explore-toggle').textContent=workspace.exploreMode?'Show settings':'Expand map';
+ const layerToggle=root.querySelector('[data-action="lock-or-unlock"]'),isLocked=stage<=workspace.locked.length;
+ layerToggle.hidden=!available||(!editable&&!isLocked);
+ layerToggle.textContent=isLocked?`Unlock layer ${stage}`:`Lock layer ${stage} →`;
+ layerToggle.setAttribute('aria-label',isLocked?`Unlock layer ${stage}`:`Lock layer ${stage}`);
+ layerToggle.disabled=unlocking||(editable&&(generating||dirty||!workspace.working.data));
+ layerToggle.classList.toggle('wg-unlock',isLocked);
+ applyConsoleHeight();
  root.querySelector('#wg-map-layer').textContent=shown===stage?`${String(stage).padStart(2,'0')} · ${stageText(stage)}`:shown>0?`${String(shown).padStart(2,'0')} · ${stageText(shown)} (last ready)`:'Generating first map…';
  root.querySelector('[data-action="prev-stage"]').disabled=stage<=1;
  root.querySelector('[data-action="next-stage"]').disabled=stage>=Math.min(IMPLEMENTED,currentStage())||!latestData(stage+1);
@@ -422,13 +488,30 @@ function commitLayer(){
 }
 function reviseStage(stage){
  const earlier=workspace.locked[stage-1];if(!earlier)return;
- const later=workspace.locked.length-stage;
- if(!confirm(`Revise layer ${stage}? This creates a new branch from that layer. ${later?`${later} later locked layer(s) will be removed from the working branch.`:'Later layers will be regenerated from this revision.'} Save a checkpoint first if you want to preserve the current branch.`))return;
  requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;
  workspace.locked=workspace.locked.slice(0,stage-1);
  workspace.working={stage,settings:{...defaultsForStage(stage),...structuredClone(earlier.settings)},data:structuredClone(earlier.data),dataSettings:structuredClone(earlier.settings)};dirty=JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings);
  workspace.viewStage=stage;selectedId=null;resetBorderCache();
  void persist();rebuildUI();notice(`Layer ${stage} is editable again`);
+}
+async function unlockLayer(stage){
+ if(unlocking||!workspace.locked[stage-1])return;
+ const targetWorld=workspace;
+ unlocking=true;
+ try{
+  // Unlocking a historical layer branches the world. Preserve any later locked
+  // layers as a named checkpoint automatically, without a confirmation dialog.
+  if(stage<workspace.locked.length){
+   const previous=structuredClone(workspace);
+   const metadata={id:`save-${globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
+    name:`${workspace.name} — before unlocking layer ${stage}`.slice(0,100),
+    created:new Date().toISOString(),stage:workspace.locked.length};
+   snapshots=await commitCheckpoint(await db(),{kind:'save',metadata,world:previous});
+  }
+  if(workspace!==targetWorld)return;
+  reviseStage(stage);
+ }catch(error){notice(`Unlock cancelled: could not preserve later layers (${error.message})`,true);}
+ finally{unlocking=false;const toggle=root.querySelector('[data-action="lock-or-unlock"]');if(toggle&&viewStage()<=workspace.locked.length)toggle.disabled=false;}
 }
 function rgb(r,g,b){return `rgb(${r|0},${g|0},${b|0})`;}
 function gradient(value,stops){const t=clamp(value,0,1);for(let i=1;i<stops.length;i++)if(t<=stops[i][0]){const [at,a]=stops[i-1],[bt,b]=stops[i],v=(t-at)/(bt-at);return rgb(...a.map((x,k)=>x+(b[k]-x)*v));}return rgb(...stops[stops.length-1][1]);}
@@ -916,8 +999,7 @@ async function handleAction(action,button){
   case 'reroll':if(viewStage()!==currentStage()||!stageUsesSeed(currentStage()))break;workspace.working.settings.seed=nextSeed();dirty=true;void persist();rebuildUI();scheduleGeneration(20);break;
   case 'regenerate':scheduleGeneration(10);break;
   case 'reset-settings':workspace.working.settings=defaultsForStage(currentStage());dirty=true;void persist();rebuildUI();scheduleGeneration(50);break;
-  case 'lock':commitLayer();break;
-  case 'edit-earlier':reviseStage(viewStage());break;
+  case 'lock-or-unlock':if(viewStage()<=workspace.locked.length)await unlockLayer(viewStage());else if(viewStage()===currentStage())commitLayer();break;
   case 'rename':{const name=prompt('World name',workspace.name);if(name!==null&&name.trim()){workspace.name=name.trim().slice(0,80);void persist();rebuildUI();}break;}
   case 'export':await doExport();break;
   case 'export-all':await exportAll();break;
@@ -930,6 +1012,7 @@ async function handleAction(action,button){
 }
 function bindEvents(){
  root.addEventListener('click',event=>{
+  if(suppressHandleClick&&event.target.closest('.wg-console-handle')){suppressHandleClick=false;event.preventDefault();return;}
   const stageBtn=event.target.closest('[data-stage]');if(stageBtn&&!stageBtn.disabled){workspace.viewStage=Number(stageBtn.dataset.stage);selectedId=null;persist('preferences');rebuildUI();return;}
   const info=event.target.closest('[data-info]');if(info){event.preventDefault();showParameterHelp(info.dataset.info);return;}
   const adjust=event.target.closest('[data-adjust]');if(adjust){event.preventDefault();adjustParameter(adjust.dataset.adjust,Number(adjust.dataset.direction));return;}
@@ -966,10 +1049,11 @@ function bindEvents(){
   }
   if(el.id==='wg-import')void handleImport(el.files?.[0]);
  });
+ bindDrawerDrag();
  canvas.addEventListener('pointerdown',pointerStart);canvas.addEventListener('pointermove',pointerMove);canvas.addEventListener('pointerup',pointerEnd);canvas.addEventListener('pointercancel',pointerEnd);canvas.addEventListener('lostpointercapture',pointerEnd);
  canvas.addEventListener('wheel',event=>{event.preventDefault();const p=canvasPoint(event);zoomBy(event.deltaY<0?1.14:1/1.14,p.x,p.y);},{passive:false});
  canvas.addEventListener('dblclick',event=>{const p=canvasPoint(event);zoomBy(1.5,p.x,p.y);});
- addEventListener('resize',resizeCanvas);
+ addEventListener('resize',()=>{applyConsoleHeight();resizeCanvas();});
  if('ResizeObserver' in globalThis)new ResizeObserver(resizeCanvas).observe(canvas);
  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')void flushPersist();});
  addEventListener('pagehide',()=>void flushPersist());
