@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.3',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.4',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -222,11 +222,11 @@ function consoleBounds(){
  const header=root.querySelector('.wg-header')?.getBoundingClientRect().height||70;
  const minimum=Math.min(210,Math.max(145,(viewport-header)*.26));
  const maximum=Math.max(minimum,viewport-header-210);
- return {viewport,minimum,maximum};
+ return {viewport,header,minimum,maximum};
 }
 function applyConsoleHeight(){
  const shell=root.querySelector('#worldgen-root');if(!shell)return;
- const {viewport,minimum,maximum}=consoleBounds();
+ const {viewport,header,minimum,maximum}=consoleBounds();
  const ratio=Number.isFinite(workspace.consoleHeightRatio)?workspace.consoleHeightRatio:.36;
  const height=clamp(viewport*ratio,minimum,maximum);
  shell.style.setProperty('--wg-console-height',`${Math.round(height)}px`);

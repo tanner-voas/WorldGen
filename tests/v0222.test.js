@@ -40,7 +40,7 @@ test('layer 6 changes coast shape but cannot mutate layer 5',()=>{
 test('layer labels and mobile controls reflect the split',()=>{
  const app=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
  const css=readFileSync(new URL('../src/styles.css',import.meta.url),'utf8');
- assert.match(app,/APP_VERSION='0\.2\.3'/);
+ assert.match(app,/APP_VERSION='0\.2\.4'/);
  assert.match(app,/3:\[\['plates','Plates'/);
  assert.doesNotMatch(app,/3:\[\['plates','Plates'[^\n]*continental/);
  assert.match(app,/4:\[\['motion','Boundary stress'/);
