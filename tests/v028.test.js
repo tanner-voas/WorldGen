@@ -121,7 +121,7 @@ test('worker retains one immutable sampler context for repeated tile requests',(
  const worker=readFileSync(new URL('../src/terrain-3d-worker.js',import.meta.url),'utf8');
  assert.match(worker,/data\.kind==='init-detail'/);
  assert.match(worker,/detailContext=\{/);
- assert.match(worker,/createSurfaceSampler\(mesh,elevations,\{waterMask,seaLevel\}\)/);
+ assert.match(worker,/createSurfaceSampler\(mesh,elevations,\{waterMask,seaLevel,hydrology\}\)/);
  assert.match(worker,/data\.kind==='detail'/);
  assert.match(worker,/detailContext/);
 });

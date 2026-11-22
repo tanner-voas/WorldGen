@@ -54,7 +54,7 @@ test('3D water creates finite lake geometry at the locked spill elevation',()=>{
  assert.equal(a.lakeCells,1);
  assert.equal(a.lakes.length,4*3*3);
  assert.ok(a.rivers.length>0);
- for(let i=1;i<a.lakes.length;i+=3)assert.ok(Math.abs(a.lakes[i]-(.5*terrainHeightScale(shape)+Math.max(.0002,terrainHeightScale(shape)*.018)))<1e-6);
+ for(let i=1;i<a.lakes.length;i+=3)assert.ok(Math.abs(a.lakes[i]-(.5*terrainHeightScale(shape)))<1e-6);
  assert.ok(a.rivers.every(Number.isFinite));
  assert.ok(a.lakes.every(Number.isFinite));
 });

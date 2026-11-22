@@ -1,4 +1,4 @@
-# WorldGen v0.1.35
+# WorldGen v0.1.36
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -253,3 +253,7 @@ Extreme world aspect ratios now receive an advisory in layer 1. The layer 2 mesh
 ## v0.1.35 — Coastline preservation
 
 From layer 5 onward, the 3D heightfield preserves the locked Voronoi land/ocean mask by separating land elevations and seabed depths and tapering both to sea level where nearest land and water distances meet. Global and adaptive LODs keep shoreline-crossing triangles at base resolution and stitch adjacent coarse blocks. The focused worker and river-height sampler use the same constraint. This changes only derived render geometry; layer 4 and saved generation data remain unchanged. Fine shoreline placement is still limited by the terrain tessellation. See `RELEASE_v0.1.35.md`.
+
+## v0.1.36 — Lake integration
+
+From layer 9 onward, the shared 3D sampler uses saved lake membership, depths and spill elevations to keep freshwater basins below their surfaces, with smoothly interpolated depths between member sites and tapered banks. Lake surfaces are drawn at their saved elevations, without the previous vertical offset. Global LODs retain detailed basin and bank geometry, and the close-up worker receives the same hydrology source. Existing generation records and the relief setting are unchanged. Lake outlines still depend on the Voronoi geometry and terrain tessellation; river mouth/ribbon integration is a separate follow-up. See `RELEASE_v0.1.36.md`.

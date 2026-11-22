@@ -6,6 +6,7 @@ import {insideGeometry} from './engine.js';
 import {terrainVerticalScales} from './elevation-units.js';
 import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './terrain-sampler.js';
 import {createCoastlineConstraint} from './terrain-coastline.js';
+import {createLakeConstraint} from './terrain-lakes.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 
@@ -50,19 +51,24 @@ export function terrainGridSize(geometry,cellCount){
 }
 
 /** Prepare the shared height sampler with the historical coastline, if any. */
-export function createSurfaceSampler(mesh,elevations,{waterMask=null,seaLevel=0}={}){
+export function createSurfaceSampler(mesh,elevations,{waterMask=null,seaLevel=0,hydrology=null}={}){
  const sampler=createTerrainSampler(mesh,.72);
  sampler.coastline=createCoastlineConstraint(mesh,elevations,waterMask,seaLevel);
+ sampler.lakes=createLakeConstraint(mesh,elevations,hydrology,seaLevel,waterMask);
  return sampler;
 }
-function constrainedHeight(coast,side,sum,weight,elevations,sampler,x,y){
- if(!coast)return weight>1e-15?sum/weight:Number(elevations[nearestTerrainSite(sampler,x,y)]);
- const magnitude=weight>1e-15?sum/weight:coast.depth[side.nearest];
- return coast.seaLevel+(side.wet?-1:1)*magnitude*side.fade;
+function constrainedHeight(coast,side,sum,weight,elevations,sampler,x,y,lakeSide,depthSum,depthWeight){
+ let height;
+ if(!coast)height=weight>1e-15?sum/weight:Number(elevations[nearestTerrainSite(sampler,x,y)]);
+ else{
+  const magnitude=weight>1e-15?sum/weight:coast.depth[side.nearest];
+  height=coast.seaLevel+(side.wet?-1:1)*magnitude*side.fade;
+ }
+ return lakeSide?sampler.lakes.apply(lakeSide,height,side,depthWeight>1e-15?depthSum/depthWeight:undefined):height;
 }
 /** Compact-support interpolant. The saved elevation field is never modified. */
-export function sampleElevation(sampler,elevations,x,y){
- let total=0,weighted=0;
+export function sampleElevation(sampler,elevations,x,y,lakeSide=sampler.lakes?.at(x,y)){
+ let total=0,weighted=0,depthSum=0,depthWeight=0;
  // The legacy interpolant used inverse-distance weights (1/r²) and placed
  // unnaturally steep narrow peaks at Voronoi sites. A compact C2 Wendland
  // kernel has bounded derivatives at its centre and smoothly tapers out at
@@ -75,26 +81,28 @@ export function sampleElevation(sampler,elevations,x,y){
   const t=clamp(distance/radius,0,1),u=1-t;
   const weight=u*u*u*u*(1+4*t);
   total+=weight;weighted+=(coast?coast.depth[i]:Number(elevations[i]))*weight;
+  if(lakeSide?.inside&&sampler.lakes.membership[i]===lakeSide.id){depthSum+=sampler.lakes.depth[i]*weight;depthWeight+=weight;}
  });
- return constrainedHeight(coast,side,weighted,total,elevations,sampler,x,y);
+ return constrainedHeight(coast,side,weighted,total,elevations,sampler,x,y,lakeSide,depthSum,depthWeight);
 }
 
 /** Material-equipped meshes need two differently weighted properties at
  * exactly the same location. Compute both during one indexed site visit,
  * preserving the independent elevation/material kernels and fallbacks.
  * Earlier elevation-only stages still use the cheaper height-only path. */
-export function sampleTerrainFields(sampler,elevations,siteColors,x,y){
- let heightSum=0,heightWeight=0,colorWeight=0,r=0,g=0,b=0;
+export function sampleTerrainFields(sampler,elevations,siteColors,x,y,lakeSide=sampler.lakes?.at(x,y)){
+ let heightSum=0,heightWeight=0,colorWeight=0,r=0,g=0,b=0,depthSum=0,depthWeight=0;
  const radius=sampler.radius,coast=sampler.coastline,side=coast?.at(x,y);
  visitTerrainSites(sampler,x,y,(i,colorW)=>{
   const site=sampler.mesh.cells[i];
   const t=clamp(Math.hypot(site.x-x,site.y-y)/radius,0,1),u=1-t;
   const heightW=u*u*u*u*(1+4*t);
   if(!coast||coast.mask[i]===side.wet){heightSum+=(coast?coast.depth[i]:Number(elevations[i]))*heightW;heightWeight+=heightW;}
+  if(lakeSide?.inside&&sampler.lakes.membership[i]===lakeSide.id){depthSum+=sampler.lakes.depth[i]*heightW;depthWeight+=heightW;}
   const k=i*3,color=colorW;
   colorWeight+=color;r+=siteColors[k]*color;g+=siteColors[k+1]*color;b+=siteColors[k+2]*color;
  });
- const height=constrainedHeight(coast,side,heightSum,heightWeight,elevations,sampler,x,y);
+ const height=constrainedHeight(coast,side,heightSum,heightWeight,elevations,sampler,x,y,lakeSide,depthSum,depthWeight);
  if(colorWeight>1e-15)return {height,color:[r/colorWeight,g/colorWeight,b/colorWeight]};
  const nearest=nearestTerrainSite(sampler,x,y),k=nearest*3;
  return {height,color:[siteColors[k],siteColors[k+1],siteColors[k+2]]};
@@ -138,12 +146,12 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const fx=gx-ax,fy=gy-ay;
   const a=anchorAt(ax,ay),b=anchorAt(ax+1,ay),c=anchorAt(ax,ay+1),d=anchorAt(ax+1,ay+1);
-  const coarse=sampler.coastline?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
+  const coarse=(sampler.coastline||sampler.lakes)?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
    (a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
   const accurate=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
   const border=Math.min(gx-x0,x1-gx,gy-y0, y1-gy);
-  const fade=smoothstep(0,sampler.coastline ? .5 : 1.5,border);
+  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border);
   const id=j*stride+i,offset=id*7;
   raw[id]=coarse+(accurate-coarse)*fade;
   vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
@@ -177,7 +185,7 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const tx=gx-ax,ty=gy-ay,coarseStride=x1-x0+1;
   const base=(xx,yy,dim)=>normalAnchors[((yy-y0)*coarseStride+xx-x0)*3+dim];
-  const fade=smoothstep(0,sampler.coastline ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy));
+  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy));
   const blended=[];
   for(let c=0;c<3;c++){
    const anchor=(base(ax,ay,c)*(1-tx)+base(ax+1,ay,c)*tx)*(1-ty)+
@@ -211,7 +219,7 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
  }
  const scale=Number(options.worldScale)||4.8/Math.max(geometry.width,geometry.height);
  const sx=geometry.width*scale,sz=geometry.height*scale;
- const sampler=options.sampler||createSurfaceSampler(mesh,elevations,options),rivers=[],lakes=[];
+ const sampler=options.sampler||createSurfaceSampler(mesh,elevations,{...options,hydrology}),rivers=[],lakes=[];
  const maxDischarge=Math.max(.001,Number(hydrology.summary?.maxDischarge)||.001);
  const pixelSpacing=Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/n)*scale;
  const toX=x=>(x/geometry.width-.5)*sx,toZ=z=>(z/geometry.height-.5)*sz;
@@ -272,9 +280,9 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
  let lakeCells=0;
  for(const lake of hydrology.lakes){
   if(!lake||!Array.isArray(lake.cells)||!Number.isFinite(lake.level))continue;
-  const lakeY=lake.level*heightScale+Math.max(.0002,heightScale*.018);
+  const lakeY=lake.level*heightScale;
   for(const id of lake.cells){
-   if(!Number.isInteger(id)||id<0||id>=n||hydrology.lakeId[id]!==lake.id)continue;
+   if(!Number.isInteger(id)||id<0||id>=n||hydrology.lakeId[id]!==lake.id||options.waterMask?.[id])continue;
    const cell=mesh.cells[id],poly=cell.poly;
    if(poly.length<6)continue;
    const center=[toX(cell.x),lakeY,toZ(cell.y)];
@@ -303,6 +311,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  let minY=Infinity,maxY=-Infinity;
  const sampler=createSurfaceSampler(mesh,elevations,{...options,seaLevel});
  const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
+ const lakeMask=sampler.lakes?new Uint8Array(count):null;
  const materialColors=sourceColors?new Float32Array(count*3):null;
  const planeWidth=geometry.width*worldScale,planeDepth=geometry.height*worldScale;
  const dx=planeWidth/cols,dz=planeDepth/rows;
@@ -310,8 +319,10 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   const wy=geometry.height*y/rows,z=(y/rows-.5)*planeDepth;
   for(let x=0;x<=cols;x++){
    const wx=geometry.width*x/cols,idx=y*(cols+1)+x,offset=idx*7;
-   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
-   raw[idx]=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
+   const lakeSide=sampler.lakes?.at(wx,wy);
+   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy,lakeSide):null;
+   raw[idx]=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy,lakeSide);
+   if(lakeMask)lakeMask[idx]=lakeSide.near?1:0;
    minY=Math.min(minY,raw[idx]*heightScale);maxY=Math.max(maxY,raw[idx]*heightScale);
    if(materialColors)materialColors.set(sampled.color,idx*3);
    inside[idx]=insideGeometry(wx,wy,geometry)?1:0;
@@ -336,7 +347,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   vertexData[offset+5]=-ddz/size;
  }
  const coastMask=sampler.coastline?Uint8Array.from(raw,h=>h<seaLevel?1:0):null;
- const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{coastMask});
+ const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{coastMask,lakeMask});
  // Per-tile height bounds enable safe frustum culling of mixed-detail terrain
  // without using the global mountain range for every otherwise-flat tile.
  for(const tile of levels[0].tiles){
@@ -347,7 +358,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   }
   tile.minY=min-.06;tile.maxY=max+.06;
  }
- const uniformLevels=buildUniformTerrainLevels(cols,rows,inside,{coastMask});
+ const uniformLevels=buildUniformTerrainLevels(cols,rows,inside,{coastMask,lakeMask});
  const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,heightScale,waterMask:options.waterMask,seaLevel,sampler});
  const seaY=seaLevel*heightScale;
  const ocean=new Float32Array(geometry.shape==='rectangle'?

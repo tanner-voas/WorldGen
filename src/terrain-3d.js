@@ -205,7 +205,7 @@ export class Terrain3DViewer{
   });
   if(this.disposed)return;
   this.surface=surface;
-  this.detailSource={geometry,mesh,elevations,appearance:options.appearance||null,waterMask:options.waterMask||null,seaLevel};
+  this.detailSource={geometry,mesh,elevations,appearance:options.appearance||null,waterMask:options.waterMask||null,seaLevel,hydrology:options.hydrology||null};
   this.detailLimits=closeUpCameraLimits(surface.siteSpacing);
   this._initializeGL();
   this._uploadSurface();
@@ -584,7 +584,8 @@ export class Terrain3DViewer{
   gl.uniform1i(this.waterLocation,1);
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
   gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
-  // Water features are draped on the terrain and never modify its height.
+  // The shared terrain sampler preserves lake basins; water geometry is
+  // read-only and never changes the saved elevations.
   // Keep depth testing so rivers cannot shine through mountains.
   for(const water of this.hydroGeometry||[]){
    gl.uniform1i(this.waterLocation,water.kind);

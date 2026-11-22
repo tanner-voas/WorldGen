@@ -8,9 +8,9 @@ let detailContext=null;
 self.onmessage=({data})=>{
  try{
   if(data.kind==='init-detail'){
-   const {geometry,mesh,elevations,appearance,grid,waterMask,seaLevel}=data;
+   const {geometry,mesh,elevations,appearance,grid,waterMask,seaLevel,hydrology}=data;
    detailContext={geometry,mesh,elevations,appearance,grid,
-    sampler:createSurfaceSampler(mesh,elevations,{waterMask,seaLevel}),
+    sampler:createSurfaceSampler(mesh,elevations,{waterMask,seaLevel,hydrology}),
     sourceColors:buildTerrainSiteColors(mesh,appearance||null)};
    self.postMessage({kind:'detail-ready'});
    return;

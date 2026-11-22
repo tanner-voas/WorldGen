@@ -3,7 +3,7 @@
  * their equality is exactly the shared Voronoi shoreline (up to stored site
  * rounding). No noisy or independent coastline is introduced. Two small
  * nearest-site trees avoid a full scan for every terrain vertex. */
-function siteTree(cells,ids,axis=0){
+export function siteTree(cells,ids,axis=0){
  if(!ids.length)return null;
  const key=axis?'y':'x';
  ids.sort((a,b)=>cells[a][key]-cells[b][key]||a-b);
@@ -11,12 +11,12 @@ function siteTree(cells,ids,axis=0){
  return {id:ids[middle],axis,left:siteTree(cells,ids.slice(0,middle),1-axis),
   right:siteTree(cells,ids.slice(middle+1),1-axis)};
 }
-function nearest(cells,tree,x,y){
+export function nearest(cells,tree,x,y,accept=null){
  let id=-1,d2=Infinity;
  function visit(node){
   if(!node)return;
   const c=cells[node.id],dx=x-c.x,dy=y-c.y,d=dx*dx+dy*dy;
-  if(d<d2||(d===d2&&node.id<id)){id=node.id;d2=d;}
+  if((!accept||accept(node.id))&&(d<d2||(d===d2&&node.id<id))){id=node.id;d2=d;}
   const delta=node.axis?dy:dx;
   visit(delta<0?node.left:node.right);
   if(delta*delta<=d2)visit(delta<0?node.right:node.left);

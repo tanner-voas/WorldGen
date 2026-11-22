@@ -42,11 +42,13 @@ function outlineMask(cols,rows,inside){
 }
 
 /** Keep the entire 8-cell block containing a sampled shoreline at base
- * resolution for every LOD. Neighboring coarse squares stitch to these
+ * resolution for every LOD, along with lake basins and banks. Neighboring coarse squares stitch to these
  * fine blocks, not merely to tile boundaries, so the coast cannot pop
  * or crack as the camera changes its distance. */
-function fineBlockLookup(cols,rows,inside,coastMask){
+function fineBlockLookup(cols,rows,inside,coastMask,lakeMask){
  if(coastMask&&coastMask.length!==inside.length)throw Error('Invalid 3D shoreline grid');
+ if(lakeMask&&lakeMask.length!==inside.length)throw Error('Invalid 3D lake grid');
+ const hasLake=lakeMask?outlineMask(cols,rows,Uint8Array.from(lakeMask,v=>1-v)):null;
  const crossesOutline=outlineMask(cols,rows,inside);
  const land=coastMask?outlineMask(cols,rows,coastMask):null;
  const water=coastMask?outlineMask(cols,rows,Uint8Array.from(coastMask,v=>1-v)):null;
@@ -54,7 +56,8 @@ function fineBlockLookup(cols,rows,inside,coastMask){
  for(let by=0;by<height;by++)for(let bx=0;bx<width;bx++){
   const x=bx*8,y=by*8;
   blocks[by*width+bx]=crossesOutline(x,y,x+8,y+8)||
-   (land&&land(x,y,x+8,y+8)&&water(x,y,x+8,y+8))?1:0;
+   (land&&land(x,y,x+8,y+8)&&water(x,y,x+8,y+8))||
+   (hasLake&&hasLake(x,y,x+8,y+8))?1:0;
  }
  return (x,y)=>x>=0&&x<cols&&y>=0&&y<rows&&blocks[Math.floor(y/8)*width+Math.floor(x/8)]===1;
 }
@@ -86,7 +89,7 @@ function tileDescriptors(cols,rows,tileSize){
  * Coordinates in tile metadata match the existing 4.8-wide X/Z world plane.
  * This is intentionally independent of normals, material buffers and stage.
  */
-export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{tileSize=TERRAIN_TILE_CELLS,coastMask=null}={}){
+export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{tileSize=TERRAIN_TILE_CELLS,coastMask=null,lakeMask=null}={}){
  if(!Number.isInteger(cols)||!Number.isInteger(rows)||cols<8||rows<8||
     cols%8||rows%8||!Number.isInteger(tileSize)||tileSize<8||tileSize%8||
     inside?.length!==(cols+1)*(rows+1)||!Number.isFinite(planeWidth)||!Number.isFinite(planeDepth)||planeWidth<=0||planeDepth<=0){
@@ -94,7 +97,7 @@ export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDept
  }
  const tiles=tileDescriptors(cols,rows,tileSize);
  const index=(x,y)=>y*(cols+1)+x;
- const fineBlock=fineBlockLookup(cols,rows,inside,coastMask);
+ const fineBlock=fineBlockLookup(cols,rows,inside,coastMask,lakeMask);
  const levels=[];
  for(const step of TERRAIN_LOD_STEPS){
   const indices=[],ranges=[];
@@ -115,8 +118,8 @@ export function buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDept
      }
      continue;
     }
-    const onTop=y===tile.y0||!!coastMask&&fineBlock(x,y-1),onBottom=south===tile.y1||!!coastMask&&fineBlock(x,south);
-    const onLeft=x===tile.x0||!!coastMask&&fineBlock(x-1,y),onRight=east===tile.x1||!!coastMask&&fineBlock(east,y);
+    const onTop=y===tile.y0||!!(coastMask||lakeMask)&&fineBlock(x,y-1),onBottom=south===tile.y1||!!(coastMask||lakeMask)&&fineBlock(x,south);
+    const onLeft=x===tile.x0||!!(coastMask||lakeMask)&&fineBlock(x-1,y),onRight=east===tile.x1||!!(coastMask||lakeMask)&&fineBlock(east,y);
     if(!onTop&&!onBottom&&!onLeft&&!onRight){
      triangle(index(x,y),index(x,south),index(east,y));
      triangle(index(east,y),index(x,south),index(east,south));
@@ -149,10 +152,10 @@ export function adaptiveTileLod(eye,tile,span=0,previousStep=null){
  * Rendering the entire map with one draw avoids hundreds of tile draw calls;
  * mixed-detail views switch to crack-free tiled indices instead.
  */
-export function buildUniformTerrainLevels(cols,rows,inside,{coastMask=null}={}){
+export function buildUniformTerrainLevels(cols,rows,inside,{coastMask=null,lakeMask=null}={}){
  const result=[];
  const index=(x,y)=>y*(cols+1)+x;
- const fineBlock=fineBlockLookup(cols,rows,inside,coastMask);
+ const fineBlock=fineBlockLookup(cols,rows,inside,coastMask,lakeMask);
  for(const step of TERRAIN_LOD_STEPS){
   const indices=[];
   for(let y=0;y<rows;y+=step)for(let x=0;x<cols;x+=step){
@@ -165,7 +168,7 @@ export function buildUniformTerrainLevels(cols,rows,inside,{coastMask=null}={}){
      if(inside[q]&&inside[t]&&inside[r])indices.push(q,t,r);
      if(inside[r]&&inside[t]&&inside[u])indices.push(r,t,u);
     }
-   }else if(step>1&&coastMask&&(fineBlock(x,y-1)||fineBlock(x+step,y)||fineBlock(x,y+step)||fineBlock(x-1,y))){
+   }else if(step>1&&(coastMask||lakeMask)&&(fineBlock(x,y-1)||fineBlock(x+step,y)||fineBlock(x,y+step)||fineBlock(x-1,y))){
     const triangle=(a,b,c)=>{if(inside[a]&&inside[b]&&inside[c])indices.push(a,b,c);};
     stitchSquare(x,y,step,index,triangle,fineBlock(x,y-1),fineBlock(x+step,y),fineBlock(x,y+step),fineBlock(x-1,y));
    }else{
