@@ -34,6 +34,7 @@ self.onmessage=({data})=>{
    ...result.levels.map(level=>level.indices.buffer),
    ...result.uniformLevels.map(level=>level.indices.buffer)];
   if(result.materialColors)transfer.push(result.materialColors.buffer);
+  if(result.hydrology.riverMask)transfer.push(result.hydrology.riverMask.buffer);
   self.postMessage({kind:'success',result},transfer);
  }catch(error){
   self.postMessage({kind:'error',message:error.message||String(error)});

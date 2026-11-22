@@ -7,6 +7,7 @@ import {terrainVerticalScales} from './elevation-units.js';
 import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './terrain-sampler.js';
 import {createCoastlineConstraint} from './terrain-coastline.js';
 import {createLakeConstraint} from './terrain-lakes.js';
+import {buildRiverDecals,riverDetailFade} from './terrain-rivers.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 
@@ -115,7 +116,7 @@ export function sampleTerrainFields(sampler,elevations,siteColors,x,y,lakeSide=s
  * with tens of triangles across instead of a handful.
  */
 export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,options={}){
- const {cols,rows,planeWidth,planeDepth,heightScale}=grid||{};
+ const {cols,rows,planeWidth,planeDepth,heightScale,riverMask}=grid||{};
  const {x0,y0,x1,y1}=area||{};
  const subdivisions=options.subdivisions??8;
  if(!Number.isInteger(cols)||!Number.isInteger(rows)||cols<=0||rows<=0||
@@ -146,12 +147,12 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const fx=gx-ax,fy=gy-ay;
   const a=anchorAt(ax,ay),b=anchorAt(ax+1,ay),c=anchorAt(ax,ay+1),d=anchorAt(ax+1,ay+1);
-  const coarse=(sampler.coastline||sampler.lakes)?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
+  const coarse=(sampler.coastline||sampler.lakes||riverMask)?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
    (a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
   const accurate=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
   const border=Math.min(gx-x0,x1-gx,gy-y0, y1-gy);
-  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border);
+  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border)*riverDetailFade(riverMask,cols,ax,ay,fx,fy);
   const id=j*stride+i,offset=id*7;
   raw[id]=coarse+(accurate-coarse)*fade;
   vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
@@ -185,7 +186,7 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const tx=gx-ax,ty=gy-ay,coarseStride=x1-x0+1;
   const base=(xx,yy,dim)=>normalAnchors[((yy-y0)*coarseStride+xx-x0)*3+dim];
-  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy));
+  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy))*riverDetailFade(riverMask,cols,ax,ay,tx,ty);
   const blended=[];
   for(let c=0;c<3;c++){
    const anchor=(base(ax,ay,c)*(1-tx)+base(ax+1,ay,c)*tx)*(1-ty)+
@@ -210,7 +211,7 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
  * hydrology and elevation arrays are never modified. All positions use the
  * same normalized X/Z coordinate frame as the terrain mesh. */
 export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options={}){
- const empty=()=>({rivers:new Float32Array(0),lakes:new Float32Array(0),riverSegments:0,lakeCells:0});
+ const empty=()=>({rivers:new Float32Array(0),lakes:new Float32Array(0),riverSegments:0,lakeCells:0,riverMask:null});
  if(!hydrology)return empty();
  const n=mesh?.cells?.length||0;
  if(!n||elevations?.length!==n||hydrology.flowTo?.length!==n||hydrology.discharge?.length!==n||
@@ -219,64 +220,24 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
  }
  const scale=Number(options.worldScale)||4.8/Math.max(geometry.width,geometry.height);
  const sx=geometry.width*scale,sz=geometry.height*scale;
- const sampler=options.sampler||createSurfaceSampler(mesh,elevations,{...options,hydrology}),rivers=[],lakes=[];
- const maxDischarge=Math.max(.001,Number(hydrology.summary?.maxDischarge)||.001);
- const pixelSpacing=Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/n)*scale;
+ const sampler=options.sampler||createSurfaceSampler(mesh,elevations,{...options,hydrology}),lakes=[];
  const toX=x=>(x/geometry.width-.5)*sx,toZ=z=>(z/geometry.height-.5)*sz;
  const heightScale=Number(options.heightScale)||terrainHeightScale(geometry);
- const centerHeight=(x,y)=>sampleElevation(sampler,elevations,x,y)*heightScale;
- const point=(x,y,relativeOffset=Math.max(.0002,heightScale*.018))=>[toX(x),centerHeight(x,y)+relativeOffset,toZ(y)];
  const addTriangle=(target,a,b,c)=>target.push(...a,...b,...c);
- const keep=new Set(hydrology.channels.filter(i=>Number.isInteger(i)&&i>=0&&i<n));
- const incoming=new Int32Array(n).fill(-1);
- // Only the strongest tributary continues the channel tangent through a
- // confluence. Other rivers terminate cleanly at the meeting point.
- for(const i of keep){const j=hydrology.flowTo[i];if(!Number.isInteger(j)||j<0||j>=n)continue;
-  if(incoming[j]<0||hydrology.discharge[i]>hydrology.discharge[incoming[j]])incoming[j]=i;
- }
- let riverSegments=0;
- for(const i of keep){
-  const j=hydrology.flowTo[i];
-  if(!Number.isInteger(j)||j<0||j>=n||i===j||hydrology.lakeId[i]>=0)continue;
-  const a=mesh.cells[i],b=mesh.cells[j];
-  const ocean=options.waterMask?.[j]===1||options.waterMask?.[j]===true;
-  const inlet=hydrology.lakeId[j]>=0;
-  // Rivers terminate at the approximate sea/lake edge; do not draw
-  // glowing paths through open water.
-  const endFrac=(ocean||inlet)?0.66:1;
-  const len=Math.hypot(b.x-a.x,b.y-a.y);
-  if(len<1e-7)continue;
-  const upstream=mesh.cells[incoming[i]];
-  const downstream=mesh.cells[hydrology.flowTo[j]];
-  const startDirection=upstream?[b.x-upstream.x,b.y-upstream.y]:[b.x-a.x,b.y-a.y];
-  const endDirection=downstream?[downstream.x-a.x,downstream.y-a.y]:[b.x-a.x,b.y-a.y];
-  const normal=(v)=>{const m=Math.hypot(v[0],v[1])||1;return [v[0]/m,v[1]/m];};
-  const [tx0,tz0]=normal(startDirection),[tx1,tz1]=normal(endDirection);
-  const bend=.7*len;
-  const sections=5;
-  const flow=clamp(Math.sqrt(Math.max(0,Number(hydrology.discharge[i]))/maxDischarge),0,1);
-  const width=clamp(.001+pixelSpacing*(.014+.07*flow),.001,Math.min(.02,pixelSpacing*.19));
-  let previous=null;
-  for(let s=0;s<=sections;s++){
-   const t=(s/sections)*endFrac,t2=t*t,t3=t2*t;
-   // Cubic Hermite path: the end tangents align with the downstream
-   // network but the endpoints remain anchored to the original graph.
-   const h00=2*t3-3*t2+1,h10=t3-2*t2+t,h01=-2*t3+3*t2,h11=t3-t2;
-   const x=h00*a.x+h10*tx0*bend+h01*b.x+h11*tx1*bend;
-   const y=h00*a.y+h10*tz0*bend+h01*b.y+h11*tz1*bend;
-   const eps=.0005,tt=Math.min(endFrac,t+eps),ta=Math.max(0,t-eps);
-   const evaluate=ttt=>{const q=ttt*ttt,q3=q*ttt;return [
-    (2*q3-3*q+1)*a.x+(q3-2*q+ttt)*tx0*bend+(-2*q3+3*q)*b.x+(q3-q)*tx1*bend,
-    (2*q3-3*q+1)*a.y+(q3-2*q+ttt)*tz0*bend+(-2*q3+3*q)*b.y+(q3-q)*tz1*bend];};
-   const before=evaluate(ta),after=evaluate(tt);
-   const ddx=after[0]-before[0],ddy=after[1]-before[1],mag=Math.hypot(ddx,ddy)||1;
-   const sideways=[-ddy/mag,ddx/mag],half=width/scale/2;
-   const left=point(x-sideways[0]*half,y-sideways[1]*half);
-   const right=point(x+sideways[0]*half,y+sideways[1]*half);
-   if(previous){addTriangle(rivers,previous[0],previous[1],left);addTriangle(rivers,previous[1],right,left);riverSegments+=2;}
-   previous=[left,right];
+ // The normal caller supplies the exact rendered base vertices. Standalone
+ // callers can sample an equivalent grid without building LODs.
+ let grid=options.grid;
+ if(!grid&&hydrology.channels.length){
+  const {segmentsX:cols,segmentsY:rows}=terrainGridSize(geometry,n);
+  const vertexData=new Float32Array((cols+1)*(rows+1)*7),insideMask=new Uint8Array((cols+1)*(rows+1));
+  for(let y=0;y<=rows;y++)for(let x=0;x<=cols;x++){
+   const wx=x/cols*geometry.width,wy=y/rows*geometry.height,id=y*(cols+1)+x;
+   vertexData[id*7+1]=Math.fround(sampleElevation(sampler,elevations,wx,wy))*heightScale;
+   insideMask[id]=insideGeometry(wx,wy,geometry)?1:0;
   }
+  grid={cols,rows,planeWidth:sx,planeDepth:sz,vertexData,insideMask};
  }
+ const river=grid&&hydrology.channels.length?buildRiverDecals(geometry,mesh,hydrology,grid,{waterMask:options.waterMask,seaY:(options.seaLevel??0)*heightScale}):{rivers:new Float32Array(0),riverMask:null};
  let lakeCells=0;
  for(const lake of hydrology.lakes){
   if(!lake||!Array.isArray(lake.cells)||!Number.isFinite(lake.level))continue;
@@ -295,7 +256,7 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
    lakeCells++;
   }
  }
- return {rivers:new Float32Array(rivers),lakes:new Float32Array(lakes),riverSegments,lakeCells};
+ return {...river,lakes:new Float32Array(lakes),riverSegments:river.rivers.length/9,lakeCells};
 }
 
 export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{},options={}){
@@ -347,7 +308,12 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   vertexData[offset+5]=-ddz/size;
  }
  const coastMask=sampler.coastline?Uint8Array.from(raw,h=>h<seaLevel?1:0):null;
- const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{coastMask,lakeMask});
+ const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,heightScale,waterMask:options.waterMask,seaLevel,sampler,
+  grid:{cols,rows,planeWidth,planeDepth,vertexData,insideMask:inside}});
+ const riverMask=hydrology.riverMask;
+ // Reuse protected-block stitching for all squares beneath river decals.
+ const protectedMask=riverMask&&lakeMask?Uint8Array.from(lakeMask,(v,i)=>v||riverMask[i]):riverMask||lakeMask;
+ const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{coastMask,lakeMask:protectedMask});
  // Per-tile height bounds enable safe frustum culling of mixed-detail terrain
  // without using the global mountain range for every otherwise-flat tile.
  for(const tile of levels[0].tiles){
@@ -358,8 +324,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   }
   tile.minY=min-.06;tile.maxY=max+.06;
  }
- const uniformLevels=buildUniformTerrainLevels(cols,rows,inside,{coastMask,lakeMask});
- const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,heightScale,waterMask:options.waterMask,seaLevel,sampler});
+ const uniformLevels=buildUniformTerrainLevels(cols,rows,inside,{coastMask,lakeMask:protectedMask});
  const seaY=seaLevel*heightScale;
  const ocean=new Float32Array(geometry.shape==='rectangle'?
   [-planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,planeDepth/2,

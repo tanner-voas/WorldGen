@@ -353,7 +353,7 @@ export class Terrain3DViewer{
    };
    worker.onerror=e=>{if(this.detailWorker===worker)this._failFocusedDetail(e.message||'worker failed');};
    worker.postMessage({kind:'init-detail',...source,grid:{cols:s.cols,rows:s.rows,
-    planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale}});
+    planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale,riverMask:s.hydrology?.riverMask||null}});
   }catch(error){
    worker?.terminate();this._failFocusedDetail(error.message);
   }
@@ -581,14 +581,21 @@ export class Terrain3DViewer{
     selectedTriangles+=patch.count/3;
    }
   }
-  gl.uniform1i(this.waterLocation,1);
+  // Coplanar decals use a depth-buffer bias, not a physical height offset.
+  // Draw water afterward so it covers submerged portions of lake outlets.
   gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
-  gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
-  // The shared terrain sampler preserves lake basins; water geometry is
-  // read-only and never changes the saved elevations.
-  // Keep depth testing so rivers cannot shine through mountains.
   for(const water of this.hydroGeometry||[]){
-   gl.uniform1i(this.waterLocation,water.kind);
+   if(water.kind!==2)continue;
+   gl.uniform1i(this.waterLocation,2);
+   gl.enable(gl.POLYGON_OFFSET_FILL);gl.polygonOffset(-1,-1);
+   gl.bindVertexArray(water.vao);gl.drawArrays(gl.TRIANGLES,0,water.count);
+   gl.disable(gl.POLYGON_OFFSET_FILL);
+  }
+  gl.uniform1i(this.waterLocation,1);
+  gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
+  for(const water of this.hydroGeometry||[]){
+   if(water.kind!==3)continue;
+   gl.uniform1i(this.waterLocation,3);
    gl.bindVertexArray(water.vao);gl.drawArrays(gl.TRIANGLES,0,water.count);
   }
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);

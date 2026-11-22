@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.1.36',DB_NAME='worldgen-v1';
+const APP_VERSION='0.1.37',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
