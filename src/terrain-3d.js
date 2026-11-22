@@ -440,7 +440,7 @@ export class Terrain3DViewer{
   if(!this.surface||this.distance>.65)return;
   const ground=surfaceHeightAt(this.surface,this.target[0],this.target[2]);
   if(ground===null)return;
-  const sea=(this.surface.seaLevel||0)*(this.surface.heightScale??.73);
+  const sea=(this.surface.seaLevel||0)*(this.surface.heightScale??0);
   this.target[1]=Math.max(ground,sea)*(this.heightMultiplier||1);
  }
  zoom(factor){this.distance=clamp(this.distance*factor,this.detailLimits?.minimumDistance||.008,32);

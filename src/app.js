@@ -6,8 +6,9 @@ import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-materi
 import {createStartupStorage,readRecoveryCheckpoint} from './startup-storage.js';
 import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
+import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.1.31',DB_NAME='worldgen-v1';
+const APP_VERSION='0.1.32',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -37,12 +38,12 @@ const OPTIONS={
   ['relaxation','Lloyd relaxation','range',0,3,1,'linear']
  ],
  3:[['plates','Plates','range',3,50,1,'linear'],['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear']],
- 4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation','range',0.05,0.8,0.025,'linear']],
+ 4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation (m)','range',0.05,0.8,0.025,'linear']],
  5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (cell widths)','range',0.5,5,0.25,'linear'],['setbackStrength','Continental setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Continental setback width (cells)','range',2,18,0.5,'linear']],
  6:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
  7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
  8:[['equatorTemp','Equatorial temperature (°C)','range',10,40,0.5,'linear'],['latitudeCenter','Central latitude (°)','range',-70,70,2,'linear'],['latitudeSpan','Latitude span (°)','range',20,180,5,'linear'],['axialTilt','Axial tilt (°)','range',0,45,0.5,'linear'],['rainfall','Annual rainfall baseline (mm)','range',100,4000,50,'linear'],['windDirection','Wind direction (°)','range',-180,180,5,'linear'],['rainShadow','Mountain rain shadow','range',0,2,0.05,'linear'],['maritime','Ocean moderation','range',0,1.5,0.05,'linear']],
- 9:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (cell areas)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
+ 9:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (cell areas)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth (m)','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
  10:[['weathering','Mineral weathering','range',0,2,0.1,'linear'],['organicInput','Organic accumulation','range',0,2,0.1,'linear'],['alluvialInput','Alluvial deposition','range',0,2,0.1,'linear'],['permeabilityBias','Permeability factor','range',0.25,2,0.05,'linear'],['groundwaterRecharge','Groundwater recharge potential','range',0,2,0.1,'linear']],
  11:[['temperatureShift','Biome temperature shift (°C)','range',-12,12,0.5,'linear'],['rainfallResponse','Effective precipitation','range',0.4,1.8,0.05,'linear'],['forestThreshold','Forest moisture threshold','range',0.45,1.8,0.05,'linear'],['wetlandThreshold','Wetland groundwater threshold','range',0.4,0.95,0.025,'linear'],['alpineLimit','Alpine summer threshold (°C)','range',0,16,0.5,'linear'],['patchVariation','Regional biome variation','range',0,0.4,0.025,'linear']],
  12:[['vegetationDensity','Vegetation density','range',0.2,1.8,0.05,'linear'],['maturity','Landscape maturity','range',0,1,0.05,'linear'],['disturbance','Disturbance pressure','range',0,1,0.05,'linear'],['riparianStrength','Riparian boost','range',0,1.5,0.05,'linear'],['patchiness','Vegetation patchiness','range',0,0.45,0.025,'linear']]
@@ -63,7 +64,7 @@ const PARAM_HELP={
  motion:['Plate motion','Magnitude of horizontal plate motion used to estimate convergence and rifts. More motion intensifies plate-boundary differences; zero removes relative motion effects.'],
  uplift:['Uplift strength','How strongly converging tectonic boundaries raise terrain. Higher values create more prominent mountain systems; lower values soften those effects.'],
  roughness:['Surface roughness','Strength of small-scale height noise before landform refinement. Increasing it makes elevation less smooth; decreasing it produces gentler terrain.'],
- continentalHeight:['Crust elevation','Relative starting height difference between continental and oceanic plates. Higher values lift continents and deepen relative crust contrast; lower values flatten that contrast.'],
+ continentalHeight:['Crust elevation','Starting crust-height parameter in metres, before coastline sea-level selection. Higher values increase continental/oceanic crust contrast; lower values flatten it.'],
  land:['Land coverage target','Desired share of the world surface ABOVE sea level by geographic area. Higher values expose more land; lower values flood more land. It is approximate at the resolution of individual cells. An enabled edge-ocean buffer takes priority if the outermost cells already exceed the water target.'],
  edgeOcean:['Edge ocean bias','Strength of the ocean-promoting effect at the outer world boundary. Higher values lower near-edge terrain relative to sea level, making a broader water margin without changing distant inland heights. When greater than zero, polygons touching the world boundary are guaranteed to be water. Zero disables this feature.'],
  edgeFade:['Edge falloff width','Width of the narrow ocean rim in typical cell widths. The outermost polygon stays underwater if Edge ocean bias is enabled. This narrow rim does not by itself move whole continents inward; use Continental setback for that.'],
@@ -89,7 +90,7 @@ const PARAM_HELP={
  infiltration:['Ground infiltration','Fraction of incoming precipitation absorbed into the ground. Higher values leave less water for surface rivers; lower values create more overland runoff. Subsurface aquifers are not simulated yet.'],
  evaporation:['Evaporation','Temperature-dependent loss of surface water to the atmosphere and plants. Raising it dries warmer areas and suppresses rivers; lowering it leaves more runoff. This is an approximate annual water balance.'],
  riverThreshold:['River threshold','A river is drawn only after collecting runoff from a catchment at least this many average Voronoi cell areas, with sufficient flow. Smaller values generate more tributaries, while larger values retain only major channels. The actual area depends on mesh density.'],
- lakeDepth:['Minimum lake depth','Minimum local elevation difference between a topographic basin and its spill point for a cell to qualify as a lake. Lower values include shallow depressions; higher values retain only deeper basins. This uses relative elevation, not absolute kilometers of water depth.'],
+ lakeDepth:['Minimum lake depth','Minimum local elevation difference between a topographic basin and its spill point for a cell to qualify as a lake. Lower values include shallow depressions; higher values retain only deeper basins. The control is in physical metres; saved values retain their original encoding.'],
  minLakeCells:['Minimum lake size','Minimum number of adjoining qualifying polygons required to create a visible lake. One allows small cell-sized lakes; higher values omit small or fragmented water bodies.'],
  weathering:['Mineral weathering','Scales the rate of modeled regolith formation. Increasing it produces deeper soils in warm and moist regions; exposed high slopes remain thinner. This is an indicative soil formation model, not a simulation of geological time.'],
  organicInput:['Organic accumulation','Adjusts the potential organic content supported by climate and local wetness. Higher values encourage richer surface horizons and some wetland soils; lower values produce mineral-dominated soils.'],
@@ -255,6 +256,7 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0])))).map(settingRow).join('')}${!stageUsesSeed(stage)?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button class="wg-info" data-info="seed" aria-label="About random seed">i</button><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div>`}</div>`;
+  if(stage===4)html+='<p class="wg-hint">Physical height uses 2,700 m per saved elevation unit. Until layer 5 establishes sea level, heights refer to a provisional zero datum.</p>';
   if(stage===5)html+='<p class="wg-hint">Coastlines are deterministic for the same locked elevation and coastline settings. Change the parameters above to reshape them; this layer has no independent random seed.</p>';
   if(stage===7)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Its runoff input is preliminary; climate is calculated later and does not retroactively alter locked erosion or coastlines.</p>';
   if(stage===8)html+='<p class="wg-hint">Planar climate approximation using notional latitude, winds, elevation and ocean proximity. January/July are opposite seasons; this layer does not change existing terrain.</p>';
@@ -307,8 +309,8 @@ function syncControl(key){
  const value=workspace.working.settings[key],row=OPTIONS[currentStage()]?.find(r=>r[0]===key);
  if(!row||row[2]==='select')return;
  const [min,max]=controlBounds(currentStage(),key),slider=root.querySelector(`[data-slider="${key}"]`),number=root.querySelector(`[data-number="${key}"]`);
- if(slider)slider.value=String(row[2]==='area'?areaToSlider(value,min,max):value);
- if(number&&document.activeElement!==number)number.value=String(formatNumber(value));
+ if(slider)slider.value=String(row[2]==='area'?areaToSlider(value,min,max):formatNumber(displayParameter(key,value)));
+ if(number&&document.activeElement!==number)number.value=String(formatNumber(displayParameter(key,value)));
  const estimate=root.querySelector('[data-cell-estimate]');if(key==='averageArea'&&estimate)estimate.textContent=`≈ ${shortNumber(meshTargetCount(geometryData(),value))} polygons · 100–${shortNumber(MAX_CELLS)} supported`;
 }
 function adjustParameter(key,direction){
@@ -319,7 +321,7 @@ function adjustParameter(key,direction){
 function showParameterHelp(key){
  const [title,description]=PARAM_HELP[key]||['Parameter','No description available.'];
  const current=OPTIONS[currentStage()]?.find(row=>row[0]===key);
- const mode=current?.[2]==='area'||current?.[6]==='percent'?'Percentage adjustment: ±5% of the current value.':current?.[2]==='range'?`Linear adjustment: ±${current[5]} each tap.`:'';
+ const mode=current?.[2]==='area'||current?.[6]==='percent'?'Percentage adjustment: ±5% of the current value.':current?.[2]==='range'?`Linear adjustment: ±${formatNumber(displayParameter(key,current[5]))} each tap.`:'';
  root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal wg-help-dialog" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><div class="wg-modal-heading"><h2>${escapeHTML(title)}</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close information">×</button></div><p>${escapeHTML(description)}</p><p class="wg-modal-caption">${escapeHTML(mode)}</p></section></div>`;
  activeModal=true;
 }
@@ -327,24 +329,25 @@ function settingRow([key,label,type,a,b,step,mode]){
  const stage=currentStage(),value=activeSettings()[key],info=`<button type="button" class="wg-info" data-info="${key}" aria-label="About ${escapeHTML(label)}" title="Explain this parameter">i</button>`;
  if(type==='select')return `<div class="wg-form-field wg-choice-field"><div class="wg-field-title"><span>${escapeHTML(label)}</span>${info}</div><select data-setting="${key}" aria-label="${escapeHTML(label)}">${a.map(([v,n])=>`<option value="${v}" ${v===value?'selected':''}>${n}</option>`).join('')}</select></div>`;
  const [min,max]=controlBounds(stage,key),area=type==='area';
- const sliderValue=area?areaToSlider(value,min,max):value;
- const rawValue=formatNumber(value);
+ const sliderValue=area?areaToSlider(value,min,max):formatNumber(displayParameter(key,value));
+ const rawValue=formatNumber(displayParameter(key,value));
+ const displayMin=displayParameter(key,min),displayMax=displayParameter(key,max),displayStep=displayParameter(key,step);
  return `<div class="wg-form-field" data-param="${key}"><div class="wg-field-title"><span>${escapeHTML(label)}</span>${info}</div>
-  <input data-slider="${key}" type="range" min="${area?0:min}" max="${area?1000:max}" step="${area?1:step}" value="${sliderValue}" aria-label="${escapeHTML(label)} slider" />
+  <input data-slider="${key}" type="range" min="${area?0:displayMin}" max="${area?1000:displayMax}" step="${area?1:displayStep}" value="${sliderValue}" aria-label="${escapeHTML(label)} slider" />
   <div class="wg-value-controls"><button type="button" data-adjust="${key}" data-direction="-1" aria-label="Decrease ${escapeHTML(label)}">−</button>
-  <input data-number="${key}" type="number" inputmode="decimal" min="${min}" max="${max}" step="any" value="${rawValue}" aria-label="${escapeHTML(label)} value" />
+  <input data-number="${key}" type="number" inputmode="decimal" min="${displayMin}" max="${displayMax}" step="any" value="${rawValue}" aria-label="${escapeHTML(label)} value" />
   <button type="button" data-adjust="${key}" data-direction="1" aria-label="Increase ${escapeHTML(label)}">+</button></div>
-  ${area?`<small data-cell-estimate>≈ ${shortNumber(meshTargetCount(geometryData(),value))} polygons · 100–${shortNumber(MAX_CELLS)} supported</small>`:`<small class="wg-increment-mode">${mode==='percent'?'±5% per tap':`±${step} per tap`}</small>`}
+  ${area?`<small data-cell-estimate>≈ ${shortNumber(meshTargetCount(geometryData(),value))} polygons · 100–${shortNumber(MAX_CELLS)} supported</small>`:`<small class="wg-increment-mode">${mode==='percent'?'±5% per tap':`±${displayStep} per tap`}</small>`}
  </div>`;
 }
 function describeStage(stage,data){if(!data)return 'No preview generated yet.';switch(stage){
  case 1:return `${data.shape==='rectangle'?'Rectangular':data.shape==='circle'?'Circular':'Elliptical'} world · ${shortNumber(data.width)} × ${shortNumber(data.height)} km · ${shortNumber(Math.round(data.areaKm2))} km² · no depth.`;
  case 2:return `${shortNumber(data.cells.length)} Voronoi cells across ${shortNumber(Math.round(data.areaKm2))} km².`;
  case 3:return `${data.plates.length} tectonic plates with distinct crust properties and motion.`;
- case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift.`;
- case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km.`;}
+ case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift · provisional height range ${shortNumber(Math.round(elevationToMetres(Math.min(...data.elevations))))} to ${shortNumber(Math.round(elevationToMetres(Math.max(...data.elevations))))} m.`;
+ case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${Math.round((area??data.landFraction)*100)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km · sea datum ${shortNumber(Math.round(elevationToMetres(data.seaLevel)))} m relative to layer-4 zero.`;}
  case 6:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
- case 7:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)}.`;
+ case 7:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)} · mean eroded depth ${elevationToMetres(data.summary.meanErosion).toFixed(1)} m${Number.isFinite(data.summary.exportedSediment)?` · exported sediment estimate ${sedimentToKm3(data.summary.exportedSediment).toFixed(1)} km³`:""}.`;
  case 8:return `${shortNumber(data.meanTemp.length)} climate cells · mean temperature ${data.summary.avgTemp.toFixed(1)} °C · mean precipitation ${Math.round(data.summary.avgRain)} mm/year.`;
  case 9:return `${shortNumber(data.channels.length)} river-channel cells · ${data.lakes.length} lakes · ${shortNumber(Math.round(data.summary.lakeAreaKm2))} km² lake area · ${data.summary.annualRunoffKm3.toFixed(1)} km³/year estimated runoff.`;
  case 10:return `${shortNumber(data.summary.landCells)} soil-bearing cells · mean regolith ${data.summary.meanDepthM.toFixed(2)} m · mean fertility ${Math.round(data.summary.meanFertility*100)}% · ${shortNumber(data.summary.highFertilityCells)} high-fertility cells.`;
@@ -565,7 +568,7 @@ function updateLegend(){
  else if(actual==='landforms')el.innerHTML='<strong>Landform types</strong>'+LANDFORM_NAMES.map((name,i)=>`<span><i style="background:${landformColors[i]}"></i>${name}</span>`).join('');
  else if(actual==='coast')el.innerHTML='<strong>Land / sea</strong><span><i style="background:#4487a2"></i>Water</span><span><i style="background:#799570"></i>Land</span>';
  else if(actual==='plates')el.innerHTML='<strong>Tectonic plates</strong><p>Colors distinguish neighboring plate territories; use plate boundaries to trace edges.</p>';
- else if(actual==='height')el.innerHTML='<strong>Relative elevation</strong><div class="wg-height-ramp"></div><p>Ocean depths → lowlands → mountain elevations</p>';
+ else if(actual==='height')el.innerHTML='<strong>Elevation</strong><div class="wg-height-ramp"></div><p>Ocean depths → lowlands → mountain elevations. Inspect a cell for metres relative to the current datum.</p>';
  else el.innerHTML='<strong>Voronoi cells</strong><p>Every colored region is one independent spatial cell.</p>';
 }
 function paint(){renderPending=false;if(!canvas||!ctx)return;
@@ -662,16 +665,20 @@ function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!p
  const c=(latestData(2)||(currentStage()===2?workspace.working.data:null))?.cells?.[selectedId];if(!c){panel.hidden=true;return;}
  const stage=effectiveStage(),plate=latestData(3),elevation=latestData(4),sea=latestData(5),details=[`Position ${Math.round(c.x)}, ${Math.round(c.y)}`,`${c.neighbors.length} neighboring cells`];
  if(stage>=3&&plate){const p=plate.plates[plate.owners[selectedId]];details.push(`Plate ${p.id+1} · ${p.continental?'continental':'oceanic'} crust`);}
- if(stage>=4&&elevation)details.push(`Relative elevation: ${(stage>=7&&latestData(7)?latestData(7).elevations[selectedId]:stage>=6&&latestData(6)?latestData(6).elevations[selectedId]:stage>=5&&sea?.elevations?sea.elevations[selectedId]:elevation.elevations[selectedId]).toFixed(3)}`);
+ if(stage>=4&&elevation){
+  const height=(stage>=7?latestData(7)?.elevations[selectedId]:undefined)??(stage>=6?latestData(6)?.elevations[selectedId]:undefined)??(stage>=5?sea?.elevations?.[selectedId]:undefined)??elevation.elevations[selectedId];
+  const datum=stage>=5&&sea?sea.seaLevel:0;
+  details.push(`Elevation: ${elevationToMetres(height,datum).toFixed(1)} m (${stage>=5&&sea?'relative to sea level':'provisional zero datum'})`);
+ }
  if(stage>=5&&sea)details.push(sea.water[selectedId]?'Ocean cell':'Land cell');
  if(stage>=6&&latestData(6)){const l=latestData(6);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
- if(stage>=7&&latestData(7)){const e=latestData(7);details.push(`Eroded depth: ${e.erosionDepth[selectedId].toFixed(4)}`);details.push(`Deposited depth: ${e.deposition[selectedId].toFixed(4)}`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
+ if(stage>=7&&latestData(7)){const e=latestData(7);details.push(`Eroded depth: ${elevationToMetres(e.erosionDepth[selectedId]).toFixed(1)} m`);details.push(`Deposited depth: ${elevationToMetres(e.deposition[selectedId]).toFixed(1)} m`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
  if(stage>=8&&latestData(8)){const c=latestData(8);details.push(`Latitude: ${c.latitudes[selectedId].toFixed(1)}°`);details.push(`Mean temperature: ${c.meanTemp[selectedId].toFixed(1)} °C`);details.push(`January / July: ${c.janTemp[selectedId].toFixed(1)} / ${c.julTemp[selectedId].toFixed(1)} °C`);details.push(`Precipitation: ${Math.round(c.precipitation[selectedId])} mm/year`);details.push(`Moisture index: ${Math.round(c.moisture[selectedId]*100)}%`);}
  details.push(`Cell area: ${shortNumber(Math.round(cellArea(c)))} km²`);
  if(stage>=9&&latestData(9)){
   const h=latestData(9);details.push(`Upstream catchment: ${Math.round(h.catchmentArea[selectedId]).toLocaleString()} km²`);
   details.push(`Estimated flow: ${h.discharge[selectedId].toFixed(3)} km³/year`);
-  if(h.lakeId[selectedId]>=0){const lake=h.lakes[h.lakeId[selectedId]];details.push(`Lake ${lake.id+1}: ${Math.round(lake.areaKm2)} km², relative depth ${h.lakeDepth[selectedId].toFixed(3)}`);}
+  if(h.lakeId[selectedId]>=0){const lake=h.lakes[h.lakeId[selectedId]];details.push(`Lake ${lake.id+1}: ${Math.round(lake.areaKm2)} km², depth ${elevationToMetres(h.lakeDepth[selectedId]).toFixed(1)} m · surface ${elevationToMetres(lake.level,sea.seaLevel).toFixed(1)} m above sea level`);}
   if(h.flowTo[selectedId]>=0)details.push(`Drainage toward: cell ${h.flowTo[selectedId]+1}`);
  }
  if(stage>=10&&latestData(10)){
@@ -787,6 +794,7 @@ function showTerrain3D(){
  try{terrain=selectTerrainSource(selected,latestData);appearance=selectTerrainAppearance(selected,latestData);}
  catch(error){notice(`3D terrain unavailable: ${error.message}`,true);return;}
  releaseTerrainViewer();
+ const baseExaggeration=terrainVerticalScales(geometry).baseExaggeration;
  const description=terrain.usesEarlierTerrain?
   `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':`Layer ${String(selected).padStart(2,'0')} ${terrainAppearanceName(selected).toLowerCase()} appearance`}${selected>=9?' · saved rivers and lakes':''}`:
   `Layer ${String(terrain.terrainStage).padStart(2,'0')} · ${terrain.label} · ${terrain.hasCoast?'Actual sea level':'Provisional zero-height sea datum'}`;
@@ -806,7 +814,7 @@ function showTerrain3D(){
    <button data-action="3d-height-down" aria-label="Decrease vertical relief by 5%">−</button>
    <output id="wg-3d-height-value" aria-live="polite">1.00×</output>
    <button data-action="3d-height-up" aria-label="Increase vertical relief by 5%">+</button>
-   <span class="wg-3d-height-state" id="wg-3d-height-state">World-aware baseline</span>
+   <span class="wg-3d-height-state" id="wg-3d-height-state">World-aware baseline · ${baseExaggeration.toFixed(2)}× physical height</span>
   </div>
   <div class="wg-3d-foot"><span id="wg-3d-status">Preparing surface…</span><span>Drag to orbit · pinch to zoom / pan · double-tap to focus</span></div>
  </div>`,'wg-3d-modal');
@@ -873,7 +881,7 @@ async function handleAction(action,button){
     const state=root.querySelector('#wg-3d-height-state');
     if(value)value.textContent=formatted;
     if(summary)summary.textContent=formatted;
-    if(state)state.textContent=pending?'Applying after 2 seconds…':'Applied';
+    if(state){const exaggeration=terrainVerticalScales(geometryData()).baseExaggeration*multiplier;state.textContent=`${pending?'Applying after 2 seconds…':'Applied'} · ${Number.isFinite(exaggeration)?exaggeration.toPrecision(3):'Extreme'}× physical height`;}
    });
    break;
   }
@@ -908,14 +916,14 @@ function bindEvents(){
   const el=event.target,key=el.dataset?.slider;
   if(key){
    const [min,max]=controlBounds(currentStage(),key);
-   const value=key==='averageArea'?sliderToArea(el.value,min,max):Number(el.value);
+   const value=key==='averageArea'?sliderToArea(el.value,min,max):storedParameter(key,Number(el.value));
    applyParameter(key,value,false);
    return;
   }
  });
  root.addEventListener('change',event=>{
   const el=event.target;
-  if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,el.value,true);return;}
+  if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,el.value.trim()===''?'':storedParameter(key,Number(el.value)),true);return;}
   if(el.dataset?.setting){applyParameter(el.dataset.setting,el.value,true);return;}
   if(el.id==='wg-edges'){workspace.showEdges=el.checked;persist('preferences');schedulePaint();}
   if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;persist('preferences');schedulePaint();}

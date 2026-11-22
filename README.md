@@ -1,4 +1,4 @@
-# WorldGen v0.1.31
+# WorldGen v0.1.32
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -237,3 +237,7 @@ Interface-only changes (viewport, display mode, overlays, history selection and 
 ## v0.1.31 — Legacy cleanup
 
 The interactive WebGL2 terrain viewer is the only Render mode, available from layer 4 onward. The retired raster dialog, static terrain PNG generator, worker and styles have been removed. The editor's ordinary **Map PNG** export, 3D relief controls, saved layers, and recovery/persistence behavior remain intact. Shared terrain sampling lives in `terrain-sampler.js`; its interpolation has not changed. Layer 5 no longer displays a random seed or reroll: coastlines are deterministic for the same locked elevation and coastline parameters. Legacy seeds are retained in saved worlds and checkpoints. See `RELEASE_v0.1.31.md`.
+
+## v0.1.32 — Physical elevation
+
+Schema v2 retains its existing encoded elevations: **1 unit = 2.7 km = 2,700 m**, matching the original climate lapse-rate convention. Layer 4 uses provisional zero, layers 5–12 use the selected coastline sea level as the physical datum. Absolute elevation, erosion/deposition thickness, lake depth and surface altitude are shown in metres; crust elevation and minimum lake depth controls accept metres while converting back to the unchanged stored settings. The erosion sediment summary is expressed as an estimated equivalent volume in km³. The shared conversion also defines physical terrain gradients, atmospheric ascent and lake-depth comparisons while preserving the historical empirical calibration. The 3D relief baseline remains visually identical to v0.1.31, explicitly separated from the physical scale: the collapsed control still starts at 1.00×, and its expanded panel displays total exaggeration relative to physical height. Relief never changes simulation or saved data. Existing worlds and checkpoints require no migration. See `RELEASE_v0.1.32.md`.

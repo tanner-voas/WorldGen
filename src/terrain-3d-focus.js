@@ -43,15 +43,15 @@ export function pickTerrainRay(surface,eye,direction,heightMultiplier=1){
  if(!surface||!eye||!direction||![...eye,...direction,heightMultiplier].every(Number.isFinite)||heightMultiplier<=0)return null;
  const dir=normalize(direction);
  const maxDistance=100;
- const limitTop=Math.max(surface.maxY??0,(surface.seaLevel??0)*(surface.heightScale??.73))*heightMultiplier+.1;
- const limitBottom=Math.min(surface.minY??0,(surface.seaLevel??0)*(surface.heightScale??.73))*heightMultiplier-.1;
+ const limitTop=Math.max(surface.maxY??0,(surface.seaLevel??0)*(surface.heightScale??0))*heightMultiplier+.1;
+ const limitBottom=Math.min(surface.minY??0,(surface.seaLevel??0)*(surface.heightScale??0))*heightMultiplier-.1;
  let near=0,far=maxDistance;
  if(dir[1]<-1e-5){
   near=Math.max(0,(eye[1]-limitTop)/(-dir[1]));
   far=Math.min(maxDistance,(eye[1]-limitBottom)/(-dir[1]));
   if(far<near)return null;
  }
- const planeY=(surface.seaLevel??0)*(surface.heightScale??.73)*heightMultiplier;
+ const planeY=(surface.seaLevel??0)*(surface.heightScale??0)*heightMultiplier;
  const at=t=>{
   const x=eye[0]+dir[0]*t,y=eye[1]+dir[1]*t,z=eye[2]+dir[2]*t;
   const h=surfaceHeightAt(surface,x,z);

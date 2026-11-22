@@ -3,23 +3,17 @@
  * Coordinate frame: X east, Y up (render-only), Z south.
  */
 import {insideGeometry} from './engine.js';
+import {terrainVerticalScales} from './elevation-units.js';
 import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './terrain-sampler.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const ELEVATION_RENDER_STAGE=4;
-/** Elevation source values are dimensionless; one model unit represents about
- * 6 km of relief. Use three-fold visual exaggeration, rather than interpreting
- * model elevations as hundreds of kilometres of vertical displacement. The
- * resulting conversion varies with world size, never with camera zoom.
- */
-export function terrainHeightScale(geometry){
- const extent=Math.max(geometry?.width||0,geometry?.height||0);
- if(!Number.isFinite(extent)||extent<=0)throw Error('Invalid terrain extent');
- const horizontalScale=4.8/extent;
- return clamp(horizontalScale*18,.004,.24);
-}
+/** Display height scale retained for compatibility with the existing mesh API.
+ * The physical height scale and base visual exaggeration are explicit in
+ * terrainVerticalScales; neither changes the stored elevation field. */
+export function terrainHeightScale(geometry){return terrainVerticalScales(geometry).heightScale;}
 const smoothstep=(a,b,v)=>{const x=clamp((v-a)/(b-a),0,1);return x*x*(3-2*x);};
 
 /** Select the actual saved terrain field for a historical generation stage.
@@ -294,15 +288,14 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  if(!Number.isFinite(seaLevel)||Math.abs(seaLevel)>4)throw Error('Invalid 3D sea level');
  const {segmentsX:cols,segmentsY:rows}=terrainGridSize(geometry,mesh.cells.length);
  const count=(cols+1)*(rows+1),vertexData=new Float32Array(count*7);
- const heightScale=terrainHeightScale(geometry);
+ const {heightScale,physicalHeightScale,baseExaggeration,worldScale}=terrainVerticalScales(geometry);
  // Position(3) + normal(3) + elevation(1), interleaved for one GPU buffer.
  const raw=new Float32Array(count),inside=new Uint8Array(count);
  let minY=Infinity,maxY=-Infinity;
  const sampler=createTerrainSampler(mesh,.72);
  const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
  const materialColors=sourceColors?new Float32Array(count*3):null;
- const maxExtent=Math.max(geometry.width,geometry.height);
- const worldScale=4.8/maxExtent,planeWidth=geometry.width*worldScale,planeDepth=geometry.height*worldScale;
+ const planeWidth=geometry.width*worldScale,planeDepth=geometry.height*worldScale;
  const dx=planeWidth/cols,dz=planeDepth/rows;
  for(let y=0;y<=rows;y++){
   const wy=geometry.height*y/rows,z=(y/rows-.5)*planeDepth;
@@ -361,5 +354,5 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   })());
  onProgress(1);
  return {vertexData,insideMask:inside,outline:geometry,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
-  minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05,heightScale,siteSpacing:Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/mesh.cells.length)*worldScale};
+  minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05,heightScale,physicalHeightScale,baseExaggeration,siteSpacing:Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/mesh.cells.length)*worldScale};
 }

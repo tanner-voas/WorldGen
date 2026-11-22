@@ -1,4 +1,6 @@
-// WorldGen v0.1.11 — vegetation, cover, and habitat structure.
+// The legacy elevation fields remain in encoded units; physical calculations
+// use the shared 2.7 km/unit convention without migrating locked worlds.
+import {ELEVATION_KM_PER_UNIT,elevationToKm,physicalSlope} from './elevation-units.js';
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
@@ -203,6 +205,8 @@ export function generatePlates(mesh,settings){const rng=random(settings.seed),ce
  const owners=cells.map(c=>{let chosen=0,min=Infinity;for(const plate of plates){const dx=(c.x-plate.x)/mesh.width,dy=(c.y-plate.y)/mesh.height,d=dx*dx+dy*dy;if(d<min){min=d;chosen=plate.id;}}return chosen;});
  return {plates,owners};
 }
+// Crust height, uplift and terrain noise remain calibrated in the compact
+// elevation encoding. Every encoded unit represents 2.7 km of relief.
 export function generateElevation(mesh,plateData,settings){const cells=mesh.cells,{plates,owners}=plateData,base=new Float32Array(cells.length),boundary=new Float32Array(cells.length),frontier=[];
  for(let i=0;i<cells.length;i++){
   const c=cells[i],plate=plates[owners[i]];let coll=0,edge=false;
@@ -388,20 +392,20 @@ export function generateLandforms(mesh,plateData,heightData,coastData,settings){
   elevations[i]=+clamp(height,-1.8,1.8).toFixed(4);
  }
  for(let i=0;i<cells.length;i++){
-  const c=cells[i],height=elevations[i],relative=height-sea;
+  const c=cells[i],height=elevations[i],relative=elevationToKm(height,sea);
   let slope=0;
-  for(const j of c.neighbors)slope+=Math.abs(height-elevations[j])/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)+.001)*42;
+  for(const j of c.neighbors)slope+=physicalSlope(Math.abs(height-elevations[j]),Math.hypot(c.x-cells[j].x,c.y-cells[j].y)+.001)*(42/ELEVATION_KM_PER_UNIT);
   slope=c.neighbors.length?clamp(slope/c.neighbors.length,0,1):0;
   ruggedness[i]=+slope.toFixed(4);
-  if(water[i]){classes[i]=relative<-.48?0:1;continue;}
+  if(water[i]){classes[i]=relative<elevationToKm(-.48)?0:1;continue;}
   const plateEdge=c.neighbors.some(j=>owners[i]!==owners[j]);
   const volcanic=plateEdge&&hash2(i,owners[i],seed+801)<volcanism*.48;
   if(volcanic){classes[i]=7;volcanoes.push(i);}
-  else if(relative<.085)classes[i]=2;
-  else if(relative>.70 || (relative>.4&&slope>.55))classes[i]=6;
-  else if(relative>.39)classes[i]=5;
+  else if(relative<elevationToKm(.085))classes[i]=2;
+  else if(relative>elevationToKm(.70) || (relative>elevationToKm(.4)&&slope>.55))classes[i]=6;
+  else if(relative>elevationToKm(.39))classes[i]=5;
   else if(slope>.33)classes[i]=4;
-  else if(relative<.17&&slope<.12)classes[i]=8;
+  else if(relative<elevationToKm(.17)&&slope<.12)classes[i]=8;
   else classes[i]=3;
  }
  const counts=Array(LANDFORM_NAMES.length).fill(0);
@@ -423,7 +427,7 @@ function downhillFlow(cells,heights,water){
    if(diff<=0)continue;
    const dist=Math.hypot(cells[i].x-cells[j].x,cells[i].y-cells[j].y);
    if(dist<=1e-8)continue;
-   const slope=diff/dist;
+   const slope=physicalSlope(diff,dist);
    if(slope>slopes[i]){slopes[i]=slope;flowTo[i]=j;}
   }
  }
@@ -447,7 +451,7 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
    const downstream=flowTo[i],slope=slopes[i],volume=runoff[i];
    // Normalize by local cell area to avoid over-eroding small polygons.
    const intensity=Math.sqrt(Math.max(0,volume)*areaMean/Math.max(1,areas[i]));
-   const potential=hydraulic*(1.25-.85*hardness)*.0028*intensity*Math.sqrt(Math.min(2,slope*95));
+   const potential=hydraulic*(1.25-.85*hardness)*.0028*intensity*Math.sqrt(Math.min(2,slope*(95/ELEVATION_KM_PER_UNIT)));
    const cut=Math.min(.018,Math.max(0,heights[i]-sea-.002),potential);
    if(cut>0){delta[i]-=cut;removed[i]+=cut;sediment[i]+=cut*areas[i];}
    let carry=sediment[i];
@@ -457,7 +461,7 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
     exported+=carry;continue;
    }
    if(!water[downstream]){
-    const depositRate=.06+.38*(1-clamp(slope*95,0,1));
+    const depositRate=.06+.38*(1-clamp(slope*(95/ELEVATION_KM_PER_UNIT),0,1));
     const put=Math.min(carry*depositRate,areas[i]*.009);
     if(put>0){delta[i]+=put/areas[i];deposited[i]+=put/areas[i];carry-=put;}
     sediment[downstream]+=carry;
@@ -473,9 +477,11 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
      if(j<=i||water[j])continue;
      const diff=heights[i]-heights[j];
      const dist=Math.hypot(cells[i].x-cells[j].x,cells[i].y-cells[j].y);
-     if(dist<1e-8||Math.abs(diff)/dist<=.001)continue;
+     if(dist<1e-8)continue;
+     const gradient=physicalSlope(Math.abs(diff),dist);
+     if(gradient<=elevationToKm(.001))continue;
      const upper=diff>0?i:j,lower=diff>0?j:i;
-     const moved=Math.min(.006,thermal*(1-.4*hardness)*.11*(Math.abs(diff)/dist-.001));
+     const moved=Math.min(.006,thermal*(1-.4*hardness)*.11*((gradient-elevationToKm(.001))/ELEVATION_KM_PER_UNIT));
      const amount=moved*Math.min(areas[upper],areas[lower]);
      const cut=Math.min(amount/areas[upper],Math.max(0,heights[upper]+delta[upper]-sea-.002));
      if(cut>0){delta[upper]-=cut;delta[lower]+=cut*areas[upper]/areas[lower];removed[upper]+=cut;deposited[lower]+=cut*areas[upper]/areas[lower];}
@@ -496,6 +502,7 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
  const sorted=flowing.map(i=>discharge[i]).sort((a,b)=>a-b);
  const cutoff=sorted.length?sorted[Math.floor(sorted.length*.88)]:Infinity;
  const channels=flowing.filter(i=>discharge[i]>=cutoff);
+ // Legacy persisted depths are in elevation units, exported sediment in unit × km².
  const erosionDepth=Array.from(removed,x=>+x.toFixed(5));
  const deposition=Array.from(deposited,x=>+x.toFixed(5));
  onProgress?.(1);
@@ -538,7 +545,7 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
   const c=cells[i],lat=clamp(center+(mesh.height*.5-c.y)/mesh.height*span,-90,90);
   latitudes[i]=+lat.toFixed(2);
   const at=Math.abs(lat)*Math.PI/180;
-  const altitude=water[i]?0:Math.max(0,heights[i]-coasts.seaLevel)*2.7;
+  const altitude=water[i]?0:Math.max(0,elevationToKm(heights[i],coasts.seaLevel));
   const oceanEffect=clamp(1-steps[i]/6,0,1)*maritime;
   const landSwing=clamp(2.5+Math.pow(Math.abs(lat)/90,1.3)*22+(water[i]?0:6*(1-oceanEffect*.65))*(.15+Math.abs(lat)/90),0,33);
   const swing=tilt/23.5*landSwing;
@@ -566,11 +573,11 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
    if(d<=1e-6)continue;
    const w=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);
    supply+=airMoisture[j]*w;weight+=w;
-   uphill+=Math.max(0,heights[i]-heights[j])*w;
+   uphill+=Math.max(0,elevationToKm(heights[i],heights[j]))*w;
   }
   const incoming=weight>0?supply/weight:.43;
   const rise=weight>0?uphill/weight:0;
-  const depletion=shadow*clamp(rise*1.9,0,.76);
+  const depletion=shadow*clamp(rise*(1.9/ELEVATION_KM_PER_UNIT),0,.76);
   airMoisture[i]=clamp(incoming*(.91-depletion)+.06,0,1.3);
  }
  onProgress?.(.60);
@@ -579,9 +586,9 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
   const c=cells[i],at=Math.abs(latitudes[i]),w=water[i];
   const tropics=1+.92*Math.exp(-(((at)/16)**2))-.67*Math.exp(-(((at-28)/14)**2))+.32*Math.exp(-(((at-55)/14)**2));
   let ascent=0,weight=0;
-  for(const j of c.neighbors){const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;if(d<=0)continue;const ww=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);ascent+=Math.max(0,heights[i]-heights[j])*ww;weight+=ww;}
+  for(const j of c.neighbors){const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;if(d<=0)continue;const ww=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);ascent+=Math.max(0,elevationToKm(heights[i],heights[j]))*ww;weight+=ww;}
   const rise=weight?ascent/weight:0;
-  const relative=clamp(tropics*(.18+airMoisture[i]*1.12)*(1+shadow*Math.min(1.3,rise*2.3))*(.85+.25*noise(c.x/300,c.y/300,seed+3)),.015,4.4);
+  const relative=clamp(tropics*(.18+airMoisture[i]*1.12)*(1+shadow*Math.min(1.3,rise*(2.3/ELEVATION_KM_PER_UNIT)))*(.85+.25*noise(c.x/300,c.y/300,seed+3)),.015,4.4);
   const mm=clamp(baseRain*relative,8,12000);
   precipitation[i]=+mm.toFixed(1);
   // Summer rainfall is mildly more concentrated over continental areas;
@@ -617,7 +624,7 @@ export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgres
  if(!n||coasts?.water?.length!==n||erosion?.elevations?.length!==n||climate?.precipitation?.length!==n||climate?.meanTemp?.length!==n||climate?.moisture?.length!==n)throw Error('Hydrology requires matching coast, erosion and climate layers');
  const sea=coasts.seaLevel,water=coasts.water,heights=erosion.elevations,areas=cells.map(cellArea);
  const scale=clamp(Number(settings.runoffScale),0.1,2.5),infiltration=clamp(Number(settings.infiltration),0,0.95),evaporation=clamp(Number(settings.evaporation),0,1.5);
- const riverThreshold=clamp(Number(settings.riverThreshold),2,120),lakeMinDepth=clamp(Number(settings.lakeDepth),.002,.3),minLakeCells=clamp(Math.round(Number(settings.minLakeCells)),1,15);
+ const riverThreshold=clamp(Number(settings.riverThreshold),2,120),lakeMinDepth=elevationToKm(clamp(Number(settings.lakeDepth),.002,.3)),minLakeCells=clamp(Math.round(Number(settings.minLakeCells)),1,15);
  const seed=Number(settings.seed)|0;
  const spill=new Float64Array(n),flowTo=new Array(n).fill(-1),seen=new Uint8Array(n),order=[],heap=new MinHeap();
  let coastalOutlets=0;
@@ -667,16 +674,17 @@ export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgres
  }
  const candidate=new Uint8Array(n),lakeId=new Array(n).fill(-1),lakeDepth=new Array(n).fill(0),lakeLevel=new Array(n).fill(null);
  for(let i=0;i<n;i++)if(!water[i]){
-  const depth=Math.max(0,spill[i]-heights[i]);
+  const depth=Math.max(0,elevationToKm(spill[i],heights[i]));
   // The moisture gate suppresses permanent lakes in the most arid basins.
   if(depth>=lakeMinDepth&&climate.moisture[i]>=.12&&localRunoff[i]>0)candidate[i]=1;
  }
+ // Persist spill elevations, lake levels and depths in legacy elevation units.
  const lakes=[];
  for(let i=0;i<n;i++){
   if(!candidate[i]||lakeId[i]!==-1)continue;
   const group=[i];lakeId[i]=-2;
   for(let k=0;k<group.length;k++)for(const j of cells[group[k]].neighbors){
-   if(!candidate[j]||lakeId[j]!==-1||Math.abs(spill[group[k]]-spill[j])>.0002)continue;
+   if(!candidate[j]||lakeId[j]!==-1||Math.abs(elevationToKm(spill[group[k]],spill[j]))>elevationToKm(.0002))continue;
    lakeId[j]=-2;group.push(j);
   }
   if(group.length<minLakeCells){for(const j of group)lakeId[j]=-1;continue;}
@@ -721,10 +729,12 @@ export function generateSoils(mesh,plates,landforms,coasts,erosion,climate,hydro
   const continental=!!plates.plates[plates.owners[i]]?.continental;
   const volcanic=landforms.classes[i]===7;
   const polar=clamp((-temp+4)/20,0,1),dry=clamp((350-precip)/350,0,1),temperature=clamp((temp+8)/35,0,1);
-  const slope=clamp(c.neighbors.reduce((sum,j)=>sum+Math.abs(erosion.elevations[i]-erosion.elevations[j]),0)/Math.max(1,c.neighbors.length)*.95,0,1);
+  // Empirical relief index, not a physical gradient. Resolution independence
+  // requires a separate recalibration; preserve the existing index here.
+  const slope=clamp(c.neighbors.reduce((sum,j)=>sum+Math.abs(elevationToKm(erosion.elevations[i],erosion.elevations[j])),0)/Math.max(1,c.neighbors.length)*(.95/ELEVATION_KM_PER_UNIT),0,1);
   const proximity=clamp(Math.log1p(hydrology.catchmentArea[i])/Math.log1p(maxCatchment),0,1);
   const floodplain=clamp((1-slope)*(1-rough*.7)*(.33+proximity*.67),0,1);
-  const deposited=clamp(erosion.deposition[i]*9,0,1),stripped=clamp(erosion.erosionDepth[i]*5,0,1);
+  const deposited=clamp(elevationToKm(erosion.deposition[i])*(9/ELEVATION_KM_PER_UNIT),0,1),stripped=clamp(elevationToKm(erosion.erosionDepth[i])*(5/ELEVATION_KM_PER_UNIT),0,1);
   const mineral=clamp(.42+.22*(continental?1:0)+.2*(volcanic?1:0)+noise(c.x/300,c.y/300,seed+31)*.12,0,1);
   const wetWeathering=clamp(.2+.8*moist,0,1)*(.38+.62*temperature)*(1-polar*.75);
   const buildup=weathering*wetWeathering*(.45+.55*mineral)*(1-slope*.6);
@@ -803,7 +813,7 @@ export function generateBiomes(mesh,coasts,landforms,erosion,climate,hydrology,s
    const amplitude=Math.abs(warm-cold)/2,center=(warm+cold)/2;
    months=0;for(let month=0;month<12;month++)if(center+amplitude*Math.cos((month+.5)/12*Math.PI*2)>5)months++;
    const mountain=(landforms.classes[i]===6||landforms.classes[i]===5||landforms.ruggedness[i]>.35)
-      &&erosion.elevations[i]>coasts.seaLevel+.30;
+      &&elevationToKm(erosion.elevations[i],coasts.seaLevel)>elevationToKm(.30);
    const permanentlyCold=warm<2||t< -17;
    const isAlpine=mountain&&warm<alpineLimit;
    const bog=soils.groundwater[i]>=wetlandGate&&landforms.ruggedness[i]<.30
