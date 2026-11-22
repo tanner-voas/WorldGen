@@ -1,6 +1,7 @@
 // Startup is deliberately fail-closed: an unsuccessful read is not an empty
 // database. The caller must not start the normal editor until kind === 'ready'.
 import {IMPLEMENTED,newWorld,upgradeWorld} from './engine.js';
+import {PREFERENCES_KEY,applyStoredPreferences} from './persistence.js';
 
 export const WORKSPACE_KEY='workspace';
 const message=error=>error?.message||String(error);
@@ -56,7 +57,7 @@ export function createStartupStorage({read,commit}){
  async function finish(state,world,changes){
   try{
    if(changes.length)await commit(changes);
-   return {kind:'ready',world,snapshots:state.library.snapshots};
+   return {kind:'ready',world,snapshots:state.library.snapshots,needsWorldSave:!state.rawAvailable&&!changes.some(change=>change.key===WORKSPACE_KEY)};
   }catch(error){return {...state,errors:[...state.errors,`Storage changes could not be committed: ${message(error)}`]};}
  }
  return {
@@ -65,7 +66,11 @@ export function createStartupStorage({read,commit}){
    if(state.errors.length)return state;
    const world=state.world||newWorld(); // Only after confirmed absence.
    const changes=[...state.library.changes];
-   if(state.raw?.schema===1)changes.push(put(WORKSPACE_KEY,world));
+   if(state.raw?.schema===1)changes.push(put(WORKSPACE_KEY,world),{key:PREFERENCES_KEY,delete:true});
+   else if(state.rawAvailable){
+    // Preferences are optional, never authoritative for generated data.
+    try{applyStoredPreferences(world,await read(PREFERENCES_KEY));}catch{}
+   }
    return finish(state,world,changes);
   },
   async replace(choice){
@@ -79,7 +84,7 @@ export function createStartupStorage({read,commit}){
    catch(error){return {...state,errors:[...state.errors,`Recovery failed: ${message(error)}`]};}
    // The replacement and any legacy library migration are one transaction.
    // The editor is not opened until that transaction completes successfully.
-   return finish(state,world,[...state.library.changes,put(WORKSPACE_KEY,world)]);
+   return finish(state,world,[...state.library.changes,put(WORKSPACE_KEY,world),{key:PREFERENCES_KEY,delete:true}]);
   }
  };
 }

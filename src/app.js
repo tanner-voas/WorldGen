@@ -5,9 +5,11 @@ import {rasterize} from './raster.js';
 import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-material.js';
-import {WORKSPACE_KEY,createStartupStorage,readRecoveryCheckpoint} from './startup-storage.js';
+import {createStartupStorage,readRecoveryCheckpoint} from './startup-storage.js';
+import {createAutosave} from './persistence.js';
+import {commitCheckpoint} from './checkpoint-storage.js';
 
-const APP_VERSION='0.1.29',DB_NAME='worldgen-v1',KEY=WORKSPACE_KEY;
+const APP_VERSION='0.1.30',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -126,8 +128,8 @@ const palettes={
   natural:'Natural',vegetation:'Vegetation cover',habitats:'Habitat types',canopyCover:'Canopy cover',groundCover:'Ground vegetation',biomass:'Biomass index',habitatComplexity:'Habitat complexity',riparian:'Riparian influence',biomes:'Biomes',productivity:'Ecological productivity',treePotential:'Tree-cover potential',waterStress:'Drought stress',growingSeason:'Thermal growing season',ecotones:'Biome transitions',soils:'Soil types',soilDepth:'Soil depth',soilFertility:'Fertility potential',soilPermeability:'Permeability',soilGroundwater:'Groundwater potential',soilErosion:'Soil erosion risk',hydrology:'Rivers and lakes',catchment:'Upstream area',watersheds:'Drainage basins',geometry:'Cell geometry',plates:'Tectonic plates',height:'Elevation',coast:'Land / sea',landforms:'Landforms',erosion:'Erosion / deposition',flow:'Drainage flow',temperature:'Mean temperature',rain:'Annual precipitation',moisture:'Moisture index',seasonality:'Seasonal contrast',january:'January temperature',july:'July temperature'
 };
 let dbPromise=null,workspace=newWorld(),snapshots=[],view={scale:1,x:0,y:0},canvas,ctx,renderPending=false;
-let generating=false,dirty=false,storageHealthy=true,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,writeQueue=Promise.resolve(),selectedId=null,activeModal=null;
-let persistTimer=null,viewportTimer=null,progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
+let generating=false,dirty=false,storageWarned=false,requestId=0,worker=null,rebuildTimer=null,selectedId=null,activeModal=null;
+let progressPercent=0,cancelPending=null,borderCache={mesh:null,plates:null,coasts:null,plateLines:null,coastLines:null};
 let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false,renderDraft=null,renderOutputCanvas=null,renderController=null;
 // Path2D objects and polygon extents are cached across map pans and zooms.
 let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
@@ -166,41 +168,28 @@ async function storeGet(key){
   tx.onerror=tx.onabort=()=>reject(tx.error||Error(`Could not read ${key}`));
  });
 }
-async function commitStartupChanges(changes){
+async function commitStorageChanges(changes){
  const database=await db();return new Promise((resolve,reject)=>{
   const tx=database.transaction('data','readwrite'),store=tx.objectStore('data');
-  tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error||Error('Startup storage transaction failed'));
+  tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error||Error('Local storage transaction failed'));
   try{for(const change of changes){if(change.delete)store.delete(change.key);else store.put(change.value,change.key);}}
   catch(error){try{tx.abort();}catch{}reject(error);}
  });
 }
-async function storePut(key,value){const database=await db();return new Promise((resolve,reject)=>{const tx=database.transaction('data','readwrite');tx.objectStore('data').put(value,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
-function persist(){
+const autosave=createAutosave({getWorld:()=>workspace,commit:commitStorageChanges,onStatus(status,error){
  if(!startupReady)return;
- clearTimeout(persistTimer);
- persistTimer=setTimeout(()=>{persistTimer=null;void flushPersist();},260);
-}
-function flushPersist(){
- clearTimeout(persistTimer);persistTimer=null;
- if(!startupReady)return Promise.resolve();
- workspace.updated=new Date().toISOString();
- const copy=structuredClone(workspace);
- writeQueue=writeQueue.catch(()=>{}).then(()=>storePut(KEY,copy)).then(()=>{
-  storageHealthy=true;storageWarned=false;
- }).catch(e=>{
-  storageHealthy=false;showBusy(generating);
-  if(!storageWarned){storageWarned=true;notice(`Automatic saving unavailable: ${e.message}. Export your world as a backup.`,true);}
- });
- return writeQueue;
-}
-async function storeDelete(key){const database=await db();return new Promise((resolve,reject)=>{const tx=database.transaction('data','readwrite');tx.objectStore('data').delete(key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
-function saveSnapshotsIndex(){const copy=structuredClone(snapshots);writeQueue=writeQueue.catch(()=>{}).then(()=>storePut('checkpoint-index',copy));return writeQueue;}
+ showBusy(generating);
+ if(status==='saved')storageWarned=false;
+ if(status==='error'&&!storageWarned){storageWarned=true;notice(`Automatic saving unavailable: ${error?.message||error}. Export your world as a backup.`,true);}
+}});
+function persist(kind='world',delay=260){if(startupReady)autosave.mark(kind,delay);}
+function flushPersist(){return startupReady?autosave.flush():Promise.resolve(false);}
 function rememberViewport(){
- clearTimeout(viewportTimer);viewportTimer=setTimeout(()=>{
-  if(!canvas?.clientWidth||!canvas.clientHeight)return;
-  workspace.viewport={scale:view.scale,centerX:(canvas.clientWidth/2-view.x)/view.scale,centerY:(canvas.clientHeight/2-view.y)/view.scale};
-  persist();
- },650);
+ if(!canvas?.clientWidth||!canvas.clientHeight)return;
+ const next={scale:view.scale,centerX:(canvas.clientWidth/2-view.x)/view.scale,centerY:(canvas.clientHeight/2-view.y)/view.scale};
+ const previous=workspace.viewport;
+ if(previous&&previous.scale===next.scale&&previous.centerX===next.centerX&&previous.centerY===next.centerY)return;
+ workspace.viewport=next;persist('preferences',650);
 }
 function minimumZoom(){const g=mapDimensions();return Math.min(.07,Math.min((canvas?.clientWidth||375)/g.width,(canvas?.clientHeight||600)/g.height)*.2);}
 function restoreViewport(){
@@ -210,7 +199,6 @@ function restoreViewport(){
  view.y=canvas.clientHeight/2-v.centerY*view.scale;
  firstFit=false;schedulePaint();
 }
-function flushViewport(){if(viewportTimer){clearTimeout(viewportTimer);viewportTimer=null;if(canvas?.clientWidth&&canvas.clientHeight)workspace.viewport={scale:view.scale,centerX:(canvas.clientWidth/2-view.x)/view.scale,centerY:(canvas.clientHeight/2-view.y)/view.scale};}}
 function notice(message,error=false){let el=root.querySelector('#wg-toast');if(!el)return;el.textContent=message;el.classList.toggle('error',error);el.classList.add('visible');clearTimeout(notice.timer);notice.timer=setTimeout(()=>el.classList.remove('visible'),4000);}
 function stageText(stage){return STAGES[stage]?.[0]||'Unknown stage';}
 function currentStage(){return workspace.working.stage;}
@@ -219,7 +207,13 @@ function latestData(stage){return stageRecord(stage)?.data||null;}
 function viewStage(){return workspace.viewStage||1;}
 function effectiveStage(){const chosen=viewStage();return latestData(chosen)?chosen:Math.min(currentStage()-1,IMPLEMENTED);}
 function activeSettings(){return workspace.working.settings;}
-function showBusy(busy){generating=busy;const el=root.querySelector('#wg-status');if(el)el.innerHTML=busy?`<span class="wg-busy-dot"></span> Generating${progressPercent?' '+progressPercent+'%':'…'}`:dirty?'<span class="wg-busy-dot"></span> Preview pending':storageHealthy?'<span class="wg-saved-dot"></span> Cached locally':'<span class="wg-busy-dot"></span> Export backup';const lock=root.querySelector('[data-action="lock"]');if(lock)lock.disabled=busy||dirty||!workspace.working.data;}
+function showBusy(busy){
+ generating=busy;
+ const el=root.querySelector('#wg-status'),status=autosave.status;
+ const label=status==='error'?'Save failed · Export backup':busy?`Generating${progressPercent?' '+progressPercent+'%':'…'}`:status==='saving'?'Saving…':status==='pending'?'Save pending':dirty?'Preview pending':'Cached locally';
+ if(el)el.innerHTML=`<span class="${label==='Cached locally'?'wg-saved-dot':'wg-busy-dot'}"></span> ${label}`;
+ const lock=root.querySelector('[data-action="lock"]');if(lock)lock.disabled=busy||dirty||!workspace.working.data;
+}
 
 function buildShell(){
  root.innerHTML=`<div id="worldgen-root" class="wg-shell">
@@ -243,7 +237,7 @@ function buildShell(){
    </main>
    <section class="wg-console" aria-label="World generation stages">
     <button class="wg-console-handle" data-action="toggle-explore" aria-label="Expand map or show settings"><span></span></button>
-    <div class="wg-progress-row"><div class="wg-stage-heading"><span class="wg-section-caption">GENERATION PIPELINE</span><span id="wg-status"><span class="wg-saved-dot"></span> Cached locally</span></div><div class="wg-stage-scroll" id="wg-stage-scroll"></div></div>
+    <div class="wg-progress-row"><div class="wg-stage-heading"><span class="wg-section-caption">GENERATION PIPELINE</span><span id="wg-status" role="status"><span class="wg-busy-dot"></span> Loading…</span></div><div class="wg-stage-scroll" id="wg-stage-scroll"></div></div>
     <div class="wg-stage-main" id="wg-stage-main"></div>
    </section>
    <div class="wg-modal-host" id="wg-modal-host"></div><div id="wg-toast" class="wg-toast" role="status" aria-live="polite"></div>
@@ -387,8 +381,9 @@ async function generateCurrent(){
   if(workspace.viewStage===stage||!latestData(workspace.viewStage))workspace.viewStage=stage;
   selectedId=null;resetBorderCache();
   if(stage===1)requestAnimationFrame(fitMap);
-  await flushPersist();
-  showBusy(false);rebuildUI();notice(`${stageText(stage)} generated`);
+  persist();const saved=await flushPersist();
+  if(id!==requestId)return;
+  showBusy(false);rebuildUI();if(saved)notice(`${stageText(stage)} generated`);
  }catch(error){if(id!==requestId)return;showBusy(false);rebuildUI();notice(`Generation failed: ${error.message}`,true);}
  finally{if(id===requestId)stopWorker();}
 }
@@ -1087,14 +1082,12 @@ async function saveCheckpoint(){
  try{world=worldThroughStage(stage);}catch(error){notice(error.message,true);return;}
  const proposed=prompt('Checkpoint name',`${workspace.name} — through layer ${stage}`);if(proposed===null)return;
  const name=proposed.trim().slice(0,100)||`${workspace.name} — through layer ${stage}`;
- const snap={id:`save-${Date.now()}-${Math.round(Math.random()*10000)}`,name,created:new Date().toISOString(),stage};
+ const snap={id:`save-${globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`}`,name,created:new Date().toISOString(),stage};
  try{
-  // Write the full world first; the small index is committed only after it exists.
-  await storePut(`checkpoint:${snap.id}`,world);
-  snapshots.unshift(snap);
-  await saveSnapshotsIndex();
+  snapshots=await commitCheckpoint(await db(),{kind:'save',metadata:snap,world});
+  if(root.querySelector('.wg-snapshot-list'))showLibrary();
   notice(`Layer ${stage} checkpoint saved: ${name}`);
- }catch(error){snapshots=snapshots.filter(s=>s.id!==snap.id);notice(`Checkpoint could not be saved: ${error.message}`,true);}
+ }catch(error){notice(`Checkpoint could not be saved: ${error.message}`,true);}
 }
 function openModal(title,html,extraClass=''){root.querySelector('#wg-modal-host').innerHTML=`<div class="wg-modal-backdrop"><section class="wg-modal ${extraClass}" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}"><div class="wg-modal-heading"><h2>${escapeHTML(title)}</h2><button class="wg-icon-button" data-action="close-modal" aria-label="Close">×</button></div>${html}</section></div>`;activeModal=true;}
 function modal(html){openModal('World library',html);}
@@ -1162,7 +1155,7 @@ function changeWorld(world){if(!startupReady)return;requestId++;stopWorker();cle
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());upgradeWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
  switch(action){
-  case 'home':{flushViewport();await flushPersist();if(host?.returnToLauncher)host.returnToLauncher();else showLibrary();break;}
+  case 'home':{if(host?.returnToLauncher){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))host.returnToLauncher();}else showLibrary();break;}
   case 'save':await saveCheckpoint();break;
   case 'library':showLibrary();break;
   case 'render':showElevation3D();break;
@@ -1171,9 +1164,9 @@ async function handleAction(action,button){
   case 'fit':fitMap();break;
   case 'locate-cell':locateCell();break;
   case 'measure':measureMode=!measureMode;measurePoints=[];selectedId=null;updateInspector();updateMeasurement();schedulePaint();break;
-  case 'toggle-explore':{const center=canvas?screenToWorld(canvas.clientWidth/2,canvas.clientHeight/2):null;workspace.exploreMode=!workspace.exploreMode;rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(center){view.x=canvas.clientWidth/2-center.x*view.scale;view.y=canvas.clientHeight/2-center.y*view.scale;}rememberViewport();schedulePaint();});persist();break;}
+  case 'toggle-explore':{const center=canvas?screenToWorld(canvas.clientWidth/2,canvas.clientHeight/2):null;workspace.exploreMode=!workspace.exploreMode;rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(center){view.x=canvas.clientWidth/2-center.x*view.scale;view.y=canvas.clientHeight/2-center.y*view.scale;}rememberViewport();schedulePaint();});persist('preferences');break;}
   case 'toggle-overlays':{const panel=root.querySelector('#wg-overlays'),open=panel.hidden;panel.hidden=!open;root.querySelector('[data-action="toggle-overlays"]').setAttribute('aria-expanded',String(open));break;}
-  case 'prev-stage':case 'next-stage':{const shift=action==='prev-stage'?-1:1,target=workspace.viewStage+shift;if(target>=1&&target<=IMPLEMENTED&&latestData(target)){workspace.viewStage=target;selectedId=null;persist();rebuildUI();}break;}
+  case 'prev-stage':case 'next-stage':{const shift=action==='prev-stage'?-1:1,target=workspace.viewStage+shift;if(target>=1&&target<=IMPLEMENTED&&latestData(target)){workspace.viewStage=target;selectedId=null;persist('preferences');rebuildUI();}break;}
   case 'screenshot':screenshot();break;
   case 'render-current-view':await renderCurrentView();break;
   case 'render-generate':await runRenderGeneration();break;
@@ -1230,12 +1223,12 @@ async function handleAction(action,button){
   case 'import':root.querySelector('#wg-import').click();break;
   case 'new-world':if(confirm('Create a new world? Your current working world will be replaced. Save a checkpoint or export it first if needed.'))changeWorld(newWorld());break;
   case 'restore':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved&&confirm(`Open checkpoint '${saved.name}'? This replaces your current working world.`)){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(!savedWorld){notice('Checkpoint data unavailable',true);break;}changeWorld(savedWorld);notice('Checkpoint restored');}break;}
-  case 'delete':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved&&confirm(`Delete checkpoint '${saved.name}'?`)){snapshots=snapshots.filter(s=>s.id!==saved.id);await saveSnapshotsIndex();await storeDelete(`checkpoint:${saved.id}`);showLibrary();}break;}
+  case 'delete':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved&&confirm(`Delete checkpoint '${saved.name}'?`)){snapshots=await commitCheckpoint(await db(),{kind:'delete',id:saved.id});if(root.querySelector('.wg-snapshot-list'))showLibrary();notice('Checkpoint deleted');}break;}
  }
 }
 function bindEvents(){
  root.addEventListener('click',event=>{
-  const stageBtn=event.target.closest('[data-stage]');if(stageBtn&&!stageBtn.disabled){workspace.viewStage=Number(stageBtn.dataset.stage);selectedId=null;void persist();rebuildUI();return;}
+  const stageBtn=event.target.closest('[data-stage]');if(stageBtn&&!stageBtn.disabled){workspace.viewStage=Number(stageBtn.dataset.stage);selectedId=null;persist('preferences');rebuildUI();return;}
   const info=event.target.closest('[data-info]');if(info){event.preventDefault();showParameterHelp(info.dataset.info);return;}
   const adjust=event.target.closest('[data-adjust]');if(adjust){event.preventDefault();adjustParameter(adjust.dataset.adjust,Number(adjust.dataset.direction));return;}
   const actionBtn=event.target.closest('[data-action]');if(actionBtn){event.preventDefault();void handleAction(actionBtn.dataset.action,actionBtn).catch(e=>notice(e.message,true));}
@@ -1259,11 +1252,11 @@ function bindEvents(){
   const el=event.target;
   if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,el.value,true);return;}
   if(el.dataset?.setting){applyParameter(el.dataset.setting,el.value,true);return;}
-  if(el.id==='wg-edges'){workspace.showEdges=el.checked;void persist();schedulePaint();}
-  if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;void persist();schedulePaint();}
-  if(el.id==='wg-coast-borders'){workspace.showCoastBorders=el.checked;void persist();schedulePaint();}
-  if(el.id==='wg-flow'){workspace.showFlow=el.checked;void persist();schedulePaint();}
-  if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;void persist();updateLegend();schedulePaint();}
+  if(el.id==='wg-edges'){workspace.showEdges=el.checked;persist('preferences');schedulePaint();}
+  if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;persist('preferences');schedulePaint();}
+  if(el.id==='wg-coast-borders'){workspace.showCoastBorders=el.checked;persist('preferences');schedulePaint();}
+  if(el.id==='wg-flow'){workspace.showFlow=el.checked;persist('preferences');schedulePaint();}
+  if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;persist('preferences');updateLegend();schedulePaint();}
   if(el.id==='wg-seed'){
    const value=el.value.trim(),seed=Number(value);
    if(!value||!Number.isSafeInteger(seed)||seed<0||seed>0xffffffff){
@@ -1288,19 +1281,20 @@ function bindEvents(){
  canvas.addEventListener('dblclick',event=>{const p=canvasPoint(event);zoomBy(1.5,p.x,p.y);});
  addEventListener('resize',resizeCanvas);
  if('ResizeObserver' in globalThis)new ResizeObserver(resizeCanvas).observe(canvas);
- document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushViewport();void flushPersist();}});
+ document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')void flushPersist();});
+ addEventListener('pagehide',()=>void flushPersist());
 }
-const startupStorage=createStartupStorage({read:storeGet,commit:commitStartupChanges});
+const startupStorage=createStartupStorage({read:storeGet,commit:commitStorageChanges});
 function openReadyWorld(result){
- workspace=result.world;snapshots=result.snapshots;storageHealthy=true;storageWarned=false;
+ workspace=result.world;snapshots=result.snapshots;storageWarned=false;
  dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));
  firstFit=!(workspace.viewport&&Number.isFinite(workspace.viewport.scale)&&Number.isFinite(workspace.viewport.centerX)&&Number.isFinite(workspace.viewport.centerY));
  workspace.viewStage=clamp(Math.round(Number(workspace.viewStage)||1),1,Math.min(IMPLEMENTED,workspace.working.stage));
- startupReady=true;buildShell();
+ startupReady=true;if(result.needsWorldSave)persist();buildShell();
  if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(100);
 }
 function showStartupRecovery(state){
- startupReady=false;storageHealthy=false;
+ startupReady=false;
  console.warn('WorldGen startup storage:',state.errors.join('; '));
  const entries=state.library?.snapshots||[];
  root.innerHTML=`<div id="worldgen-root" class="wg-recovery-shell"><main class="wg-recovery" aria-labelledby="wg-recovery-title">

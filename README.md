@@ -1,4 +1,4 @@
-# WorldGen v0.1.29
+# WorldGen v0.1.30
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -221,3 +221,7 @@ GPU screenshots remain unverified here; real iPhone Safari validation is needed.
 ## v0.1.29 — Safe startup and recovery
 
 WorldGen now pauses generation and automatic saving when the stored world or checkpoint library cannot be safely loaded. Retry, export the original record or a checkpoint, or explicitly restore a checkpoint/start a replacement world from the recovery screen. Replacement is enabled only after storage can be read and its transaction commits; the existing world is not automatically overwritten on a failed load. See `RELEASE_v0.1.29.md`.
+
+## v0.1.30 — Persistence optimization
+
+Interface-only changes (viewport, display mode, overlays, history selection and expanded-map mode) now use a small separate preferences record rather than rewriting the working world's generated data. Preferences are tied to the saved world's revision; full world saves and recovery replacements clear the prior record atomically. Checkpoint creation/deletion updates checkpoint data and the library index in a single read/write transaction. Automatic saving coalesces changes, skips idle writes, retains failed changes for retry, and reports pending/saving/error states rather than claiming an unfinished write is cached. JSON saves and checkpoints remain self-contained and use the existing schema. See `RELEASE_v0.1.30.md`.
