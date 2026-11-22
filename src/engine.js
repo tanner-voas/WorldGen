@@ -27,11 +27,11 @@ export function stageUsesSeed(stage){return Number.isInteger(stage)&&stage>=2&&s
 export const SOIL_NAMES=['Open water','Exposed rock','Thin upland','Coarse / sandy','Loam','Clay-rich','Organic wetland','Volcanic','Arid mineral','Cold / tundra'];
 export const BIOME_NAMES=['Ocean','Freshwater lake','Permanent snow / ice','Tundra','Boreal forest','Temperate rainforest','Temperate forest','Temperate grassland','Dry steppe','Desert / barren','Dry shrubland','Tropical rainforest','Tropical seasonal forest','Savanna','Alpine','Wetland','Montane forest'];
 export const VEGETATION_NAMES=['Ocean','Freshwater','Bare / ice','Sparse tundra','Grassland','Shrubland','Open woodland','Closed forest','Wet forest','Wetland vegetation','Riparian corridor','Alpine meadow','Desert scrub'];
-export const MAX_CELLS=5000;
+export const MAX_CELLS=20000;
 export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland plain','Hills','Highlands','Mountains','Volcanic terrain','Basin'];
 export const DEFAULTS={
   1:{shape:'rectangle',width:2048,height:1024,radius:750,radiusX:1100,radiusY:600},
-  2:{averageArea:2300,distribution:'jittered',jitter:0.74,relaxation:1,seed:271828},
+  2:{averageArea:2300,distribution:'random',jitter:0.74,relaxation:1,seed:271828},
   3:{plates:15,continental:0.42,motion:0.7,seed:314159},
   4:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
   5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,setbackStrength:1.15,setbackWidth:10,seed:141421},
@@ -108,7 +108,7 @@ function initialSites(settings,geometry){
  const {width,height}=geometry,coverage=geometry.areaKm2/(width*height);
  const columns=Math.max(1,Math.round(Math.sqrt(n*width/height/coverage))),rows=Math.ceil(n/columns/coverage);
  const stepX=width/columns,stepY=height/rows;
- const jitter=clamp(Number(settings.jitter),0,1.7);
+ const jitter=settings.distribution==='jittered'?clamp(Number(settings.jitter),0,1.7):0.74;
  if(settings.distribution!=='random'){
   const candidates=[];
   for(let row=0;row<rows;row++)for(let col=0;col<columns;col++){
@@ -188,7 +188,7 @@ function cellPolygons(sites,geometry,onProgress=null){
  return {polygons:result,neighbors:adj};
 }
 export function generateMesh(settings,onProgress=null,geometry=generateGeometry(DEFAULTS[1])){let sites=initialSites(settings,geometry),geo;
- const passes=clamp(Math.round(settings.relaxation),0,3);
+ const passes=clamp(Math.round(settings.relaxation),0,8);
  for(let t=0;t<=passes;t++){
   geo=cellPolygons(sites,geometry,onProgress?fraction=>onProgress((t+fraction)/(passes+1)):null);
   if(t===passes)break;
@@ -1139,7 +1139,7 @@ export function validateWorld(world){
 }
 const INPUT_RANGES={
  1:{width:[50,20000],height:[50,20000],radius:[50,20000],radiusX:[50,20000],radiusY:[50,20000]},
- 2:{jitter:[0,1.7],relaxation:[0,3]},
+ 2:{jitter:[0,1.7],relaxation:[0,8]},
  3:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
  4:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
  5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5],setbackStrength:[0,1.8],setbackWidth:[2,18]},

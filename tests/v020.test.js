@@ -39,7 +39,7 @@ test('drawer can be dragged and resized without disabling map exploration',()=>{
 });
 
 test('unavailable overlays and palettes are removed, not disabled',()=>{
- assert.match(app,/availablePalettes=shown>=2\?Object\.entries\(palettes\)\.filter/);
+ assert.match(app,/availablePalettes=shown>2\?Object\.entries\(palettes\)\.filter/);
  assert.match(app,/displayBar\.hidden=shown<2/);
  for(const stage of [2,3,5,7])assert.match(app,new RegExp(`data-overlay-stage="${stage}"`));
  assert.match(app,/label\.hidden=Number\(label\.dataset\.overlayStage\)>shown/);

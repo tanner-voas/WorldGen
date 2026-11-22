@@ -1,4 +1,4 @@
-# WorldGen v0.2.0
+# WorldGen v0.2.1
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -10,7 +10,7 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 ## Generation stages
 
 1. **World geometry (new)** — choose rectangle (width and height in km), circle (radius in km), or ellipse (horizontal and vertical radius in km). All worlds are planar; no depth is generated. Bounds for each linear dimension/radius: 50–20,000 km. The selected shape becomes part of each checkpoint and drives geometry clipping and the map's physical units.
-2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–5,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
+2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–20,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
 3. **Tectonic plates** — plate territories, crust type and motion.
 4. **Elevation** — terrain noise, tectonic uplift and relief.
 5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. The original *edge ocean bias* keeps the outermost ring of polygons underwater with its narrow 63 km default taper (capped at 12% of the shorter world dimension). An independent *continental setback* (default strength 1.15, default width 420 km; capped to 16% of the shorter world dimension) gently depresses a much broader band, discouraging continents from following the world outline. Both effects fade smoothly, the interior elevation layer stays unchanged, and sea level is recalculated to preserve the desired land-area percentage. Border-touching polygons remain water while edge ocean bias is enabled. Existing locked heights and older saved coastlines remain unchanged.
@@ -293,6 +293,10 @@ The mesh worker skips retired uniform index buffers and transfers compact horizo
 ## v0.1.45 — Full stabilization
 
 Strengthened saved-world validation and interface-state recovery; kept invalid checkpoint replacement from cancelling the current generation; handled worker message failures, graphics-context interruption and lost pointer capture. The final regression pass covers complete worlds, historical checkpoints, and all supported 3D stages. No generation or visual-profile changes. See `RELEASE_v0.1.45.md`.
+
+## v0.2.1 — Compact map workflow and expanded Voronoi settings
+
+The map now shows a single layer-dropdown / Lock–Unlock / Settings toolbar only while the settings sheet is collapsed. With the sheet open, the pipeline chip selector and stage-header Lock–Unlock take over; dragging the handle fully down collapses the sheet. The map scale stays visible. Stage 2 now starts with blue-noise random placement, shows jitter only for evenly jittered placement, allows up to 20,000 Voronoi cells and 8 Lloyd passes, hides the redundant display-mode picker, and preserves the Voronoi mesh overlay. The map legend is removed. See `RELEASE_v0.2.1.md`.
 
 ## v0.2.0 — Mobile settings layout and manual layer workflow
 

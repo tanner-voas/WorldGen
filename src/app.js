@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.0',DB_NAME='worldgen-v1';
+const APP_VERSION='0.2.1',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -37,7 +37,7 @@ const OPTIONS={
   ['averageArea','Average cell area (km²)','area',0,0,1,'percent'],
   ['distribution','Placement','select',[['jittered','Even / jittered'],['random','Blue-noise random'],['clustered','Clustered']]],
   ['jitter','Position jitter','range',0,1.7,0.05,'linear'],
-  ['relaxation','Lloyd relaxation','range',0,3,1,'linear']
+  ['relaxation','Lloyd relaxation','range',0,8,1,'linear']
  ],
  3:[['plates','Plates','range',3,50,1,'linear'],['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear']],
  4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation (m)','range',0.05,0.8,0.025,'linear']],
@@ -57,7 +57,7 @@ const PARAM_HELP={
  radius:['Circle radius','Distance in kilometers from the world center to its edge. Increasing radius increases both width and height; doubling it quadruples area.'],
  radiusX:['Horizontal radius','The east-to-west center-to-edge radius of an ellipse in kilometers. Increasing it widens the world and increases area proportionally.'],
  radiusY:['Vertical radius','The north-to-south center-to-edge radius of an ellipse in kilometers. Increasing it makes the world taller and increases area proportionally.'],
- averageArea:['Average Voronoi cell area','The target mean geographic area of a polygon, in square kilometers (km²). Lower values create MORE polygons and finer simulation resolution; higher values create FEWER, larger cells and render faster. The slider is logarithmic for precision across small and large worlds. Count is limited to 100–5,000 cells for mobile performance.'],
+ averageArea:['Average Voronoi cell area','The target mean geographic area of a polygon, in square kilometers (km²). Lower values create MORE polygons and finer simulation resolution; higher values create FEWER, larger cells and render faster. The slider is logarithmic for precision across small and large worlds. Count is limited to 100–20,000 cells. Larger worlds take more memory and longer to regenerate and render on phones.'],
  distribution:['Site distribution','Even / jittered places sites in a loose grid; random spreads them out with a minimum separation; clustered creates uneven concentrations. Select a pattern to change cell uniformity.'],
  jitter:['Position jitter','How far Voronoi sites shift away from the evenly spaced starting grid. Higher values make cell shapes and sizes less regular; lower values give a more uniform tessellation.'],
  relaxation:['Lloyd relaxation','Number of times sites move toward their polygon centers. Higher values make cells rounder and more even, but take longer to generate. Zero keeps the initial irregular shapes.'],
@@ -210,8 +210,9 @@ function showBusy(busy){
  const el=root.querySelector('#wg-status'),status=autosave.status;
  const label=status==='error'?'Save failed · Export backup':busy?`Generating${progressPercent?' '+progressPercent+'%':'…'}`:status==='saving'?'Saving…':status==='pending'?'Save pending':dirty?'Preview pending':'Cached locally';
  if(el)el.innerHTML=`<span class="${label==='Cached locally'?'wg-saved-dot':'wg-busy-dot'}"></span> ${label}`;
- const lock=root.querySelector('[data-action="lock-or-unlock"]');
- if(lock&&viewStage()===currentStage())lock.disabled=busy||dirty||!workspace.working.data;
+ for(const lock of root.querySelectorAll('[data-action="lock-or-unlock"]')){
+  if(viewStage()===currentStage())lock.disabled=busy||dirty||!workspace.working.data;
+ }
 }
 
 // The generation drawer and map share one resizable boundary. Store a ratio
@@ -229,7 +230,7 @@ function applyConsoleHeight(){
  const ratio=Number.isFinite(workspace.consoleHeightRatio)?workspace.consoleHeightRatio:.36;
  const height=clamp(viewport*ratio,minimum,maximum);
  shell.style.setProperty('--wg-console-height',`${Math.round(height)}px`);
- shell.classList.toggle('wg-map-compact',!workspace.exploreMode&&viewport-(root.querySelector('.wg-header')?.getBoundingClientRect().height||70)-height<350);
+ shell.classList.toggle('wg-map-compact',!workspace.exploreMode&&viewport-(root.querySelector('.wg-header')?.getBoundingClientRect().height||70)-height<290);
 }
 function bindDrawerDrag(){
  const handle=root.querySelector('.wg-console-handle');
@@ -245,7 +246,10 @@ function bindDrawerDrag(){
   if(Math.abs(delta)>5)drawerDrag.moved=true;
   if(!drawerDrag.moved)return;
   const {viewport,minimum,maximum}=consoleBounds();
-  const height=clamp(drawerDrag.startHeight+delta,minimum,maximum);
+  const rawHeight=drawerDrag.startHeight+delta;
+  drawerDrag.closeOnRelease=rawHeight<minimum*.72;
+  handle.classList.toggle('wg-dismiss-ready',drawerDrag.closeOnRelease);
+  const height=clamp(rawHeight,minimum,maximum);
   const center=screenToWorld(canvas.clientWidth/2,canvas.clientHeight/2);
   workspace.consoleHeightRatio=height/viewport;
   applyConsoleHeight();
@@ -255,9 +259,14 @@ function bindDrawerDrag(){
  });
  const finish=event=>{
   if(!drawerDrag||drawerDrag.id!==event.pointerId)return;
-  const moved=drawerDrag.moved;drawerDrag=null;
+  const moved=drawerDrag.moved,close=drawerDrag.closeOnRelease;drawerDrag=null;
+  handle.classList.remove('wg-dismiss-ready');
   if(handle.hasPointerCapture(event.pointerId))handle.releasePointerCapture(event.pointerId);
-  if(moved){suppressHandleClick=true;setTimeout(()=>{suppressHandleClick=false;},0);persist('preferences');rememberViewport();}
+  if(moved){
+   suppressHandleClick=true;setTimeout(()=>{suppressHandleClick=false;},0);
+   if(close){workspace.exploreMode=true;applyConsoleHeight();resizeCanvas();rebuildUI();}
+   persist('preferences');rememberViewport();
+  }
  };
  handle.addEventListener('pointerup',finish);
  handle.addEventListener('pointercancel',finish);
@@ -277,11 +286,10 @@ function buildShell(){
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
     <div class="wg-map-buttons"><button data-action="fit" aria-label="Fit world to view" title="Fit entire world">⤢</button><button data-action="zoom-in" aria-label="Zoom in">+</button><button data-action="zoom-out" aria-label="Zoom out">−</button><button data-action="locate-cell" aria-label="Go to cell number" title="Go to cell number">⌖</button><button data-action="measure" aria-label="Measure distance" aria-pressed="false" title="Measure two-point distance">↔</button></div>
     <div class="wg-display-bar"><label for="wg-palette" class="wg-screen-reader-only">Map display</label><select id="wg-palette" aria-label="Map display mode"></select><button class="wg-overlay-trigger" data-action="toggle-overlays" aria-expanded="false">Overlays</button></div>
-    <div class="wg-overlays" id="wg-overlays" hidden><label data-overlay-stage="2"><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label data-overlay-stage="3"><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label data-overlay-stage="5"><input id="wg-coast-borders" type="checkbox"> Coastlines</label><label data-overlay-stage="7"><input id="wg-flow" type="checkbox"> Drainage / rivers</label><details class="wg-legend-details"><summary>Map legend</summary><div id="wg-legend" class="wg-legend"></div></details></div>
+    <div class="wg-overlays" id="wg-overlays" hidden><label data-overlay-stage="2"><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label data-overlay-stage="3"><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label data-overlay-stage="5"><input id="wg-coast-borders" type="checkbox"> Coastlines</label><label data-overlay-stage="7"><input id="wg-flow" type="checkbox"> Drainage / rivers</label></div>
     <div class="wg-map-scale" id="wg-map-scale">World width: 2,048 km</div>
     <div class="wg-measure-readout" id="wg-measure-readout" aria-live="polite" hidden></div>
-    <div class="wg-map-nav"><button data-action="prev-stage" aria-label="Previous completed stage">‹</button><span id="wg-map-layer">Layer 01</span><button data-action="next-stage" aria-label="Next completed stage">›</button></div>
-    <div class="wg-map-action-dock"><button class="wg-layer-toggle" data-action="lock-or-unlock" aria-label="Lock current generation layer">Lock layer 1 →</button><button class="wg-explore-toggle" data-action="toggle-explore" aria-label="Toggle generation controls">Expand map</button></div>
+    <div class="wg-map-bottom-tools" aria-label="Map layer controls"><label for="wg-map-layer-select" class="wg-screen-reader-only">Layer</label><select id="wg-map-layer-select" aria-label="Select generation layer"></select><button class="wg-layer-toggle" data-action="lock-or-unlock" aria-label="Lock current generation layer">Lock</button><button class="wg-explore-toggle" data-action="toggle-explore" aria-label="Open generation settings">Settings</button></div>
     <div class="wg-inspector" id="wg-inspector" hidden></div>
    </main>
    <section class="wg-console" aria-label="World generation stages">
@@ -306,10 +314,10 @@ function rebuildUI(){
  rail.querySelector('.current')?.scrollIntoView?.({block:'nearest',inline:'nearest'});
  const row=stageRecord(stage),available=stage<=IMPLEMENTED,editable=stage===active&&active<=IMPLEMENTED;
  const settings=editable?activeSettings():row?.settings;
- let html=`<div class="wg-stage-title"><div><span class="wg-layer-label">LAYER ${String(stage).padStart(2,'0')} ${editable?'· WORKING':stage<=workspace.locked.length?'· LOCKED':'· NOT AVAILABLE'}</span><h2>${escapeHTML(stageText(stage))}</h2><p>${escapeHTML(STAGES[stage]?.[1]||'')}</p></div></div>`;
+ let html=`<div class="wg-stage-title"><div><span class="wg-layer-label">LAYER ${String(stage).padStart(2,'0')} ${editable?'· WORKING':stage<=workspace.locked.length?'· LOCKED':'· NOT AVAILABLE'}</span><h2>${escapeHTML(stageText(stage))}</h2><p>${escapeHTML(STAGES[stage]?.[1]||'')}</p></div><button class="wg-panel-lock wg-layer-toggle" data-action="lock-or-unlock" aria-label="Lock or unlock this layer" ${!available||(!editable&&stage>workspace.locked.length)?'hidden':''}>Lock</button></div>`;
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
-  html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0])))).map(settingRow).join('')}${!stageUsesSeed(stage)?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button class="wg-info" data-info="seed" aria-label="About random seed">i</button><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button data-action="reroll" title="New seed">↻ Reroll</button></div>`}</div>`;
+  html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>(stage!==2||option[0]!=='jitter'||settings.distribution==='jittered')&&(stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0]))))).map(settingRow).join('')}${!stageUsesSeed(stage)?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button type="button" class="wg-info" data-info="seed" aria-label="About random seed">i</button><div class="wg-seed-input"><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button type="button" data-action="reroll" aria-label="Reroll random seed" title="Reroll random seed">↻</button></div></div>`}</div>`;
   if(stage===1||stage===2||stage===5)html+='<div id="wg-constraints" hidden></div>';
   if(stage===4)html+='<p class="wg-hint">Physical height uses 2,700 m per saved elevation unit. Until layer 5 establishes sea level, heights refer to a provisional zero datum.</p>';
   if(stage===5)html+='<p class="wg-hint">Coastlines are deterministic for the same locked elevation and coastline settings. Change the parameters above to reshape them; this layer has no independent random seed.</p>';
@@ -329,9 +337,10 @@ function rebuildUI(){
  const shown=effectiveStage(),palette=root.querySelector('#wg-palette');
  // Build the actual available options. Disabled options remain visible in the
  // native iOS picker, making early generation layers needlessly confusing.
- const availablePalettes=shown>=2?Object.entries(palettes).filter(([id])=>paletteStages[id]<=shown):[];
+ const availablePalettes=shown>2?Object.entries(palettes).filter(([id])=>paletteStages[id]<=shown):[];
  palette.innerHTML=availablePalettes.map(([id,name])=>`<option value="${id}">${escapeHTML(name)}</option>`).join('');
  if(availablePalettes.length)palette.value=workspace.viewMode!=='auto'&&paletteStages[workspace.viewMode]<=shown?workspace.viewMode:'natural';
+ palette.hidden=shown<=2;
  const displayBar=root.querySelector('.wg-display-bar'),overlayTrigger=root.querySelector('[data-action="toggle-overlays"]'),overlays=root.querySelector('#wg-overlays');
  displayBar.hidden=shown<2;
  root.querySelectorAll('[data-overlay-stage]').forEach(label=>{label.hidden=Number(label.dataset.overlayStage)>shown;});
@@ -341,18 +350,20 @@ function rebuildUI(){
  root.querySelector('#wg-coast-borders').checked=!!workspace.showCoastBorders;
  root.querySelector('#wg-flow').checked=!!workspace.showFlow;
  root.querySelector('#worldgen-root').classList.toggle('wg-explore',!!workspace.exploreMode);
- root.querySelector('.wg-explore-toggle').textContent=workspace.exploreMode?'Show settings':'Expand map';
- const layerToggle=root.querySelector('[data-action="lock-or-unlock"]'),isLocked=stage<=workspace.locked.length;
- layerToggle.hidden=!available||(!editable&&!isLocked);
- layerToggle.textContent=isLocked?`Unlock layer ${stage}`:`Lock layer ${stage} →`;
- layerToggle.setAttribute('aria-label',isLocked?`Unlock layer ${stage}`:`Lock layer ${stage}`);
- layerToggle.disabled=unlocking||(editable&&(generating||dirty||!workspace.working.data));
- layerToggle.classList.toggle('wg-unlock',isLocked);
+ const isLocked=stage<=workspace.locked.length;
+ for(const layerToggle of root.querySelectorAll('[data-action="lock-or-unlock"]')){
+  layerToggle.hidden=!available||(!editable&&!isLocked);
+  const inPanel=layerToggle.classList.contains('wg-panel-lock');
+  layerToggle.textContent=inPanel?(isLocked?'Unlock layer':'Lock layer →'):(isLocked?'Unlock':'Lock');
+  layerToggle.setAttribute('aria-label',isLocked?`Unlock layer ${stage}`:`Lock layer ${stage}`);
+  layerToggle.disabled=unlocking||(editable&&(generating||dirty||!workspace.working.data));
+  layerToggle.classList.toggle('wg-unlock',isLocked);
+ }
+ const stageSelect=root.querySelector('#wg-map-layer-select');
+ stageSelect.innerHTML=Array.from({length:Math.min(currentStage(),IMPLEMENTED)},(_,i)=>i+1).filter(n=>latestData(n)||n===currentStage()).map(n=>`<option value="${n}">${String(n).padStart(2,'0')} · ${escapeHTML(stageText(n))}</option>`).join('');
+ stageSelect.value=String(stage);
  applyConsoleHeight();
- root.querySelector('#wg-map-layer').textContent=shown===stage?`${String(stage).padStart(2,'0')} · ${stageText(stage)}`:shown>0?`${String(shown).padStart(2,'0')} · ${stageText(shown)} (last ready)`:'Generating first map…';
- root.querySelector('[data-action="prev-stage"]').disabled=stage<=1;
- root.querySelector('[data-action="next-stage"]').disabled=stage>=Math.min(IMPLEMENTED,currentStage())||!latestData(stage+1);
- updateLegend();updateMeasurement();showBusy(generating);updateInspector();schedulePaint();
+ updateMeasurement();showBusy(generating);updateInspector();schedulePaint();
 }
 function updateConstraintReport(){
  const el=root.querySelector('#wg-constraints');if(!el)return;
@@ -642,43 +653,6 @@ function resolvedDisplayMode(stage){
  if(requested!=='natural'&&paletteStages[requested]<=stage)return requested;
  return defaultPalettes[stage]||'geometry';
 }
-function updateLegend(){
- const actual=resolvedDisplayMode(effectiveStage());
- const el=root.querySelector('#wg-legend');if(!el)return;
- if(actual==='vegetation')el.innerHTML='<strong>Vegetation cover</strong><p>Tan = sparse, green = a larger combined share of ground plants and trees. Water remains blue.</p>';
- else if(actual==='habitatComplexity')el.innerHTML='<strong>Potential habitat complexity</strong><p>Tan = little structure, green = more mixed canopy, ground cover, and environmental transitions. Not an animal diversity estimate.</p>';
- else if(actual==='habitats')el.innerHTML='<strong>Vegetation / habitat mosaic</strong>'+VEGETATION_NAMES.map((name,i)=>`<span><i style="background:${vegetationColors[i]}"></i>${name}</span>`).join('');
- else if(actual==='canopyCover')el.innerHTML='<strong>Estimated canopy cover</strong><p>Tan = sparse trees, deep green = dense tree cover. This is a generated static estimate, not the biome suitability field.</p>';
- else if(actual==='groundCover')el.innerHTML='<strong>Ground vegetation cover</strong><p>Brown = bare ground, green = herbaceous and low woody cover. Tree canopy is displayed separately.</p>';
- else if(actual==='biomass')el.innerHTML='<strong>Relative biomass index</strong><p>Tan = sparse, green = greater potential standing plant material. Not tonnes, carbon storage or a time-series.</p>';
- else if(actual==='riparian')el.innerHTML='<strong>Riparian influence</strong><p>Gray = little local water influence; blue = near rivers and lake margins. Newly generated influence decays over 126 km of connected land.</p>';
- else if(actual==='biomes')el.innerHTML='<strong>Potential natural biomes</strong>'+BIOME_NAMES.map((name,i)=>`<span><i style="background:${biomeColors[i]}"></i>${name}</span>`).join('');
- else if(actual==='productivity')el.innerHTML='<strong>Ecological productivity potential</strong><p>Tan = low, green = high potential given climate and soil. Not a simulated biomass or yield measurement.</p>';
- else if(actual==='treePotential')el.innerHTML='<strong>Tree-cover potential</strong><p>Tan = sparse woodland potential; green = canopy-supporting conditions. Actual trees are not simulated.</p>';
- else if(actual==='waterStress')el.innerHTML='<strong>Drought stress</strong><p>Teal = low water stress; tan/red = more severe precipitation deficit.</p>';
- else if(actual==='growingSeason')el.innerHTML='<strong>Thermal growing season (months)</strong><p>Cool blue = few months above 5 °C; green = long temperature-defined growing season; rainfall limitations are shown separately.</p>';
- else if(actual==='ecotones')el.innerHTML='<strong>Biome transitions</strong><p>Dark green = similar neighbors, amber = edges between different land biomes. This measures local classifications, not species composition.</p>';
- else if(actual==='soils')el.innerHTML='<strong>Soil classification</strong>'+SOIL_NAMES.map((name,i)=>`<span><i style="background:${soilColors[i]}"></i>${name}</span>`).join('');
- else if(actual==='soilDepth')el.innerHTML='<strong>Soil depth (m)</strong><p>Gray = bare rock; tan = thin regolith; darker green = deeper soil. Lakes/ocean have no soil.</p>';
- else if(actual==='soilFertility')el.innerHTML='<strong>Fertility potential</strong><p>Brown = low; green = higher potential for plant growth. This is not crop yield or actual biological productivity.</p>';
- else if(actual==='soilPermeability')el.innerHTML='<strong>Permeability</strong><p>Brown = slow drainage, blue = more permeable soils.</p>';
- else if(actual==='soilGroundwater')el.innerHTML='<strong>Groundwater potential</strong><p>Tan = drier or low recharge; blue = stronger relative recharge potential. Aquifer depths are not simulated.</p>';
- else if(actual==='soilErosion')el.innerHTML='<strong>Soil erosion susceptibility</strong><p>Green = low susceptibility, yellow = moderate, red = high. This is a susceptibility estimate, not additional terrain erosion.</p>';
- else if(actual==='hydrology')el.innerHTML='<strong>Hydrology</strong><span><i style="background:#4695b6"></i>Freshwater lakes</span><span><i style="background:#65d3ea"></i>River network</span><span><i style="background:#234e66"></i>Ocean</span>';
- else if(actual==='catchment')el.innerHTML='<strong>Upstream drainage area</strong><p>Tan = small catchments; teal/blue = large contributing drainage area.</p>';
- else if(actual==='watersheds')el.innerHTML='<strong>Drainage basins</strong><p>Colors distinguish areas draining to different ocean outlets. Small coastal catchments can have distinct colors.</p>';
- else if(actual==='erosion')el.innerHTML='<strong>Terrain height change</strong><span><i style="background:#be6241"></i>Material removed</span><span><i style="background:#43a397"></i>Net deposition</span><span><i style="background:#78827b"></i>Little change</span>';
- else if(actual==='flow')el.innerHTML='<strong>Runoff accumulation</strong><p>Blue indicates greater estimated downhill water flow. Optional channel lines trace the strongest drainage routes.</p>';
- else if(actual==='temperature'||actual==='january'||actual==='july')el.innerHTML='<strong>Temperature (°C)</strong><div class="wg-climate-temp-ramp"></div><p>Cold blue → temperate green → warm orange/red. January and July represent opposite seasons.</p>';
- else if(actual==='rain')el.innerHTML='<strong>Precipitation (mm/year)</strong><div class="wg-climate-rain-ramp"></div><p>Arid tan → wet blue. Orographic effects vary with prevailing wind.</p>';
- else if(actual==='moisture')el.innerHTML='<strong>Moisture availability</strong><p>Tan = dry, green = greater water available after temperature effects.</p>';
- else if(actual==='seasonality')el.innerHTML='<strong>Seasonal temperature range</strong><p>Blue = mild seasonal contrast; orange = larger summer/winter temperature swing.</p>';
- else if(actual==='landforms')el.innerHTML='<strong>Landform types</strong>'+LANDFORM_NAMES.map((name,i)=>`<span><i style="background:${landformColors[i]}"></i>${name}</span>`).join('');
- else if(actual==='coast')el.innerHTML='<strong>Land / sea</strong><span><i style="background:#4487a2"></i>Water</span><span><i style="background:#799570"></i>Land</span>';
- else if(actual==='plates')el.innerHTML='<strong>Tectonic plates</strong><p>Colors distinguish neighboring plate territories; use plate boundaries to trace edges.</p>';
- else if(actual==='height')el.innerHTML='<strong>Elevation</strong><div class="wg-height-ramp"></div><p>Ocean depths → lowlands → mountain elevations. Inspect a cell for metres relative to the current datum.</p>';
- else el.innerHTML='<strong>Voronoi cells</strong><p>Every colored region is one independent spatial cell.</p>';
-}
 function paint(){renderPending=false;if(!canvas||!ctx)return;
  const rect=canvas.getBoundingClientRect(),width=rect.width,height=rect.height,dpr=canvas.width/Math.max(1,width);
  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#11232b';ctx.fillRect(0,0,width,height);
@@ -761,7 +735,7 @@ function worldToScreen(x,y){return{x:x*view.scale+view.x,y:y*view.scale+view.y};
 function screenToWorld(x,y){return{x:(x-view.x)/view.scale,y:(y-view.y)/view.scale};}
 function zoomBy(factor,x,y){const p=screenToWorld(x,y);view.scale=clamp(view.scale*factor,minimumZoom(),8);view.x=x-p.x*view.scale;view.y=y-p.y*view.scale;rememberViewport();schedulePaint();}
 function pickCell(x,y){const mesh=latestData(2)||(currentStage()===2?workspace.working.data:null);if(!mesh?.cells||effectiveStage()<2)return null;const p=screenToWorld(x,y);if(!insideGeometry(p.x,p.y,geometryData()))return null;
- // Use the polygon index so taps remain fast on 5,000-cell worlds.
+ // Use the polygon index so taps remain fast on high-resolution worlds.
  // A global nearest-site fallback handles rare rounded-coordinate seams.
  const picked=cellAtPoint(prepareGeometry(mesh).spatial,p.x,p.y);
  if(picked!==null)return picked;
@@ -958,7 +932,6 @@ async function handleAction(action,button){
   case 'measure':measureMode=!measureMode;measurePoints=[];selectedId=null;updateInspector();updateMeasurement();schedulePaint();break;
   case 'toggle-explore':{const center=canvas?screenToWorld(canvas.clientWidth/2,canvas.clientHeight/2):null;workspace.exploreMode=!workspace.exploreMode;rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(center){view.x=canvas.clientWidth/2-center.x*view.scale;view.y=canvas.clientHeight/2-center.y*view.scale;}rememberViewport();schedulePaint();});persist('preferences');break;}
   case 'toggle-overlays':{const panel=root.querySelector('#wg-overlays'),open=panel.hidden;panel.hidden=!open;root.querySelector('[data-action="toggle-overlays"]').setAttribute('aria-expanded',String(open));break;}
-  case 'prev-stage':case 'next-stage':{const shift=action==='prev-stage'?-1:1,target=workspace.viewStage+shift;if(target>=1&&target<=IMPLEMENTED&&latestData(target)){workspace.viewStage=target;selectedId=null;persist('preferences');rebuildUI();}break;}
   case 'screenshot':screenshot();break;
   case '3d-orbit':case '3d-pan':{
    terrainViewer?.setMode(action==='3d-pan'?'pan':'orbit');
@@ -1033,11 +1006,12 @@ function bindEvents(){
   const el=event.target;
   if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,el.value.trim()===''?'':storedParameter(key,Number(el.value)),true);return;}
   if(el.dataset?.setting){applyParameter(el.dataset.setting,el.value,true);return;}
+  if(el.id==='wg-map-layer-select'){workspace.viewStage=Number(el.value);selectedId=null;persist('preferences');rebuildUI();return;}
   if(el.id==='wg-edges'){workspace.showEdges=el.checked;persist('preferences');schedulePaint();}
   if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;persist('preferences');schedulePaint();}
   if(el.id==='wg-coast-borders'){workspace.showCoastBorders=el.checked;persist('preferences');schedulePaint();}
   if(el.id==='wg-flow'){workspace.showFlow=el.checked;persist('preferences');schedulePaint();}
-  if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;persist('preferences');updateLegend();schedulePaint();}
+  if(el.id==='wg-palette'){workspace.viewMode=el.value==='natural'?'auto':el.value;persist('preferences');schedulePaint();}
   if(el.id==='wg-seed'){
    if(viewStage()!==currentStage()||!stageUsesSeed(currentStage()))return;
    const value=el.value.trim(),seed=Number(value);

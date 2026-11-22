@@ -8,7 +8,7 @@ const shapes=[{shape:'rectangle',width:2048,height:1024},{shape:'circle',radius:
 function world(shape,count){
  const locked=[];
  for(let stage=1;stage<=9;stage++){
-  const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:locked[0].data.areaKm2/count}:{})};
+  const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:locked[0].data.areaKm2/count,distribution:'jittered'}:{})};
   locked.push({stage,data:generateStage(stage,locked,settings)});
  }
  return locked.map(x=>x.data);

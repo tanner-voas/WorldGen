@@ -13,7 +13,7 @@ const shapes = [
 ];
 function inputs(shape,seed=1234){
  const geometry=generateGeometry(shape);
- const mesh=generateMesh({...DEFAULTS[2],averageArea:geometry.areaKm2/320,seed,relaxation:0},null,geometry);
+ const mesh=generateMesh({...DEFAULTS[2],distribution:'jittered',averageArea:geometry.areaKm2/320,seed,relaxation:0},null,geometry);
  const plates=generatePlates(mesh,{...DEFAULTS[3],seed:seed+1});
  const heights=generateElevation(mesh,plates,{...DEFAULTS[4],seed:seed+2});
  return {geometry,mesh,plates,heights};
