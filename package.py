@@ -16,7 +16,7 @@ SOURCE = ROOT / 'src'
 APP = ROOT / 'dist/worldgen'
 STANDALONE = ROOT / 'dist/standalone'
 REQUIRED = ('app.js', 'engine.js', 'spatial.js', 'compute-worker.js', 'terrain-sampler.js',
-            'terrain-3d.js', 'terrain-3d-worker.js', 'terrain-3d-outline.js', 'terrain-3d-morph.js', 'terrain-coastline.js', 'terrain-lakes.js', 'terrain-rivers.js', 'elevation-units.js', 'geographic-units.js', 'generation-constraints.js', 'styles.css')
+            'terrain-3d.js', 'terrain-3d-worker.js', 'terrain-pick-bounds.js', 'terrain-3d-outline.js', 'terrain-3d-morph.js', 'terrain-coastline.js', 'terrain-lakes.js', 'terrain-rivers.js', 'elevation-units.js', 'geographic-units.js', 'generation-constraints.js', 'styles.css')
 # Match static imports, literal dynamic imports, and Worker URLs resolved using
 # import.meta.url. They all refer to files that must exist in the distribution.
 RELATIVE_MODULE = re.compile(

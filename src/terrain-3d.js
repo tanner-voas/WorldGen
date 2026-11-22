@@ -333,7 +333,7 @@ export class Terrain3DViewer{
   // Height control is viewer-only. Saved elevation and GPU buffers stay unchanged.
   this.heightSteps=0;this.heightMultiplier=1;this.heightTimer=null;this.heightStateCallback=null;
   this.detailWorker=null;this.detailState=null;this.detailSignature='';this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSource=null;this.detailFailure=null;
-  this.onLost=e=>{e.preventDefault();this.lost=true;this.renderedFrame=null;
+  this.onLost=e=>{e.preventDefault();this.lost=true;this.renderedFrame=null;this.clearanceCache=null;
    this.detailWorker?.terminate();this.detailWorker=null;this.detailState=null;this.detailSignature='';
    this.onStatus('Graphics context interrupted');};
   this.onRestored=()=>{this.lost=false;if(this.surface){this._initializeGL();this._uploadSurface();this.drawSoon();}};
@@ -549,7 +549,7 @@ export class Terrain3DViewer{
    if(p.materialVBO)gl.deleteBuffer(p.materialVBO);
    gl.deleteVertexArray(p.vao);
   }
-  this.detailPatches.delete(id);
+  this.detailPatches.delete(id);this.clearanceCache=null;
  }
  _releaseFocusedPatches(){
   for(const id of [...this.detailPatches.keys()])this._deleteFocusedPatch(id);
@@ -607,9 +607,11 @@ export class Terrain3DViewer{
      this.detailState.ready=true;
      this._dispatchFocusedDetail();
     }else if(data.kind==='detail'){
+     if(!this.detailState.busy||data.key!==this.detailState.key)return;
      this.detailState.busy=false;
-     const matched=data.key===this.detailSignature;
-     if(matched){
+     // A response belongs to its dispatched request, not necessarily the
+     // newest camera plan. Keep only tiles still required at the exact LOD.
+     {
       try{
        const requested=this.detailState.requested||[];
        if(data.patches.length!==requested.length)throw Error('Incomplete close-up tile response');
@@ -670,6 +672,7 @@ export class Terrain3DViewer{
   gl.bindVertexArray(null);
   this.detailPatches.set(id,{vao,vbo,materialVBO,ibo,count:patch.indices.length,subdivisions:patch.subdivisions,
    bytes:patch.vertexData.byteLength+patch.indices.byteLength+(patch.materialColors?.byteLength||0),
+   pickBounds:patch.pickBounds,
    vertexData:patch.vertexData,indices:patch.indices,x0:patch.x0,y0:patch.y0,x1:patch.x1,y1:patch.y1,phase:0,morphTime:null,visible:false});
  }
  // A cached lower-resolution patch can remain visible during an upgrade.
@@ -758,7 +761,12 @@ export class Terrain3DViewer{
  }
  _cameraEye(){
   const eye=orbitEye(this.target,this.distance,this.pitch,this.yaw);
-  if(!this.surface||this.distance>.65||!this.surface.vertexData)return eye;
+  if(!this.surface||this.distance>.65||!this.surface.vertexData){this.clearanceCache=null;return eye;}
+  const active=[];
+  for(const id of this.detailPatches?.keys()||[]){const p=this._activeFocusedPatch(id);if(p?.vertexData)active.push(p,p.phase);}
+  const key=[this.surface,...this.target,...eye,this.distance,this.heightMultiplier,...active];
+  const cached=this.clearanceCache;
+  if(cached&&key.length===cached.key.length&&key.every((v,i)=>v===cached.key[i]))return cached.eye.slice();
   const spacing=Math.min(this.surface.planeWidth/this.surface.cols,this.surface.planeDepth/this.surface.rows);
   const s=this.surface,toGrid=p=>[(p[0]/s.planeWidth+.5)*s.cols,(p[2]/s.planeDepth+.5)*s.rows];
   const a=toGrid(this.target),b=toGrid(eye),crossings=gridCrossingTimes(a,b,s.cols,s.rows);
@@ -769,7 +777,8 @@ export class Terrain3DViewer{
    detail=Math.max(detail,n);
    crossings.push(...gridCrossingTimes(toLocal(a),toLocal(b),(patch.x1-patch.x0)*n,(patch.y1-patch.y0)*n));
   }
-  return clearTerrainEye(eye,this.target,(x,z)=>this._heightAt(x,z),spacing/detail,Math.max(.0004,this.distance*.025),crossings);
+  const corrected=clearTerrainEye(eye,this.target,(x,z)=>this._heightAt(x,z),spacing/detail,Math.max(.0004,this.distance*.025),crossings);
+  this.clearanceCache={key,eye:corrected};return corrected.slice();
  }
  _maximumDistance(){
   const rect=this.canvas?.getBoundingClientRect?.();
@@ -896,7 +905,7 @@ export class Terrain3DViewer{
   // Store lightweight references to exactly the draws in this frame. The
   // buffers are immutable; a picking gesture never needs GPU readback.
   const frame={eye,target:this.target.slice(),multiplier:this.heightMultiplier||1,terrain:[],aspect:width/height,near,far};
-  const record=(level,start,count,morph=null)=>{if(level?.indices)frame.terrain.push({indices:level.indices,start,count,morph});};
+  const record=(level,start,count,morph=null)=>{if(level?.indices)frame.terrain.push({indices:level.indices,start,count,morph,pickBounds:level.pickBounds});};
   const view=lookAtMatrix(eye,this.target),camera=multiplyMatrices(projection,view);
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
@@ -986,7 +995,7 @@ export class Terrain3DViewer{
     gl.bindVertexArray(patch.vao);
     gl.drawElements(gl.TRIANGLES,patch.count,gl.UNSIGNED_INT,0);
     selectedTriangles+=patch.count/3;
-    if(patch.vertexData&&patch.indices)frame.terrain.push({vertexData:patch.vertexData,indices:patch.indices,count:patch.count,morph:this.morphTextures&&patch.phase<1?{mode:2,weight:morphWeight(patch.phase)}:null});
+    if(patch.vertexData&&patch.indices)frame.terrain.push({vertexData:patch.vertexData,indices:patch.indices,pickBounds:patch.pickBounds,count:patch.count,morph:this.morphTextures&&patch.phase<1?{mode:2,weight:morphWeight(patch.phase)}:null});
    }
   }
   // Coplanar decals use a depth-buffer bias, not a physical height offset.
@@ -1035,7 +1044,7 @@ export class Terrain3DViewer{
   c.removeEventListener('webglcontextlost',this.onLost);c.removeEventListener('webglcontextrestored',this.onRestored);
   c.removeEventListener('pointerdown',this.onPointerDown);c.removeEventListener('pointermove',this.onPointerMove);
   c.removeEventListener('pointerup',this.onPointerUp);c.removeEventListener('pointercancel',this.onPointerUp);c.removeEventListener('lostpointercapture',this.onPointerUp);
-  this.renderedFrame=null;this.lakeHeightAt=null;this.pointers?.clear();
+  this.renderedFrame=null;this.clearanceCache=null;this.lakeHeightAt=null;this.pointers?.clear();
   c.removeEventListener('wheel',this.onWheel);c.removeEventListener('dblclick',this.onDoubleTap);
   const gl=this.gl;
   if(gl&&!this.lost){

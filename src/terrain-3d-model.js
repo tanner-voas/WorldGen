@@ -341,7 +341,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   }
   tile.minY=min-.06;tile.maxY=max+.06;
  }
- const uniformLevels=buildUniformTerrainLevels(cols,rows,inside,{coastMask,lakeMask:protectedMask});
+ const uniformLevels=options.includeUniformLevels===false?[]:buildUniformTerrainLevels(cols,rows,inside,{coastMask,lakeMask:protectedMask});
  const seaY=seaLevel*heightScale;
  const ocean=new Float32Array(geometry.shape==='rectangle'?
   [-planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,planeDepth/2,

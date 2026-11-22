@@ -62,11 +62,15 @@ test('actual worker includes transferable surface coverage once, not in per-tile
   self.onmessage({data:{geometry,mesh,elevations,appearance,waterMask:appearance.water,seaLevel:0}});
   const result=messages.at(-1);assert.equal(result.data.kind,'success');
   const surface=result.data.result;assert.ok(result.transfer.includes(surface.surfaceMaterials.data.buffer));
+  assert.equal(surface.uniformLevels.length,0);
+  assert.ok(surface.levels.every(l=>result.transfer.includes(l.pickBounds.buffer)));
+  assert.ok(Object.values(surface.waterPickBounds).every(b=>result.transfer.includes(b.buffer)));
   const grid={cols:surface.cols,rows:surface.rows,planeWidth:surface.planeWidth,planeDepth:surface.planeDepth,heightScale:surface.heightScale};
   self.onmessage({data:{kind:'init-detail',geometry,mesh,elevations,appearance,waterMask:appearance.water,seaLevel:0,grid}});
   assert.equal(messages.at(-1).data.kind,'detail-ready');
   self.onmessage({data:{kind:'detail',key:'test',tiles:[{...surface.levels[0].tiles[0],subdivisions:2}]}});
   assert.equal(messages.at(-1).data.kind,'detail');assert.equal(messages.at(-1).data.patches[0].surfaceMaterials,undefined);
+  assert.ok(messages.at(-1).transfer.includes(messages.at(-1).data.patches[0].pickBounds.buffer));
  }finally{if(old===undefined)delete globalThis.self;else globalThis.self=old;}
 });
 

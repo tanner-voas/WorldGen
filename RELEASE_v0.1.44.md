@@ -1,0 +1,11 @@
+# WorldGen v0.1.44 — Performance optimization
+
+- Exact rendered-triangle picking uses worker-built conservative X/Z bounds for blocks of 64 triangles. Relief and geomorphs never change these coordinates, so the same bounds work throughout animations. Terrain and separate water geometry retain the original intersection algorithm, draw ranges and clipping rules.
+- The production mesh worker no longer builds or transfers the four legacy uniform index arrays. It always prepares geomorph references and uses the stitched adaptive index arrays already present. The standalone geometry builder retains its legacy option for callers and regression coverage.
+- Camera clearance is memoized for identical camera poses, relief, source surfaces and active patch morph phases. Context loss, eviction and disposal clear retained references. Morph field construction avoids allocating thousands of temporary material subarrays.
+- An in-flight refinement response now keeps tiles whose ID and subdivision still match the latest plan, rather than discarding an entire response when one requested tile changes. Obsolete tiles are not uploaded. The existing triangle and GPU cache budgets remain unchanged.
+- The 2D editor reuses plate/coast boundary paths across pan and zoom instead of reconstructing them each paint. The persistence scheduler and both recovery and atomic checkpoint logic were reviewed; no storage changes were necessary in this pass.
+
+Benchmark (Node, default rectangle, 5,000 polygons, stage 12, 304 × 152 grid): omitted legacy index arrays 2,805,684 bytes; new terrain/water bounds 62,608 bytes; net retained CPU mesh reduction 2,743,076 bytes (2.62 MiB), excluding local bounds. A warmed run of 200 vertical picking rays on 92,416 terrain triangles during a geomorph took 283.5 ms unindexed versus 6.38 ms indexed (same intersections). This is a specific CPU benchmark, not an iPhone or frame-rate benchmark. The close-up mesh test rejected over 98% of candidates. No reductions to terrain, material or water resolution or settings.
+
+Verification: 230 automated tests; both distributions; OpenGL ES shader/pixel smoke test; clean git-am application. Native Safari storage, touch behavior, sustained GPU frame rates and memory pressure remain device-test items. No generation, save-schema or AppLauncher changes.

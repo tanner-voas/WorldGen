@@ -15,7 +15,7 @@ export function buildMorphFields(surface){
   for(let i=0;i<count;i++){
    const o=offset+i*4,v=i*7;
    terrain[o]=vertexData[v+6];terrain[o+1]=vertexData[v+3];terrain[o+2]=vertexData[v+4];terrain[o+3]=vertexData[v+5];
-   if(material)material.set(materialColors.subarray(i*3,i*3+3),o);
+   if(material){material[o]=materialColors[i*3];material[o+1]=materialColors[i*3+1];material[o+2]=materialColors[i*3+2];}
   }
   if(levels[layer].step===1)continue;
   const indices=levels[layer].indices;

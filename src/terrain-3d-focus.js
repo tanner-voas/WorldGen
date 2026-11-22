@@ -3,6 +3,7 @@
  * zooming/focusing never changes source elevations, water, or checkpoints.
  */
 import {insideGeometry} from './engine.js';
+import {PICK_BLOCK_INDICES,pickBlockIntersects} from './terrain-pick-bounds.js';
 const normalize=v=>{const length=Math.hypot(...v)||1;return v.map(x=>x/length);};
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 
@@ -136,7 +137,7 @@ export function pickRenderedRay(surface,frame,eye,ray){
  const along=dot(forward,ray);
  if(along<=0)return null;
  const minimum=(frame.near??0)/along,maximum=(frame.far??Infinity)/along;
- function scan(data,indices,start,count,vertexStride,morph){
+ function scan(data,indices,start,count,vertexStride,morph,bounds){
   if(!data||!count)return;
   const weight=morph?.weight??1;
   const height=(index)=>{
@@ -151,23 +152,28 @@ export function pickRenderedRay(surface,frame,eye,ray){
    const a=gridTriangleHeight(fields,surface.cols,surface.rows,gx,gz,4,0);
    return ((a??data[off+6])*(1-weight)+data[off+6]*weight)*surface.heightScale*multiplier;
   };
-  for(let i=start;i<start+count;i+=3){
-   const a=indices?indices[i]:i,b=indices?indices[i+1]:i+1,c=indices?indices[i+2]:i+2;
-   const ai=a*vertexStride,bi=b*vertexStride,ci=c*vertexStride;
-   const ax=data[ai],az=data[ai+2],bx=data[bi],bz=data[bi+2],cx=data[ci],cz=data[ci+2];
-   // Cheap horizontal rejection prevents most morph work on distant tiles.
-   if(Math.abs(ray[0])<1e-10&&(eye[0]<Math.min(ax,bx,cx)-1e-7||eye[0]>Math.max(ax,bx,cx)+1e-7))continue;
-   if(Math.abs(ray[2])<1e-10&&(eye[2]<Math.min(az,bz,cz)-1e-7||eye[2]>Math.max(az,bz,cz)+1e-7))continue;
-   // For oblique rays, reject triangles on one side of the horizontal
-   // ray line before evaluating their (potentially morphed) heights.
-   const sideA=(ax-eye[0])*ray[2]-(az-eye[2])*ray[0],sideB=(bx-eye[0])*ray[2]-(bz-eye[2])*ray[0],sideC=(cx-eye[0])*ray[2]-(cz-eye[2])*ray[0];
-   if(Math.min(sideA,sideB,sideC)>1e-7||Math.max(sideA,sideB,sideC)<-1e-7)continue;
-   const t=triangleDistance(eye,ray,ax,height(a),az,bx,height(b),bz,cx,height(c),cz);
-   if(t>=minimum&&t<=maximum&&t<closest)closest=t;
+  const end=start+count;
+  for(let block=Math.floor(start/PICK_BLOCK_INDICES);block*PICK_BLOCK_INDICES<end;block++){
+   if(bounds&&block*4+3<bounds.length&&!pickBlockIntersects(bounds,block*4,eye,ray,minimum,Math.min(closest,maximum)))continue;
+   const last=Math.min(end,(block+1)*PICK_BLOCK_INDICES);
+   for(let i=Math.max(start,block*PICK_BLOCK_INDICES);i<last;i+=3){
+    const a=indices?indices[i]:i,b=indices?indices[i+1]:i+1,c=indices?indices[i+2]:i+2;
+    const ai=a*vertexStride,bi=b*vertexStride,ci=c*vertexStride;
+    const ax=data[ai],az=data[ai+2],bx=data[bi],bz=data[bi+2],cx=data[ci],cz=data[ci+2];
+    // Cheap horizontal rejection prevents most morph work on distant tiles.
+    if(Math.abs(ray[0])<1e-10&&(eye[0]<Math.min(ax,bx,cx)-1e-7||eye[0]>Math.max(ax,bx,cx)+1e-7))continue;
+    if(Math.abs(ray[2])<1e-10&&(eye[2]<Math.min(az,bz,cz)-1e-7||eye[2]>Math.max(az,bz,cz)+1e-7))continue;
+    // For oblique rays, reject triangles on one side of the horizontal
+    // ray line before evaluating their (potentially morphed) heights.
+    const sideA=(ax-eye[0])*ray[2]-(az-eye[2])*ray[0],sideB=(bx-eye[0])*ray[2]-(bz-eye[2])*ray[0],sideC=(cx-eye[0])*ray[2]-(cz-eye[2])*ray[0];
+    if(Math.min(sideA,sideB,sideC)>1e-7||Math.max(sideA,sideB,sideC)<-1e-7)continue;
+    const t=triangleDistance(eye,ray,ax,height(a),az,bx,height(b),bz,cx,height(c),cz);
+    if(t>=minimum&&t<=maximum&&t<closest)closest=t;
+   }
   }
  }
- for(const draw of frame.terrain||[])scan(draw.vertexData||surface.vertexData,draw.indices,draw.start??0,draw.count,7,draw.morph);
- for(const water of [surface.ocean,surface.hydrology?.lakes,surface.hydrology?.rivers])scan(water,null,0,(water?.length||0)/3,3,null);
+ for(const draw of frame.terrain||[])scan(draw.vertexData||surface.vertexData,draw.indices,draw.start??0,draw.count,7,draw.morph,draw.pickBounds);
+ for(const [kind,water] of [["ocean",surface.ocean],["lakes",surface.hydrology?.lakes],["rivers",surface.hydrology?.rivers]])scan(water,null,0,(water?.length||0)/3,3,null,surface.waterPickBounds?.[kind]);
  return Number.isFinite(closest)?eye.map((v,i)=>v+ray[i]*closest):null;
 }
 

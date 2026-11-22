@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.1.43',DB_NAME='worldgen-v1';
+const APP_VERSION='0.1.44',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -466,7 +466,12 @@ function borderSegments(mesh,labels){
  }
  return out;
 }
-function drawSegments(segments,color,width){ctx.beginPath();for(const [x1,y1,x2,y2] of segments){ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);}ctx.strokeStyle=color;ctx.lineWidth=width/view.scale;ctx.stroke();}
+const segmentPaths=new WeakMap();
+function drawSegments(segments,color,width){
+ let path=segmentPaths.get(segments);
+ if(!path){path=new Path2D();for(const [x1,y1,x2,y2] of segments){path.moveTo(x1,y1);path.lineTo(x2,y2);}segmentPaths.set(segments,path);}
+ ctx.strokeStyle=color;ctx.lineWidth=width/view.scale;ctx.stroke(path);
+}
 
 function colorForCell(i,stage,display){
  const mesh=latestData(2)||(currentStage()===2?workspace.working.data:null),plates=latestData(3),heights=latestData(4),coasts=latestData(5),landforms=latestData(6),erosion=latestData(7),hydrology=stage>=9?latestData(9):null;

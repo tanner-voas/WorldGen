@@ -1,4 +1,4 @@
-# WorldGen v0.1.43
+# WorldGen v0.1.44
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -285,3 +285,7 @@ Terrain uses warmer directional illumination, cooler hemispheric ambient light, 
 ## v0.1.43 — Camera and exploration
 
 The 3D viewer fits conservative world bounds into both viewport axes and refits on resize while Fit is active. Double-tap/click intersects the terrain triangles submitted in the last frame, including their LOD morphs, refined patches and actual water geometry. Close-up camera clearance checks local grid crossings and samples lake surfaces; pan and pinch use projected ground-plane anchoring, with a fallback near the horizon. Pointer cancellation resets the gesture. Existing world data and render profiles are unchanged. See `RELEASE_v0.1.43.md`.
+
+## v0.1.44 — Performance optimization
+
+The mesh worker skips retired uniform index buffers and transfers compact horizontal bounds for exact terrain and water picking. Close-up worker replies retain tiles that still match the current detail plan, and repeated camera clearance queries reuse unchanged results. The 2D map caches immutable boundary paths. Geometry, materials, refinement budgets, and save formats are unchanged. See `RELEASE_v0.1.44.md`.
