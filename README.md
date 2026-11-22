@@ -1,4 +1,4 @@
-# WorldGen v0.2.1
+# WorldGen v0.2.2
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -11,8 +11,8 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 
 1. **World geometry (new)** — choose rectangle (width and height in km), circle (radius in km), or ellipse (horizontal and vertical radius in km). All worlds are planar; no depth is generated. Bounds for each linear dimension/radius: 50–20,000 km. The selected shape becomes part of each checkpoint and drives geometry clipping and the map's physical units.
 2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–20,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
-3. **Tectonic plates** — plate territories, crust type and motion.
-4. **Elevation** — terrain noise, tectonic uplift and relief.
+3. **Tectonic plates** — immutable plate territories and their boundaries; no crust properties or motion are defined yet.
+4. **Elevation** — continental/oceanic crust ratio and plate motion are first defined here, together with terrain noise, tectonic uplift and relief. The locked plate territories do not change.
 5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. The original *edge ocean bias* keeps the outermost ring of polygons underwater with its narrow 63 km default taper (capped at 12% of the shorter world dimension). An independent *continental setback* (default strength 1.15, default width 420 km; capped to 16% of the shorter world dimension) gently depresses a much broader band, discouraging continents from following the world outline. Both effects fade smoothly, the interior elevation layer stays unchanged, and sea level is recalculated to preserve the desired land-area percentage. Border-touching polygons remain water while edge ocean bias is enabled. Existing locked heights and older saved coastlines remain unchanged.
 6. **Landforms** — ridges, valleys, ruggedness, volcanoes; preserves the locked coast mask.
 7. **Erosion** — preliminary rainfall/runoff, sediment transfer, slope weathering, drainage channels; preserves earlier layers and locked coastlines.

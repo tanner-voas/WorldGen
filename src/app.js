@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.1',DB_NAME='worldgen-v1';
+const APP_VERSION='0.2.2',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -39,8 +39,8 @@ const OPTIONS={
   ['jitter','Position jitter','range',0,1.7,0.05,'linear'],
   ['relaxation','Lloyd relaxation','range',0,8,1,'linear']
  ],
- 3:[['plates','Plates','range',3,50,1,'linear'],['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear']],
- 4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation (m)','range',0.05,0.8,0.025,'linear']],
+ 3:[['plates','Plates','range',3,50,1,'linear']],
+ 4:[['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear'],['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation (m)','range',0.05,0.8,0.025,'linear']],
  5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (km)','range',0.5,5,0.25,'linear'],['setbackStrength','Continental setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Continental setback width (km)','range',2,18,0.5,'linear']],
  6:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
  7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
@@ -61,9 +61,9 @@ const PARAM_HELP={
  distribution:['Site distribution','Even / jittered places sites in a loose grid; random spreads them out with a minimum separation; clustered creates uneven concentrations. Select a pattern to change cell uniformity.'],
  jitter:['Position jitter','How far Voronoi sites shift away from the evenly spaced starting grid. Higher values make cell shapes and sizes less regular; lower values give a more uniform tessellation.'],
  relaxation:['Lloyd relaxation','Number of times sites move toward their polygon centers. Higher values make cells rounder and more even, but take longer to generate. Zero keeps the initial irregular shapes.'],
- plates:['Plate count','Number of independently moving tectonic regions. More plates create more boundaries and potential geological variation; fewer create broader regions.'],
- continental:['Continental crust ratio','Chance each tectonic plate consists of higher continental crust. Increasing it generally raises continental land potential; lowering it favors oceanic crust. Actual land area is defined later by sea level.'],
- motion:['Plate motion','Magnitude of horizontal plate motion used to estimate convergence and rifts. More motion intensifies plate-boundary differences; zero removes relative motion effects.'],
+ plates:['Plate count','Number of tectonic territories and their shared boundaries. More plates create more boundaries; fewer create broader regions. Crust type and motion are defined in the next layer.'],
+ continental:['Continental crust ratio','Chance each fixed plate territory receives buoyant continental crust in the elevation stage. Increasing it tends to raise potential land area; lowering it favors oceanic crust. Actual land area is defined later by sea level.'],
+ motion:['Plate motion','Magnitude of motion assigned to the fixed plate territories. More motion intensifies uplift at colliding boundaries and influences later landforms; zero removes relative-motion uplift without changing the boundaries.'],
  uplift:['Uplift strength','How strongly converging tectonic boundaries raise terrain. Higher values create more prominent mountain systems; lower values soften those effects.'],
  roughness:['Surface roughness','Strength of small-scale height noise before landform refinement. Increasing it makes elevation less smooth; decreasing it produces gentler terrain.'],
  continentalHeight:['Crust elevation','Starting crust-height parameter in metres, before coastline sea-level selection. Higher values increase continental/oceanic crust contrast; lower values flatten it.'],
@@ -439,7 +439,7 @@ function settingRow([key,label,type,a,b,step,mode]){
 function describeStage(stage,data){if(!data)return 'No preview generated yet.';switch(stage){
  case 1:return `${data.shape==='rectangle'?'Rectangular':data.shape==='circle'?'Circular':'Elliptical'} world · ${shortNumber(data.width)} × ${shortNumber(data.height)} km · ${shortNumber(Math.round(data.areaKm2))} km² · no depth.`;
  case 2:return `${shortNumber(data.cells.length)} Voronoi cells across ${shortNumber(Math.round(data.areaKm2))} km².`;
- case 3:return `${data.plates.length} tectonic plates with distinct crust properties and motion.`;
+ case 3:return `${data.plates.length} fixed tectonic territories and boundaries; crust and motion are defined in layer 4.`;
  case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift · provisional height range ${shortNumber(Math.round(elevationToMetres(Math.min(...data.elevations))))} to ${shortNumber(Math.round(elevationToMetres(Math.max(...data.elevations))))} m.`;
  case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${+((area??data.landFraction)*100).toFixed(2)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km · sea datum ${shortNumber(Math.round(elevationToMetres(data.seaLevel)))} m relative to layer-4 zero.`;}
  case 6:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
@@ -484,7 +484,15 @@ async function generateCurrent(){
 }
 function defaultsForStage(stage){
  if(stage===2){const g=geometryData();return {...DEFAULTS[2],averageArea:formatNumber(g.areaKm2/1200)};}
- return {...(DEFAULTS[stage]||{})};
+ const settings={...(DEFAULTS[stage]||{})};
+ if(stage===4){
+  const prior=workspace.locked[2]?.settings;
+  for(const key of ['continental','motion']){
+   const old=Number(prior?.[key]);
+   if(prior&&Number.isFinite(old))settings[key]=clamp(old,...controlBounds(4,key));
+  }
+ }
+ return settings;
 }
 function commitLayer(){
  const stage=currentStage(),working=workspace.working;
@@ -619,7 +627,7 @@ function colorForCell(i,stage,display){
   }
  }
  if(display==='geometry'||stage===1){const h=((i*137.508)%360);return `hsl(${150+(h%55)},${18+(i%4)*2}%,${36+(i%7)*3}%)`;}
- if((display==='plates'||stage===3)&&plates){const owner=plates.owners[i],plate=plates.plates[owner],h=(owner*137.508+22)%360;return `hsl(${h},${plate.continental?32:42}%,${plate.continental?49:34}%)`;}
+ if((display==='plates'||stage===3)&&plates){const owner=plates.owners[i],h=(owner*137.508+22)%360;return `hsl(${h},38%,42%)`;}
  if(stage>=8){
   const climate=latestData(8);
   if(climate){

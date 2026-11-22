@@ -7,8 +7,8 @@ export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
   ['World geometry','Define the 2D world shape and its physical size in kilometers'],
   ['Voronoi mesh','Spatial cells and topology'],
-  ['Tectonic plates','Plate territories and relative motion'],
-  ['Elevation','Crust, collision uplift and terrain noise'],
+  ['Tectonic plates','Plate territories and boundaries'],
+  ['Elevation','Crust properties, plate motion, collision uplift and terrain noise'],
   ['Oceans & coasts','Sea level, water coverage and coastlines'],
   ['Landforms','Mountains, valleys, geology and fine terrain variation'],
   ['Erosion','Downhill runoff, sediment transport and thermal weathering'],
@@ -32,8 +32,8 @@ export const LANDFORM_NAMES=['Deep ocean','Shallow sea','Coastal plain','Lowland
 export const DEFAULTS={
   1:{shape:'rectangle',width:2048,height:1024,radius:750,radiusX:1100,radiusY:600},
   2:{averageArea:2300,distribution:'random',jitter:0.74,relaxation:1,seed:271828},
-  3:{plates:15,continental:0.42,motion:0.7,seed:314159},
-  4:{uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
+  3:{plates:15,seed:314159},
+  4:{continental:0.42,motion:0.7,uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
   5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,setbackStrength:1.15,setbackWidth:10,seed:141421},
   6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
   7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607},
@@ -202,9 +202,27 @@ function farSeeds(cells,count,seed){const rng=random(seed),chosen=[Math.floor(rn
  for(let j=1;j<count;j++){let best=0,bestScore=-1;for(let i=0;i<cells.length;i++){const score=distances[i]*(0.65+0.7*hash2(i,j,seed));if(score>bestScore){bestScore=score;best=i;}}chosen.push(best);for(let i=0;i<cells.length;i++)distances[i]=Math.min(distances[i],(cells[i].x-cells[best].x)**2+(cells[i].y-cells[best].y)**2);}
  return chosen;
 }
-export function generatePlates(mesh,settings){const rng=random(settings.seed),cells=mesh.cells,pCount=clamp(Math.round(settings.plates),3,50),seeds=farSeeds(cells,pCount,settings.seed),plates=seeds.map((index,id)=>{const theta=rng()*Math.PI*2;return {id,x:cells[index].x,y:cells[index].y,continental:rng()<settings.continental,vx:Math.cos(theta)*settings.motion,vy:Math.sin(theta)*settings.motion};});
+export function generatePlates(mesh,settings){const rng=random(settings.seed),cells=mesh.cells,pCount=clamp(Math.round(settings.plates),3,50),seeds=farSeeds(cells,pCount,settings.seed),plates=seeds.map((index,id)=>{const theta=rng()*Math.PI*2;const continental=settings.continental??DEFAULTS[4].continental,motion=settings.motion??DEFAULTS[4].motion;return {id,x:cells[index].x,y:cells[index].y,continental:rng()<continental,vx:Math.cos(theta)*motion,vy:Math.sin(theta)*motion};});
  const owners=cells.map(c=>{let chosen=0,min=Infinity;for(const plate of plates){const dx=(c.x-plate.x)/mesh.width,dy=(c.y-plate.y)/mesh.height,d=dx*dx+dy*dy;if(d<min){min=d;chosen=plate.id;}}return chosen;});
  return {plates,owners};
+}
+/** Stage 3 saves IDs, centroids, and owners only. Stage 4 assigns geological attributes to
+ * those same plates, with the stage-3 seed so the random directions/crust
+ * choices remain identical to v0.2.1 when values are unchanged. No plate
+ * boundary or owner is ever recalculated when editing elevation settings. */
+export function assignPlateGeology(plateData,settings,plateSeed){
+ const rng=random(plateSeed),continental=clamp(Number(settings.continental),.1,.9),motion=clamp(Number(settings.motion),0,2);
+ return {...plateData,plates:plateData.plates.map(plate=>{
+  const theta=rng()*Math.PI*2,crust=rng()<continental;
+  return {...plate,continental:crust,vx:Math.cos(theta)*motion,vy:Math.sin(theta)*motion};
+ })};
+}
+/** Existing v0.2.1 layers have no stage-4 plateProperties field. Their
+ * stage-3 attributes are retained as a read-only compatibility fallback. */
+function geologicalPlates(locked){
+ const regionData=locked[2]?.data,properties=locked[3]?.data?.plateProperties;
+ if(!properties)return regionData;
+ return {...regionData,plates:regionData.plates.map((plate,i)=>({...plate,...properties[i]}))};
 }
 // Crust height, uplift and terrain noise remain calibrated in the compact
 // elevation encoding. Every encoded unit represents 2.7 km of relief.
@@ -989,14 +1007,14 @@ export function generateStage(stage,locked,settings,onProgress=null){
  const geometry=locked[0]?.data,mesh=locked[1]?.data;
  if(stage===1)return generateGeometry(settings);
  if(stage===2){if(!geometry)throw Error('World geometry required');return generateMesh(settings,onProgress,geometry);}
- if(stage===3){if(!mesh)throw Error('Voronoi mesh required');return generatePlates(mesh,settings);}
- if(stage===4){if(!locked[2]?.data)throw Error('Tectonic layer required');return generateElevation(mesh,locked[2].data,settings);}
+ if(stage===3){if(!mesh)throw Error('Voronoi mesh required');const {plates,owners}=generatePlates(mesh,settings);return {plates:plates.map(({id,x,y})=>({id,x,y})),owners};}
+ if(stage===4){if(!locked[2]?.data)throw Error('Tectonic layer required');const geology=assignPlateGeology(locked[2].data,settings,locked[2].settings?.seed??DEFAULTS[3].seed);return {...generateElevation(mesh,geology,settings),plateProperties:geology.plates.map(({continental,vx,vy})=>({continental,vx,vy}))};}
  if(stage===5){if(!locked[3]?.data)throw Error('Elevation layer required');return generateCoasts(locked[3].data,settings,mesh);}
- if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,locked[2].data,locked[3].data,locked[4].data,settings);}
+ if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,geologicalPlates(locked),locked[3].data,locked[4].data,settings);}
  if(stage===7){if(!locked[5]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[4].data,locked[5].data,settings,onProgress);}
  if(stage===8){if(!locked[6]?.data)throw Error('Erosion layer required');return generateClimate(mesh,locked[4].data,locked[6].data,settings,onProgress);}
  if(stage===9){if(!locked[7]?.data)throw Error('Climate layer required');return generateHydrology(mesh,locked[4].data,locked[6].data,locked[7].data,settings,onProgress);}
- if(stage===10){if(!locked[8]?.data)throw Error('Hydrology layer required');return generateSoils(mesh,locked[2].data,locked[5].data,locked[4].data,locked[6].data,locked[7].data,locked[8].data,settings,onProgress);}
+ if(stage===10){if(!locked[8]?.data)throw Error('Hydrology layer required');return generateSoils(mesh,geologicalPlates(locked),locked[5].data,locked[4].data,locked[6].data,locked[7].data,locked[8].data,settings,onProgress);}
  if(stage===11){if(!locked[9]?.data)throw Error('Soil layer required');return generateBiomes(mesh,locked[4].data,locked[5].data,locked[6].data,locked[7].data,locked[8].data,locked[9].data,settings,onProgress);}
  if(stage===12){if(!locked[10]?.data)throw Error('Biome layer required');return generateVegetation(mesh,locked[4].data,locked[7].data,locked[8].data,locked[9].data,locked[10].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
@@ -1039,8 +1057,16 @@ export function validateWorld(world){
   if(record.stage<=2)continue;
   if(!n)throw Error('Missing base mesh for a generated layer');
   const d=record.data;
-  if(record.stage===3&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))throw Error('Invalid plate data');
+  if(record.stage===3&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||(['vx','vy','continental'].some(k=>Object.hasOwn(p,k))&&(!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))))throw Error('Invalid plate data');
   if((record.stage===4||record.stage===6||record.stage===7)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
+  if(record.stage===4&&d.plateProperties===undefined){
+   const legacyPlates=records.find(r=>r.stage===3)?.data?.plates;
+   if(!legacyPlates?.every(p=>typeof p.continental==='boolean'&&Number.isFinite(p.vx)&&Number.isFinite(p.vy)))throw Error('Elevation layer lacks plate properties');
+  }
+  if(record.stage===4&&d.plateProperties!==undefined){
+   const count=records.find(r=>r.stage===3)?.data?.plates?.length;
+   if(!Array.isArray(d.plateProperties)||d.plateProperties.length!==count||d.plateProperties.some(p=>typeof p?.continental!=='boolean'||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||Math.hypot(p.vx,p.vy)>2.000001))throw Error('Invalid elevation plate properties');
+  }
   if(record.stage===5&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)||d.elevations!==undefined&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2))))throw Error('Invalid coast data');
   if(record.stage===6&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
   if(record.stage===7){
@@ -1140,8 +1166,8 @@ export function validateWorld(world){
 const INPUT_RANGES={
  1:{width:[50,20000],height:[50,20000],radius:[50,20000],radiusX:[50,20000],radiusY:[50,20000]},
  2:{jitter:[0,1.7],relaxation:[0,8]},
- 3:{plates:[3,50],continental:[0.1,0.9],motion:[0,2]},
- 4:{uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
+ 3:{plates:[3,50]},
+ 4:{continental:[0.1,0.9],motion:[0,2],uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
  5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5],setbackStrength:[0,1.8],setbackWidth:[2,18]},
  6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
  7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]},
@@ -1190,6 +1216,20 @@ function migrateLegacyWorld(world){
 export function upgradeWorld(world){
  if(world?.schema===1)migrateLegacyWorld(world);
  validateWorld(world);
+ // In old saves, these were stage-3 controls even though their first
+ // consequential use is stage 4. Carry those values forward without touching
+ // historical elevation data or modifying the immutable plate boundaries.
+ const previousPlates=world.locked[2]?.settings;
+ const elevationRecord=world.locked[3]||(world.working.stage===4?world.working:null);
+ if(elevationRecord?.settings){
+  for(const key of ['continental','motion']){
+   if(!Object.hasOwn(elevationRecord.settings,key)){
+    const previous=Number(previousPlates?.[key]);
+    elevationRecord.settings[key]=Number.isFinite(previous)?previous:DEFAULTS[4][key];
+   }
+  }
+ }
+
  const stage=world.working.stage;
  // Interface metadata is recoverable: invalid selections must never strand
  // an imported or restored world outside its available generation history.
@@ -1205,6 +1245,14 @@ export function upgradeWorld(world){
   for(const [key,[min,max]] of Object.entries(INPUT_RANGES[stage])){
    next[key]=clamp(Number(next[key]),min,max);
    if(['relaxation','plates','iterations','minLakeCells'].includes(key))next[key]=Math.round(next[key]);
+  }
+  if(stage===3){
+   // Prior stage-3 saves may still carry the formerly exposed geology values.
+   // They remain for the eventual stage-4 handoff, not for plate-territory UI.
+   for(const key of ['continental','motion'])if(key in next){
+    const old=Number(next[key]),fallback=DEFAULTS[4][key],bounds=INPUT_RANGES[4][key];
+    next[key]=clamp(Number.isFinite(old)?old:fallback,...bounds);
+   }
   }
   if(stage===2){
    const geometry=world.locked[0]?.data||generateGeometry(DEFAULTS[1]);
@@ -1233,6 +1281,7 @@ export function snapshotThroughStage(world,stage){
  result.locked=result.locked.filter(record=>record.stage<=stage);
  if(world.working.stage!==stage){
   const nextStage=stage+1,base=nextStage===2?{...DEFAULTS[2],averageArea:result.locked[0].data.areaKm2/1200}:{...DEFAULTS[nextStage]};
+  if(nextStage===4){for(const key of ['continental','motion']){const old=Number(result.locked[2]?.settings?.[key]);if(Number.isFinite(old))base[key]=clamp(old,...INPUT_RANGES[4][key]);}}
   result.working={stage:nextStage,settings:nextStage<=IMPLEMENTED?base:{},data:null,dataSettings:null};
  }
  result.viewStage=stage;

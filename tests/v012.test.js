@@ -70,6 +70,6 @@ test('older working-stage numeric settings are constrained; locked history is no
  assert.equal(JSON.stringify(world.locked),before);
  assert.equal(world.working.settings.plates,50);
  assert.equal(world.working.settings.continental,.1);
- assert.equal(world.working.settings.motion,DEFAULTS[3].motion);
+ assert.equal(world.working.settings.motion,DEFAULTS[4].motion);
  assert.equal(world.working.settings.seed,DEFAULTS[3].seed);
 });

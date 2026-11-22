@@ -297,3 +297,19 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 @media(max-width:350px){.wg-map-bottom-tools{gap:5px;left:7px;right:7px;grid-template-columns:minmax(0,1.45fr) minmax(0,.87fr) minmax(0,.98fr)}.wg-map-bottom-tools select,.wg-map-bottom-tools button{font-size:11px!important;padding-inline:4px}.wg-stage-title h2{font-size:17px}}
 .wg-map-bottom-tools .wg-explore-toggle{position:static;right:auto;bottom:auto;box-shadow:none;min-height:44px;flex:none}
 @media(max-width:350px){.wg-header{gap:7px;padding-inline:10px}.wg-icon-button{width:36px;height:38px;border-radius:11px}.wg-eyebrow{font-size:9px;letter-spacing:.10em}.wg-eyebrow span{font-size:9px;letter-spacing:0;padding-left:1px}.wg-world-name{font-size:16px!important}}
+
+/* v0.2.2: reserved mobile toolbar rows, independent of drawer height.
+   The palette/overlay row and map operations must never share physical space. */
+@media(max-width:699px){
+ .wg-shell .wg-display-bar{top:10px;left:10px;right:10px;max-width:none;width:auto;gap:7px;justify-content:flex-start}
+ .wg-shell .wg-display-bar select{flex:0 1 auto;min-width:0;width:min(45vw,175px);max-width:min(45vw,175px)}
+ .wg-shell .wg-display-bar:has(#wg-palette[hidden]){max-width:none}
+ .wg-shell .wg-map-buttons,.wg-shell.wg-map-compact .wg-map-buttons{top:59px;left:auto;right:10px;display:flex;flex-direction:row;gap:6px;max-width:calc(100% - 20px)}
+ .wg-shell .wg-map-buttons button,.wg-shell.wg-map-compact .wg-map-buttons button{flex:0 0 39px;min-width:39px;width:39px;height:39px;border-radius:10px}
+ .wg-shell .wg-overlays,.wg-shell.wg-map-compact .wg-overlays{top:106px;left:10px;width:min(220px,calc(100% - 20px));max-width:calc(100% - 20px);max-height:max(0px,calc(100% - 121px));overflow-y:auto;box-sizing:border-box}
+}
+/* A narrow/short map on wider devices has the same collision risk. */
+@media(min-width:700px){
+ .wg-shell.wg-map-compact .wg-map-buttons{top:60px;right:10px;left:auto;gap:6px}
+ .wg-shell.wg-map-compact .wg-overlays{top:108px;left:12px;width:min(240px,calc(100% - 24px));max-height:max(0px,calc(100% - 120px))}
+}
