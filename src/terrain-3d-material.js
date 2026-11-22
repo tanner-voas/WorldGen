@@ -3,7 +3,7 @@
  * Color values are linear-ish normalized RGB factors used by the existing
  * physically lit WebGL terrain shader, not new terrain heights or biomes.
  */
-import {visitTerrainSites,nearestTerrainSite} from './render.js';
+import {visitTerrainSites,nearestTerrainSite} from './terrain-sampler.js';
 
 const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
 const mix=(a,b,t)=>a.map((v,k)=>v+(b[k]-v)*clamp(t));

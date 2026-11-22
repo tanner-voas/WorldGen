@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import {createTerrainSampler,visitTerrainSites} from '../src/render.js';
+import {createTerrainSampler,visitTerrainSites} from '../src/terrain-sampler.js';
 
 const makeMesh=(cols,rows,step=25)=>({
  width:cols*step,height:rows*step,areaKm2:cols*rows*step*step,
@@ -40,12 +39,4 @@ test('spatial sampler works on very long, thin maps and sparse site layouts',()=
  const odd=createTerrainSampler(sparse,.8);
  let total=0;visitTerrainSites(odd,500,500,(_,w)=>{total+=w;});
  assert.ok(Number.isFinite(total)&&total>=0);
-});
-
-test('render uses continuous sampler and directly mounts its output bitmap',()=>{
- const code=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
- assert.match(readFileSync(new URL('../src/raster.js',import.meta.url),'utf8'),/visitTerrainSites\(state\.sampler,wx,wy,collect\)/);
- assert.doesNotMatch(code,/buildRenderNeighborhoods\(mesh/);
- assert.match(code,/replaceWith\(canvasOut\)/);
- assert.match(code,/inspectRenderedCoordinate\(viewer/);
 });

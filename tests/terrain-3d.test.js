@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DEFAULTS,generateStage} from '../src/engine.js';
 import {ELEVATION_RENDER_STAGE,buildElevationSurface,terrainGridSize,sampleElevation} from '../src/terrain-3d-model.js';
-import {createTerrainSampler} from '../src/render.js';
+import {createTerrainSampler} from '../src/terrain-sampler.js';
 import {meshLod,lookAtMatrix,multiplyMatrices,perspectiveMatrix} from '../src/terrain-3d.js';
 
 const worldAtElevation=(geometry)=>{

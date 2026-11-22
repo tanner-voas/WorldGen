@@ -17,6 +17,10 @@ export const STAGES=[
   ['Local detail','Future: zoom-dependent microterrain']
 ];
 export const IMPLEMENTED=12;
+/** Geometry and coastline generation are deterministic without an independent
+ * seed. Keep historical seed fields in existing saves; this is UI capability,
+ * not a change to the generation inputs or save schema. */
+export function stageUsesSeed(stage){return Number.isInteger(stage)&&stage>=2&&stage<=IMPLEMENTED&&stage!==5;}
 export const SOIL_NAMES=['Open water','Exposed rock','Thin upland','Coarse / sandy','Loam','Clay-rich','Organic wetland','Volcanic','Arid mineral','Cold / tundra'];
 export const BIOME_NAMES=['Ocean','Freshwater lake','Permanent snow / ice','Tundra','Boreal forest','Temperate rainforest','Temperate forest','Temperate grassland','Dry steppe','Desert / barren','Dry shrubland','Tropical rainforest','Tropical seasonal forest','Savanna','Alpine','Wetland','Montane forest'];
 export const VEGETATION_NAMES=['Ocean','Freshwater','Bare / ice','Sparse tundra','Grassland','Shrubland','Open woodland','Closed forest','Wet forest','Wetland vegetation','Riparian corridor','Alpine meadow','Desert scrub'];

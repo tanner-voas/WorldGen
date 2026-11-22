@@ -5,7 +5,7 @@ import {DEFAULTS,generateStage} from '../src/engine.js';
 import {buildElevationSurface,buildFocusedTerrainPatch,sampleElevation,sampleTerrainFields} from '../src/terrain-3d-model.js';
 import {closeUpCameraLimits,focusedTerrainTiles} from '../src/terrain-3d-detail.js';
 import {stableLodStepForDistance,adaptiveTileLod} from '../src/terrain-3d-lod.js';
-import {createTerrainSampler,nearestTerrainSite} from '../src/render.js';
+import {createTerrainSampler,nearestTerrainSite} from '../src/terrain-sampler.js';
 import {buildTerrainSiteColors,sampleTerrainColor} from '../src/terrain-3d-material.js';
 import {readFileSync} from 'node:fs';
 

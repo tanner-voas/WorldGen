@@ -159,50 +159,7 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-climate-temp-ramp{height:11px;border-radius:6px;background:linear-gradient(90deg,#314f8b,#659ac1,#d5eadb,#d5d284,#d38248,#a43a2f)}
 .wg-climate-rain-ramp{height:11px;border-radius:6px;background:linear-gradient(90deg,#c19960,#ceba7b,#96b77e,#4d959e,#25508f)}
 
-/* v0.1.14: terrain render viewer with pan/zoom preview. */
-.wg-render-dialog{width:min(100%,1000px)}
-.wg-render-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;margin-top:14px}
-.wg-render-field{display:flex;flex-direction:column;gap:7px;color:#d4e5db;font-size:12px;min-width:0}
-.wg-render-field span{display:flex;justify-content:space-between;gap:8px}
-.wg-render-field output{color:#eaf5d5;font-weight:700;font-variant-numeric:tabular-nums}
-.wg-render-field select,.wg-render-field input[type=number]{min-height:38px;border:1px solid #55756b;background:#203b36;border-radius:8px;color:#ecf5eb;padding:4px 8px;width:100%}
-.wg-render-field input[type=range]{width:100%;margin:0;accent-color:#c0e2ad;height:24px}
-.wg-render-result{margin-top:16px}
-.wg-render-viewer-shell{display:flex;flex-direction:column;gap:10px}
-.wg-render-toolbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-.wg-render-toolbar button{min-width:72px}
-.wg-render-preview{margin-top:8px;border:1px solid #47675f;border-radius:12px;background:#11242b;padding:8px;overflow:hidden}
-.wg-render-viewport{position:relative;height:min(66dvh,680px);min-height:280px;border-radius:10px;background:#0d2430;overflow:hidden;touch-action:none;cursor:grab}
-.wg-render-viewport:active{cursor:grabbing}
-.wg-render-viewport canvas{position:absolute;left:0;top:0;display:block;background:#0d2430;border-radius:8px;box-shadow:0 8px 28px #0007;max-width:none!important;width:auto!important;height:auto!important;will-change:transform}
-.wg-render-progress{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid #4a665b;border-radius:12px;background:#233d37;color:#d8eadf}
-.wg-render-progress progress{width:100%;height:14px}
-@media(max-width:560px){.wg-render-controls{grid-template-columns:1fr}.wg-render-toolbar{justify-content:stretch}.wg-render-toolbar button{flex:1 1 120px}.wg-render-viewport{height:min(58dvh,540px)}}
-/* v0.1.15: give the generated map most of the phone screen. */
-.wg-render-dialog.wg-render-ready{height:calc(100dvh - env(safe-area-inset-top) - 10px);max-height:none;display:flex;flex-direction:column}
-.wg-render-dialog.wg-render-ready>.wg-render-controls,
-.wg-render-dialog.wg-render-ready>.wg-modal-caption,
-.wg-render-dialog.wg-render-ready>.wg-actions{display:none}
-.wg-render-dialog.wg-render-ready .wg-render-result{display:flex;flex-direction:column;flex:1;min-height:0;margin-top:12px}
-.wg-render-dialog.wg-render-ready .wg-render-viewer-shell{display:flex;flex-direction:column;flex:1;min-height:0}
-.wg-render-dialog.wg-render-ready .wg-render-preview{display:flex;flex:1;min-height:0}
-.wg-render-dialog.wg-render-ready .wg-render-viewport{width:100%;height:100%;min-height:0}
-.wg-render-dialog.wg-render-ready .wg-render-toolbar{flex-shrink:0;gap:5px}
-.wg-render-dialog.wg-render-ready .wg-render-toolbar button{min-width:0;flex:1 1 0;padding-inline:5px;font-size:12px}
-.wg-render-dialog.wg-render-ready .wg-render-viewer-shell>.wg-modal-caption{flex-shrink:0;margin:3px 0 0}
-
-/* v0.1.16: compact, read-only inspection of a rendered location. */
-.wg-render-inspect{position:absolute;z-index:2;left:9px;right:9px;bottom:9px;padding:9px 11px;border:1px solid #719487b5;border-radius:10px;background:#142d30e8;color:#e6f4e8;font-size:11px;line-height:1.5;pointer-events:none;backdrop-filter:blur(8px);overflow-wrap:anywhere}
-.wg-render-inspect[hidden]{display:none}
-
-.wg-render-scale{position:absolute;top:9px;left:10px;box-sizing:border-box;color:white;text-align:center;white-space:nowrap;font:600 11px/1.5 system-ui;border:solid currentColor;border-width:0 1px 2px;background:#11232bbf;pointer-events:none}
-.wg-render-pin{position:absolute;width:12px;height:12px;box-sizing:border-box;transform:translate(-50%,-50%);border:2px solid white;border-radius:50%;box-shadow:0 0 0 1.5px #172c35;pointer-events:none}
-.wg-change-key{display:grid;grid-template-columns:1fr 1fr 1fr;align-self:center;width:min(100%,320px);color:#e1ebe3;font-size:11px;font-variant-numeric:tabular-nums}
-.wg-change-key::before{content:"";grid-column:1/-1;height:6px;border-radius:4px;background:linear-gradient(to right,#a54824,#c29788 37.5%,#e4e1d3 50%,#80a9a5 62.5%,#1b7077)}
-.wg-change-key span:nth-child(2){text-align:center}
-.wg-change-key span:last-child{text-align:right}
-
-/* v0.1.19 – standalone GPU terrain viewer; independent of raster render controls. */
+/* v0.1.19 – standalone GPU terrain viewer. */
 .wg-3d-modal{box-sizing:border-box;width:100%;height:100dvh;max-height:none;border-radius:0;border:0;display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 10px) 10px calc(env(safe-area-inset-bottom) + 10px);overflow:hidden;background:#12252a}
 .wg-3d-modal .wg-modal-heading{flex-shrink:0;padding:0 5px 10px}
 .wg-3d-modal .wg-modal-heading h2{font-size:17px}

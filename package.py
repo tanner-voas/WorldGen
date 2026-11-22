@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / 'src'
 APP = ROOT / 'dist/worldgen'
 STANDALONE = ROOT / 'dist/standalone'
-REQUIRED = ('app.js', 'engine.js', 'spatial.js', 'compute-worker.js', 'styles.css')
+REQUIRED = ('app.js', 'engine.js', 'spatial.js', 'compute-worker.js', 'terrain-sampler.js',
+            'terrain-3d.js', 'terrain-3d-worker.js', 'styles.css')
 # Match static imports, literal dynamic imports, and Worker URLs resolved using
 # import.meta.url. They all refer to files that must exist in the distribution.
 RELATIVE_MODULE = re.compile(
@@ -66,7 +67,7 @@ def main():
     validate_module_references(STANDALONE)
 
     # Every copied source module is automatically included in the standalone
-    # service worker's cache list, including render.js and future additions.
+    # service worker's cache list, including the terrain viewer and future additions.
     items = [p for p in sorted(STANDALONE.rglob('*')) if p.is_file()]
     digest = hashlib.sha256()
     for item in items:

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DEFAULTS,generateStage,newWorld} from '../src/engine.js';
 import {selectTerrainSource,buildElevationSurface} from '../src/terrain-3d-model.js';
 import {selectTerrainAppearance,terrainAppearanceName,terrainMaterialAtSite,buildTerrainSiteColors,sampleTerrainColor} from '../src/terrain-3d-material.js';
-import {createTerrainSampler} from '../src/render.js';
+import {createTerrainSampler} from '../src/terrain-sampler.js';
 
 function completedWorld(shape,count=260){
  const world=newWorld('Materials test');

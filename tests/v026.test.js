@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DEFAULTS,generateStage} from '../src/engine.js';
 import {terrainHeightScale,sampleElevation,buildElevationSurface,buildFocusedTerrainPatch} from '../src/terrain-3d-model.js';
-import {createTerrainSampler} from '../src/render.js';
+import {createTerrainSampler} from '../src/terrain-sampler.js';
 import {closeUpCameraLimits,focusedTerrainTiles,LOCAL_TERRAIN_SUBDIVISIONS} from '../src/terrain-3d-detail.js';
 
 function world(shape,sites=260){

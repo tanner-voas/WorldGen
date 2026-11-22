@@ -1,5 +1,5 @@
 import {buildElevationSurface,buildFocusedTerrainPatch} from './terrain-3d-model.js';
-import {createTerrainSampler} from './render.js';
+import {createTerrainSampler} from './terrain-sampler.js';
 import {buildTerrainSiteColors} from './terrain-3d-material.js';
 
 // A close-up worker owns one immutable copy of the world. Camera movement only

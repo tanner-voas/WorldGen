@@ -1,4 +1,4 @@
-# WorldGen v0.1.30
+# WorldGen v0.1.31
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -86,7 +86,11 @@ Future work includes adaptive polygon batching for much larger worlds, higher-re
 - The model is a spatial approximation. It does not model species, animal populations, yearly growth, wildfire chronology, or true physical biomass units.
 
 
-## v0.1.12
+## Historical raster-renderer changelog (v0.1.12–v0.1.18)
+
+The following release notes describe the retired static-image renderer; these controls are no longer available. The ordinary editor Map PNG export is still supported.
+
+### v0.1.12
 
 WorldGen now includes a stage-aware static render mode that can generate higher-resolution blended map images from any completed layer 5+ world state without changing the generation pipeline.
 
@@ -181,7 +185,7 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 - Double-tap a visible terrain location in the 3D viewer to focus and zoom the orbit camera on it; Fit restores the global view. The focus ray checks the current generated mesh and the exact world outline. Mouse double-click is also supported.
 - Worker output includes a compact shape mask for read-only focus picking, with no changes to stored worlds.
 
-## v0.1.27 — realistic terrain proportions and close-up geometry
+## v0.1.26 — realistic terrain proportions and close-up geometry
 
 - Corrected gross vertical exaggeration in the 3D renderer. Source elevations are not metres; the 3D view now uses a stable world-dimension-based convention (approximately 6 km of relief per model unit, visual exaggeration ×3, with bounds for small/large worlds), replacing the fixed 0.73 multiplier. Ocean, lakes, rivers, tile height bounds, and terrain picking use the same vertical units. No saved elevation data is changed.
 - A smoother, finite-slope, compact interpolation kernel replaces the very sharp inverse-distance weighting that created isolated 3D spikes at individual Voronoi centres.
@@ -191,6 +195,10 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 - Tests cover realistic scale, smooth interpolation, exact coarse-to-refined tile seams on all world shapes, close zoom limits, worker-based tile upload/reuse/release, and preservation of source elevation values.
 
 **Constraint:** A polygon may now fill the camera view without the coarse base mesh becoming the limiting factor, but the actual topographic information is still limited to the original polygons until local-detail generation is implemented. WebGL2 on iPhone Safari still requires testing on device.
+
+## v0.1.27 — adjustable relief
+
+The 3D viewer includes a collapsible relief control. Starting at 1×, each plus/minus tap multiplies/divides the visual height by 1.05; the scene updates two seconds after the last adjustment. No physical world data changes.
 
 ## v0.1.28 — 3D optimization and stabilization
 
@@ -225,3 +233,7 @@ WorldGen now pauses generation and automatic saving when the stored world or che
 ## v0.1.30 — Persistence optimization
 
 Interface-only changes (viewport, display mode, overlays, history selection and expanded-map mode) now use a small separate preferences record rather than rewriting the working world's generated data. Preferences are tied to the saved world's revision; full world saves and recovery replacements clear the prior record atomically. Checkpoint creation/deletion updates checkpoint data and the library index in a single read/write transaction. Automatic saving coalesces changes, skips idle writes, retains failed changes for retry, and reports pending/saving/error states rather than claiming an unfinished write is cached. JSON saves and checkpoints remain self-contained and use the existing schema. See `RELEASE_v0.1.30.md`.
+
+## v0.1.31 — Legacy cleanup
+
+The interactive WebGL2 terrain viewer is the only Render mode, available from layer 4 onward. The retired raster dialog, static terrain PNG generator, worker and styles have been removed. The editor's ordinary **Map PNG** export, 3D relief controls, saved layers, and recovery/persistence behavior remain intact. Shared terrain sampling lives in `terrain-sampler.js`; its interpolation has not changed. Layer 5 no longer displays a random seed or reroll: coastlines are deterministic for the same locked elevation and coastline parameters. Legacy seeds are retained in saved worlds and checkpoints. See `RELEASE_v0.1.31.md`.

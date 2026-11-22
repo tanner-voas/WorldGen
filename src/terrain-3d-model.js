@@ -3,7 +3,7 @@
  * Coordinate frame: X east, Y up (render-only), Z south.
  */
 import {insideGeometry} from './engine.js';
-import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './render.js';
+import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './terrain-sampler.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 

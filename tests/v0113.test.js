@@ -7,12 +7,13 @@ import {join,dirname,resolve,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const required=['app.js','engine.js','spatial.js','compute-worker.js','render.js','styles.css'];
+const required=['app.js','engine.js','spatial.js','compute-worker.js','terrain-sampler.js','terrain-3d.js','terrain-3d-worker.js','styles.css'];
 const relativeImport=/(?:\bfrom\s*|\bimport\s*\(\s*|\bnew\s+URL\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g;
 
 test('v0.1.13 bundles every JS dependency into launcher and standalone outputs',()=>{
  execFileSync('python3',['package.py'],{cwd:root});
  for(const dest of ['dist/worldgen','dist/standalone']){
+  for(const retired of ['raster.js','raster-worker.js','render.js'])assert.equal(existsSync(join(root,dest,retired)),false,`${dest}/${retired} must not be shipped`);
   for(const name of required)assert.ok(existsSync(join(root,dest,name)),`${dest}/${name} was omitted`);
   for(const name of required.filter(n=>n.endsWith('.js'))){
    const path=join(root,dest,name),source=readFileSync(path,'utf8');
@@ -22,7 +23,10 @@ test('v0.1.13 bundles every JS dependency into launcher and standalone outputs',
    }
   }
  }
- assert.match(readFileSync(join(root,'dist/standalone/sw.js'),'utf8'),/"\.\/render\.js"/);
+ const sw=readFileSync(join(root,'dist/standalone/sw.js'),'utf8');
+ assert.match(sw,/"\.\/terrain-sampler\.js"/);
+ assert.match(sw,/"\.\/terrain-3d-worker\.js"/);
+ assert.doesNotMatch(sw,/"\.\/(?:raster(?:-worker)?|render)\.js"/);
  assert.match(readFileSync(join(root,'dist/worldgen/app.js'),'utf8'),/WorldGen v|0\.1\.13/);
 });
 
