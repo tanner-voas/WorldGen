@@ -113,7 +113,7 @@ test('close-up worker supplies stitched patches, reuses cached tiles and release
     assert.equal(data.kind,'detail');
     assert.deepEqual(Object.keys(data).sort(),['key','kind','tiles']);
     const {geometry,mesh,elevations,grid,appearance}=this.source;
-    const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,grid,tile,{appearance}));
+    const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,grid,tile,{appearance,subdivisions:tile.subdivisions}));
     this.onmessage({data:{kind:'detail',key:data.key,patches}});
    }
   }

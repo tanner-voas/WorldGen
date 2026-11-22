@@ -19,7 +19,7 @@ self.onmessage=({data})=>{
    if(!detailContext)throw Error('Close-up source is not initialized');
    const {geometry,mesh,elevations,grid,sampler,sourceColors,appearance}=detailContext;
    const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(
-    geometry,mesh,elevations,grid,tile,{appearance,sampler,sourceColors}));
+    geometry,mesh,elevations,grid,tile,{appearance,sampler,sourceColors,subdivisions:tile.subdivisions}));
    const transfer=patches.flatMap(patch=>[patch.vertexData.buffer,patch.indices.buffer,
     ...(patch.materialColors?[patch.materialColors.buffer]:[])]);
    self.postMessage({kind:'detail',key:data.key,patches},transfer);

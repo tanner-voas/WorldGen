@@ -1,6 +1,6 @@
 import {lodStepForDistance,adaptiveTileLod,tileVisibleInFrustum} from './terrain-3d-lod.js';
 import {cameraRay,pickTerrainRay,surfaceHeightAt} from './terrain-3d-focus.js';
-import {closeUpCameraLimits,focusedTerrainTiles,LOCAL_TERRAIN_SUBDIVISIONS} from './terrain-3d-detail.js';
+import {closeUpCameraLimits,planFocusedTerrainTiles,DETAIL_CACHE_BYTE_BUDGET,focusedTileTriangles} from './terrain-3d-detail.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
  * smooth lighting, water and interactive level-of-detail index buffers.
@@ -216,7 +216,7 @@ export class Terrain3DViewer{
   const gl=this.canvas.getContext('webgl2',{alpha:false,depth:true,antialias:true,powerPreference:'high-performance'});
   if(!gl)throw Error('WebGL2 is unavailable. Try Safari 26+ with hardware acceleration enabled.');
   this.gl=gl;this.resources=[];
-  this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSignature='';this.detailTiles=[];this.detailState=null;this.detailFailure=null;this.tileLodHistory=new Map();
+  this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSignature='';this.detailTiles=[];this.detailPlan=new Map();this.detailState=null;this.detailFailure=null;this.tileLodHistory=new Map();
   this.program=program(gl);
   this.cameraLocation=gl.getUniformLocation(this.program,'uCamera');
   this.waterLocation=gl.getUniformLocation(this.program,'uWater');
@@ -295,15 +295,25 @@ export class Terrain3DViewer{
   * receives full world data only once; subsequent requests are tile IDs and
   * bounds. While busy, camera motion replaces the pending request rather
   * than building an ever-growing queue of obsolete meshes. */
- _requestFocusedDetail(){
+ _requestFocusedDetail(camera,width,height){
   if(!this.surface||!this.detailSource||this.disposed||this.lost)return;
   const close=this.distance<=(this.detailLimits?.detailDistance||.25);
-  const tiles=close?focusedTerrainTiles(this.surface,this.target):[];
-  const signature=tiles.map(tile=>tile.id).join(',');
+  // Tests and direct callers can omit the matrices; use the same camera
+  // projection as draw() with a portrait viewport in that case.
+  if(close&&!camera){
+   width=width||390;height=height||700;
+   const pitch=this.pitch??.93,yaw=this.yaw??-.69;
+   const eye=[this.target[0]+this.distance*Math.cos(pitch)*Math.sin(yaw),this.target[1]+this.distance*Math.sin(pitch),this.target[2]+this.distance*Math.cos(pitch)*Math.cos(yaw)];
+   camera=multiplyMatrices(perspectiveMatrix(.77,width/height,Math.max(.00035,Math.min(.04,this.distance*.045)),100),lookAtMatrix(eye,this.target));
+  }
+  const tiles=close?planFocusedTerrainTiles(this.surface,{camera,width,height,heightMultiplier:this.heightMultiplier??1,
+   previous:this.detailPlan||new Map()}):[];
+  const signature=tiles.map(tile=>`${tile.id}:${tile.subdivisions}`).join(',');
   if(signature===this.detailSignature)return;
   this.detailSignature=signature;
   this.activeDetailIds=new Set(tiles.map(tile=>tile.id));
   this.detailTiles=tiles;
+  this.detailPlan=new Map(tiles.map(tile=>[tile.id,tile.subdivisions]));
   if(!tiles.length){
    this.detailWorker?.terminate();this.detailWorker=null;this.detailState=null;
    this._releaseFocusedPatches();
@@ -315,6 +325,7 @@ export class Terrain3DViewer{
     this.detailPatches.delete(id);this.detailPatches.set(id,cached);
    }
   }
+  this._trimFocusedPatches();
   if(this.detailFailure)return;
   if(!this.detailWorker)this._startDetailWorker();
   this._dispatchFocusedDetail();
@@ -340,8 +351,11 @@ export class Terrain3DViewer{
        if(data.patches.length!==requested.length)throw Error('Incomplete close-up tile response');
        for(let k=0;k<data.patches.length;k++){
         const tile=requested[k];
-        if(this.activeDetailIds.has(tile.id)&&!this.detailPatches.has(tile.id))
-         this._uploadFocusedPatch(tile.id,data.patches[k]);
+        const patch=data.patches[k];
+        if(patch.subdivisions!==tile.subdivisions||patch.x0!==tile.x0||patch.x1!==tile.x1||patch.y0!==tile.y0||patch.y1!==tile.y1||
+           patch.indices.length/3>focusedTileTriangles(tile))throw Error('Unexpected close-up mesh resolution');
+        if(this.detailPlan?.get(tile.id)===tile.subdivisions&&this.detailPatches.get(tile.id)?.subdivisions!==tile.subdivisions)
+         this._uploadFocusedPatch(tile.id,patch);
        }
        this._trimFocusedPatches();
        this.drawSoon();
@@ -361,7 +375,7 @@ export class Terrain3DViewer{
  _dispatchFocusedDetail(){
   const state=this.detailState;
   if(!state?.ready||state.busy||!this.detailWorker||this.disposed||this.lost)return;
-  const missing=(this.detailTiles||[]).filter(tile=>!this.detailPatches.has(tile.id));
+  const missing=(this.detailTiles||[]).filter(tile=>this.detailPatches.get(tile.id)?.subdivisions!==tile.subdivisions);
   if(!missing.length)return;
   state.busy=true;
   state.key=this.detailSignature;
@@ -371,6 +385,7 @@ export class Terrain3DViewer{
  }
  _uploadFocusedPatch(id,patch){
   const gl=this.gl;
+  this._deleteFocusedPatch(id);
   const vao=gl.createVertexArray();gl.bindVertexArray(vao);
   const vbo=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
   gl.bufferData(gl.ARRAY_BUFFER,patch.vertexData,gl.STATIC_DRAW);
@@ -386,12 +401,23 @@ export class Terrain3DViewer{
   const ibo=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibo);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,patch.indices,gl.STATIC_DRAW);
   gl.bindVertexArray(null);
-  this.detailPatches.set(id,{vao,vbo,materialVBO,ibo,count:patch.indices.length});
+  this.detailPatches.set(id,{vao,vbo,materialVBO,ibo,count:patch.indices.length,subdivisions:patch.subdivisions,
+   bytes:patch.vertexData.byteLength+patch.indices.byteLength+(patch.materialColors?.byteLength||0)});
+ }
+ // A cached lower-resolution patch can remain visible during an upgrade.
+ // A higher-resolution patch must not exceed the new plan's budget: fall back
+ // to the global mesh until its smaller replacement is ready.
+ _activeFocusedPatch(id){
+  const desired=this.detailPlan?.get(id),patch=this.detailPatches?.get(id);
+  return desired&&patch&&patch.subdivisions<=desired?patch:null;
  }
  _trimFocusedPatches(){
-  while(this.detailPatches.size>8){
-   const old=[...this.detailPatches.keys()].find(id=>!this.activeDetailIds.has(id));
-   if(old===undefined)break;
+  let bytes=0;
+  for(const patch of this.detailPatches.values())bytes+=patch.bytes||0;
+  while(bytes>DETAIL_CACHE_BYTE_BUDGET||this.detailPatches.size>32){
+   const old=[...this.detailPatches.keys()].find(id=>!this._activeFocusedPatch(id));
+   if(old===undefined)break; // the active geometry is independently bounded
+   bytes-=this.detailPatches.get(old).bytes||0;
    this._deleteFocusedPatch(old);
   }
  }
@@ -529,8 +555,9 @@ export class Terrain3DViewer{
   gl.uniform1i(this.waterLocation,0);
   gl.disable(gl.BLEND);gl.depthMask(true);
   gl.bindVertexArray(this.terrainVAO);
-  this._requestFocusedDetail();
-  const hasFocused=[...(this.detailPatches||new Map()).keys()].some(id=>this.activeDetailIds?.has(id));
+  this._requestFocusedDetail(camera,width,height);
+  const activePatches=[...(this.detailPatches||new Map()).keys()].map(id=>this._activeFocusedPatch(id)).filter(Boolean);
+  const hasFocused=activePatches.length>0;
   const tiled=this.levelBuffers,baseline=tiled.find(level=>level.step===1);
   let selectedTriangles=0,finest=8,coarsest=1;
   if(baseline?.tiles?.length){
@@ -544,7 +571,7 @@ export class Terrain3DViewer{
     history.set(tile.id,step);return step;
    });
    finest=Math.min(...selectedSteps);coarsest=Math.max(...selectedSteps);
-   const uniform=finest===coarsest&&!hasFocused?
+   const uniform=finest===coarsest&&!hasFocused&&this.distance>(this.detailLimits?.detailDistance||.25)?
     this.uniformLevelBuffers?.find(level=>level.step===finest):null;
    if(uniform){
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,uniform.buffer);
@@ -554,7 +581,7 @@ export class Terrain3DViewer{
     let currentStep=0;
     for(let i=0;i<baseline.tiles.length;i++){
      const tile=baseline.tiles[i];
-     if(this.activeDetailIds?.has(tile.id)&&this.detailPatches?.has(tile.id))continue;
+     if(this._activeFocusedPatch(tile.id))continue;
      // The full elevation range makes this culling conservative even when a
      // tile contains steep mountains. Invisible tiles need no GPU draw call.
      const scale=this.heightMultiplier||1;
@@ -574,8 +601,7 @@ export class Terrain3DViewer{
    selectedTriangles=level.count/3;finest=coarsest=level.step;
   }
   if(hasFocused){
-   for(const [id,patch] of this.detailPatches){
-    if(!this.activeDetailIds?.has(id))continue;
+   for(const patch of activePatches){
     gl.bindVertexArray(patch.vao);
     gl.drawElements(gl.TRIANGLES,patch.count,gl.UNSIGNED_INT,0);
     selectedTriangles+=patch.count/3;
@@ -600,7 +626,9 @@ export class Terrain3DViewer{
   }
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);
   const detail=finest===coarsest?`LOD ${finest}`:`Adaptive LOD ${finest}–${coarsest}`;
-  const closeDetail=hasFocused?` · ${LOCAL_TERRAIN_SUBDIVISIONS}× close-up tiles`:
+  const subdivisions=activePatches.map(p=>p.subdivisions);
+  const detailRange=hasFocused?(Math.min(...subdivisions)===Math.max(...subdivisions)?`${subdivisions[0]}×`:`${Math.min(...subdivisions)}–${Math.max(...subdivisions)}×`):'';
+  const closeDetail=hasFocused?` · ${detailRange} close-up (${activePatches.length} tiles)` :
    this.detailWorker?' · refining close-up…':this.detailFailure?' · close-up unavailable':'';
   const status=`${this.label} · ${detail}${closeDetail} · ${selectedTriangles.toLocaleString()} terrain tris · ${s.hydrology?.riverSegments||0} river tris`;
   if(status!==this.lastDrawStatus){this.lastDrawStatus=status;this.onStatus(status);}

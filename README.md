@@ -1,4 +1,4 @@
-# WorldGen v0.1.37
+# WorldGen v0.1.38
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -261,3 +261,7 @@ From layer 9 onward, the shared 3D sampler uses saved lake membership, depths an
 ## v0.1.37 — River integration
 
 The 3D viewer routes channels through shared Voronoi edges, including lake inlets and outlets, and projects their discharge-scaled ribbons onto the exact terrain triangles. Ocean outlets are clipped at the rendered sea level. Protected LOD blocks and a narrow local refinement mask keep the terrain beneath the ribbons consistent; the remaining terrain can refine normally. Round joins connect tributaries, and the renderer uses depth bias instead of lifting rivers above terrain. Saved layers and relief controls are unchanged. See `RELEASE_v0.1.37.md`.
+
+## v0.1.38 — Adaptive detail budgeting
+
+Close-up terrain requests are selected using the camera frustum, projected screen coverage, relief-adjusted tile bounds and framebuffer dimensions. Tiles use 2×, 4×, 6× or 8× subdivisions, with at most 262,144 requested close-up triangles. The viewer retains the base mesh as a fallback and limits retained detail buffers to 16 MiB of vertex, material and index data. Different subdivision levels share base edge heights and material colors; saved terrain and hydrology are unchanged. Partially clipped boundary tiles remain at base resolution until the next release. See `RELEASE_v0.1.38.md`.

@@ -136,9 +136,15 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
  // Cache coarse grid corners; the patch can contain more than 65,000
  // vertices but has only a few hundred coarse-grid anchors.
  const anchors=new Float32Array((x1-x0+1)*(y1-y0+1));
- const anchorAt=(x,y)=>anchors[(y-y0)*(x1-x0+1)+x-x0];
+ const colorAnchors=materialColors?new Float32Array(anchors.length*3):null;
+ const anchorIndex=(x,y)=>(y-y0)*(x1-x0+1)+x-x0;
+ const anchorAt=(x,y)=>anchors[anchorIndex(x,y)];
  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
-  anchors[(y-y0)*(x1-x0+1)+x-x0]=sampleElevation(sampler,elevations,geometry.width*x/cols,geometry.height*y/rows);
+  const wx=geometry.width*x/cols,wy=geometry.height*y/rows,idx=anchorIndex(x,y);
+  if(colorAnchors){
+   const sample=sampleTerrainFields(sampler,elevations,sourceColors,wx,wy);
+   anchors[idx]=sample.height;colorAnchors.set(sample.color,idx*3);
+  }else anchors[idx]=sampleElevation(sampler,elevations,wx,wy);
  }
  for(let j=0;j<=ny;j++)for(let i=0;i<=nx;i++){
   const gx=x0+i/subdivisions,gy=y0+j/subdivisions;
@@ -152,13 +158,23 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
   const accurate=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
   const border=Math.min(gx-x0,x1-gx,gy-y0, y1-gy);
-  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border)*riverDetailFade(riverMask,cols,ax,ay,fx,fy);
+  const borderFade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border);
+  const fade=borderFade*riverDetailFade(riverMask,cols,ax,ay,fx,fy);
   const id=j*stride+i,offset=id*7;
   raw[id]=coarse+(accurate-coarse)*fade;
   vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
   vertexData[offset+2]=zz;vertexData[offset+6]=raw[id];
   inside[id]=insideGeometry(wx,wy,geometry)?1:0;
-  if(materialColors)materialColors.set(sampled.color,id*3);
+  if(materialColors){
+   // Mixed-density patches must share the base mesh's linear material
+   // edge, not independently resample nonlinear colors along that edge.
+   for(let k=0;k<3;k++){
+    const color=(x,y)=>colorAnchors[anchorIndex(x,y)*3+k];
+    const a=color(ax,ay),b=color(ax+1,ay),c=color(ax,ay+1),d=color(ax+1,ay+1);
+    const coarseColor=fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy);
+    materialColors[id*3+k]=coarseColor+(sampled.color[k]-coarseColor)*borderFade;
+   }
+  }
  }
  // Match the coarse mesh normals as well as its edge heights. Without
  // this a mathematically crack-free edge could still show a lighting seam.

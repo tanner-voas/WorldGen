@@ -61,7 +61,7 @@ test('detail worker initializes source once, coalesces camera movement and ignor
    const data=this.messages.at(-1);
    assert.equal(data.kind,'detail');
    const {geometry,mesh,elevations,appearance,grid}=this.messages[0];
-   const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,grid,tile,{appearance,subdivisions:2}));
+   const patches=data.tiles.map(tile=>buildFocusedTerrainPatch(geometry,mesh,elevations,grid,tile,{appearance,subdivisions:tile.subdivisions}));
    this.onmessage({data:{kind:'detail',key:data.key,patches}});
   }
   terminate(){this.terminated=true;}
