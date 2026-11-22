@@ -313,3 +313,21 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
  .wg-shell.wg-map-compact .wg-map-buttons{top:60px;right:10px;left:auto;gap:6px}
  .wg-shell.wg-map-compact .wg-overlays{top:108px;left:12px;width:min(240px,calc(100% - 24px));max-height:max(0px,calc(100% - 120px))}
 }
+
+/* v0.2.3: the map tool rail stays on the right whenever the visible map
+   has enough height. Short-map fallback never overlaps the overlay picker. */
+@media(max-width:699px){
+ .wg-shell .wg-map-buttons,.wg-shell.wg-map-compact .wg-map-buttons{
+  top:10px;right:10px;left:auto;display:flex;flex-direction:column;gap:6px;
+  max-width:44px;z-index:4;
+ }
+ .wg-shell .wg-map-buttons button,.wg-shell.wg-map-compact .wg-map-buttons button{
+  flex:0 0 40px;min-width:40px;width:40px;height:40px;
+ }
+ .wg-shell .wg-display-bar{left:10px;right:65px;width:auto;max-width:calc(100% - 80px)}
+ .wg-shell .wg-overlays{top:60px;left:10px;max-width:calc(100% - 70px);max-height:calc(100% - 80px)}
+ .wg-shell.wg-map-short .wg-map-buttons,.wg-shell.wg-map-short.wg-map-compact .wg-map-buttons{
+  top:59px;right:10px;left:auto;flex-direction:row;gap:5px;max-width:calc(100% - 20px);
+ }
+ .wg-shell.wg-map-short .wg-overlays{top:109px;max-width:calc(100% - 20px);max-height:max(0px,calc(100% - 120px))}
+}

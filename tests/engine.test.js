@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {generateMesh,generateStage,DEFAULTS,newWorld,validateWorld,generatePlates,generateElevation,generateCoasts,WORLD_WIDTH,WORLD_HEIGHT} from '../src/engine.js';
+import {generateMesh,generateStage,DEFAULTS,newWorld,validateWorld,generatePlates,generateElevation,WORLD_WIDTH,WORLD_HEIGHT} from '../src/engine.js';
 const settings={...DEFAULTS[2],averageArea:WORLD_WIDTH*WORLD_HEIGHT/150,relaxation:1,seed:11};
 let mesh;
 test('Voronoi mesh is deterministic with symmetric topology and bounded polygons',()=>{
@@ -23,17 +23,17 @@ test('supports all three placement distributions and zero relaxations',()=>{
 });
 test('four stages build a complete deterministic world with valid land fraction',()=>{
  const w=newWorld('Test world');w.working.settings={...DEFAULTS[1]};
- for(let stage=1;stage<=5;stage++){
+ for(let stage=1;stage<=7;stage++){
   const data=generateStage(stage,w.locked,stage===2?settings:DEFAULTS[stage]);
   w.locked.push({stage,settings:stage===2?settings:DEFAULTS[stage],data});
  }
  const sea=w.locked[4].data;
  assert.equal(sea.water.length,150);
- assert.ok(Math.abs(sea.landFraction-DEFAULTS[5].land)<.02);
+ assert.equal(sea.landFraction, sea.water.filter(v=>!v).length/sea.water.length);
  assert.ok(w.locked[2].data.plates.length>=3);
  assert.equal(w.locked[3].data.elevations.length,150);
  const json=JSON.stringify(w),copy=JSON.parse(json);
- copy.working={stage:6,settings:{},data:null};
+ copy.working={stage:8,settings:{},data:null};
  assert.doesNotThrow(()=>validateWorld(copy));
  assert.deepEqual(copy.locked,w.locked);
 });

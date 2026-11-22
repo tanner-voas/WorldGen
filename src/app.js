@@ -1,6 +1,6 @@
-import {geometryConstraintReport,meshConstraintReport,coastConstraintReport} from './generation-constraints.js';
+import {geometryConstraintReport,meshConstraintReport} from './generation-constraints.js';
 import {REFERENCE_AREA_KM2} from './geographic-units.js';
-import {DEFAULTS,STAGES,IMPLEMENTED,stageUsesSeed,newWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
+import {DEFAULTS,STAGES,IMPLEMENTED,stageUsesSeed,newWorld,prepareWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
@@ -10,7 +10,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.2',DB_NAME='worldgen-v1';
+const APP_VERSION='0.2.3',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -40,15 +40,16 @@ const OPTIONS={
   ['relaxation','Lloyd relaxation','range',0,8,1,'linear']
  ],
  3:[['plates','Plates','range',3,50,1,'linear']],
- 4:[['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear'],['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation (m)','range',0.05,0.8,0.025,'linear']],
- 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (km)','range',0.5,5,0.25,'linear'],['setbackStrength','Continental setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Continental setback width (km)','range',2,18,0.5,'linear']],
- 6:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
- 7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
- 8:[['equatorTemp','Equatorial temperature (°C)','range',10,40,0.5,'linear'],['latitudeCenter','Central latitude (°)','range',-70,70,2,'linear'],['latitudeSpan','Latitude span (°)','range',20,180,5,'linear'],['axialTilt','Axial tilt (°)','range',0,45,0.5,'linear'],['rainfall','Annual rainfall baseline (mm)','range',100,4000,50,'linear'],['windDirection','Wind direction (°)','range',-180,180,5,'linear'],['rainShadow','Mountain rain shadow','range',0,2,0.05,'linear'],['maritime','Ocean moderation','range',0,1.5,0.05,'linear']],
- 9:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (km²)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth (m)','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
- 10:[['weathering','Mineral weathering','range',0,2,0.1,'linear'],['organicInput','Organic accumulation','range',0,2,0.1,'linear'],['alluvialInput','Alluvial deposition','range',0,2,0.1,'linear'],['permeabilityBias','Permeability factor','range',0.25,2,0.05,'linear'],['groundwaterRecharge','Groundwater recharge potential','range',0,2,0.1,'linear']],
- 11:[['temperatureShift','Biome temperature shift (°C)','range',-12,12,0.5,'linear'],['rainfallResponse','Effective precipitation','range',0.4,1.8,0.05,'linear'],['forestThreshold','Forest moisture threshold','range',0.45,1.8,0.05,'linear'],['wetlandThreshold','Wetland groundwater threshold','range',0.4,0.95,0.025,'linear'],['alpineLimit','Alpine summer threshold (°C)','range',0,16,0.5,'linear'],['patchVariation','Regional biome variation','range',0,0.4,0.025,'linear']],
- 12:[['vegetationDensity','Vegetation density','range',0.2,1.8,0.05,'linear'],['maturity','Landscape maturity','range',0,1,0.05,'linear'],['disturbance','Disturbance pressure','range',0,1,0.05,'linear'],['riparianStrength','Riparian boost','range',0,1.5,0.05,'linear'],['patchiness','Vegetation patchiness','range',0,0.45,0.025,'linear']]
+ 4:[['motion','Boundary stress','range',0,2,0.05,'linear'],['uplift','Line uplift strength','range',0,1.6,0.05,'linear'],['upliftWidth','Uplift reach (km)','range',30,500,10,'linear'],['roughness','Background altitude variation','range',0,1.4,0.05,'linear']],
+ 5:[['oceanOffset','Ocean elevation offset (m)','range',-1.8,1.8,0.01,'linear']],
+ 6:[['edgeOcean','Edge lowering','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (km)','range',0.5,5,0.25,'linear'],['setbackStrength','Coastal setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Coastal setback width (km)','range',2,18,0.5,'linear']],
+ 7:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
+ 8:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
+ 9:[['equatorTemp','Equatorial temperature (°C)','range',10,40,0.5,'linear'],['latitudeCenter','Central latitude (°)','range',-70,70,2,'linear'],['latitudeSpan','Latitude span (°)','range',20,180,5,'linear'],['axialTilt','Axial tilt (°)','range',0,45,0.5,'linear'],['rainfall','Annual rainfall baseline (mm)','range',100,4000,50,'linear'],['windDirection','Wind direction (°)','range',-180,180,5,'linear'],['rainShadow','Mountain rain shadow','range',0,2,0.05,'linear'],['maritime','Ocean moderation','range',0,1.5,0.05,'linear']],
+ 10:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (km²)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth (m)','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
+ 11:[['weathering','Mineral weathering','range',0,2,0.1,'linear'],['organicInput','Organic accumulation','range',0,2,0.1,'linear'],['alluvialInput','Alluvial deposition','range',0,2,0.1,'linear'],['permeabilityBias','Permeability factor','range',0.25,2,0.05,'linear'],['groundwaterRecharge','Groundwater recharge potential','range',0,2,0.1,'linear']],
+ 12:[['temperatureShift','Biome temperature shift (°C)','range',-12,12,0.5,'linear'],['rainfallResponse','Effective precipitation','range',0.4,1.8,0.05,'linear'],['forestThreshold','Forest moisture threshold','range',0.45,1.8,0.05,'linear'],['wetlandThreshold','Wetland groundwater threshold','range',0.4,0.95,0.025,'linear'],['alpineLimit','Alpine summer threshold (°C)','range',0,16,0.5,'linear'],['patchVariation','Regional biome variation','range',0,0.4,0.025,'linear']],
+ 13:[['vegetationDensity','Vegetation density','range',0.2,1.8,0.05,'linear'],['maturity','Landscape maturity','range',0,1,0.05,'linear'],['disturbance','Disturbance pressure','range',0,1,0.05,'linear'],['riparianStrength','Riparian boost','range',0,1.5,0.05,'linear'],['patchiness','Vegetation patchiness','range',0,0.45,0.025,'linear']]
 };
 const PARAM_HELP={
  shape:['World outline','Rectangle creates a four-sided map. Circle creates a map with equal horizontal and vertical radii. Ellipse lets you control each radius independently. All three are flat 2D worlds with no depth.'],
@@ -61,16 +62,15 @@ const PARAM_HELP={
  distribution:['Site distribution','Even / jittered places sites in a loose grid; random spreads them out with a minimum separation; clustered creates uneven concentrations. Select a pattern to change cell uniformity.'],
  jitter:['Position jitter','How far Voronoi sites shift away from the evenly spaced starting grid. Higher values make cell shapes and sizes less regular; lower values give a more uniform tessellation.'],
  relaxation:['Lloyd relaxation','Number of times sites move toward their polygon centers. Higher values make cells rounder and more even, but take longer to generate. Zero keeps the initial irregular shapes.'],
- plates:['Plate count','Number of tectonic territories and their shared boundaries. More plates create more boundaries; fewer create broader regions. Crust type and motion are defined in the next layer.'],
- continental:['Continental crust ratio','Chance each fixed plate territory receives buoyant continental crust in the elevation stage. Increasing it tends to raise potential land area; lowering it favors oceanic crust. Actual land area is defined later by sea level.'],
- motion:['Plate motion','Magnitude of motion assigned to the fixed plate territories. More motion intensifies uplift at colliding boundaries and influences later landforms; zero removes relative-motion uplift without changing the boundaries.'],
- uplift:['Uplift strength','How strongly converging tectonic boundaries raise terrain. Higher values create more prominent mountain systems; lower values soften those effects.'],
- roughness:['Surface roughness','Strength of small-scale height noise before landform refinement. Increasing it makes elevation less smooth; decreasing it produces gentler terrain.'],
- continentalHeight:['Crust elevation','Starting crust-height parameter in metres, before coastline sea-level selection. Higher values increase continental/oceanic crust contrast; lower values flatten it.'],
- land:['Land coverage target','Desired share of the world surface ABOVE sea level by geographic area. Higher values expose more land; lower values flood more land. It is approximate at the resolution of individual cells. An enabled edge-ocean buffer takes priority if the outermost cells already exceed the water target.'],
- edgeOcean:['Edge ocean bias','Strength of the ocean-promoting effect at the outer world boundary. Higher values lower near-edge terrain relative to sea level, making a broader water margin without changing distant inland heights. When greater than zero, polygons touching the world boundary are guaranteed to be water. Zero disables this feature.'],
+ plates:['Plate count','Number of tectonic territories and their shared boundaries. More plates create more boundaries; fewer create broader regions. Plate boundary stress and uplift are defined in the next layer.'],
+ motion:['Boundary stress','Magnitude of the relative motion used only to generate positive and negative altitude along the fixed plate boundaries. No plates move, and no ocean or crust types are assigned.'],
+ uplift:['Line uplift strength','Amplitude of the mountain and rift fields extending away from the plate boundaries. Larger values increase both positive and negative relief.'],
+ upliftWidth:['Uplift reach','Distance scale for the altitude field to taper away from tectonic boundaries, measured in kilometers. Larger values create wider ranges.'],
+ roughness:['Background altitude variation','Amount of correlated altitude variation across the world, centered around the zero-altitude reference plane. This does not designate land or water.'],
+ oceanOffset:['Ocean elevation offset','Raise or lower every altitude before the zero-level flooding test. A positive offset exposes more land; a negative offset submerges more land. Zero and below is flooded. The upstream elevation layer is never modified.'],
+ edgeOcean:['Edge lowering','Lower coast elevation near the outside boundary after initial flooding. When positive, an outermost water rim is enforced in the coastline layer only.'],
  edgeFade:['Edge falloff width','Width of the narrow ocean bias in kilometres, independent of mesh density. The reach is capped at 12% of the shorter world dimension. The outermost polygon stays underwater if Edge ocean bias is enabled. This narrow rim does not by itself move whole continents inward; use Continental setback for that.'],
- setbackStrength:['Continental setback strength','A broad, smoothly fading downward bias on terrain near the world boundary. Increasing it makes large landmasses less likely to run parallel to the outline. Zero disables the broad effect without disabling the one-cell water rule. It changes only the coast layer, not the locked elevation layer.'],
+ setbackStrength:['Coastal setback strength','Additional gradual reduction in elevation near the world boundary, modifying the water mask and coastline after Layer 5.'],
  setbackWidth:['Continental setback width','How many kilometres the broad continental bias reaches inward. Increasing it creates a more natural expanse of ocean between the continents and the artificial boundary. The reach is limited to 16% of the shorter world dimension so the interior stays unaffected.'],
  ridge:['Ridge strength','Strength of coherent mountainous ridges during landform refinement. Higher produces stronger belts and peaks; lower makes ridges subtler. Locked coastlines remain fixed.'],
  detail:['Terrain variation','Fine-scale variation added to existing elevations. Higher gives rougher and more diverse local terrain; lower keeps smoother landscapes.'],
@@ -230,7 +230,10 @@ function applyConsoleHeight(){
  const ratio=Number.isFinite(workspace.consoleHeightRatio)?workspace.consoleHeightRatio:.36;
  const height=clamp(viewport*ratio,minimum,maximum);
  shell.style.setProperty('--wg-console-height',`${Math.round(height)}px`);
- shell.classList.toggle('wg-map-compact',!workspace.exploreMode&&viewport-(root.querySelector('.wg-header')?.getBoundingClientRect().height||70)-height<290);
+ const mapHeight=(workspace.exploreMode?viewport-header:viewport-header-height);
+ // Keep the five navigation buttons on the right when their 244px rail fits.
+ shell.classList.toggle('wg-map-short',mapHeight<260);
+ shell.classList.toggle('wg-map-compact',mapHeight<290);
 }
 function bindDrawerDrag(){
  const handle=root.querySelector('.wg-console-handle');
@@ -286,7 +289,7 @@ function buildShell(){
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
     <div class="wg-map-buttons"><button data-action="fit" aria-label="Fit world to view" title="Fit entire world">⤢</button><button data-action="zoom-in" aria-label="Zoom in">+</button><button data-action="zoom-out" aria-label="Zoom out">−</button><button data-action="locate-cell" aria-label="Go to cell number" title="Go to cell number">⌖</button><button data-action="measure" aria-label="Measure distance" aria-pressed="false" title="Measure two-point distance">↔</button></div>
     <div class="wg-display-bar"><label for="wg-palette" class="wg-screen-reader-only">Map display</label><select id="wg-palette" aria-label="Map display mode"></select><button class="wg-overlay-trigger" data-action="toggle-overlays" aria-expanded="false">Overlays</button></div>
-    <div class="wg-overlays" id="wg-overlays" hidden><label data-overlay-stage="2"><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label data-overlay-stage="3"><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label data-overlay-stage="5"><input id="wg-coast-borders" type="checkbox"> Coastlines</label><label data-overlay-stage="7"><input id="wg-flow" type="checkbox"> Drainage / rivers</label></div>
+    <div class="wg-overlays" id="wg-overlays" hidden><label data-overlay-stage="2"><input id="wg-edges" type="checkbox"> Voronoi mesh</label><label data-overlay-stage="3"><input id="wg-plate-borders" type="checkbox"> Plate boundaries</label><label data-overlay-stage="5"><input id="wg-coast-borders" type="checkbox"> Shoreline</label><label data-overlay-stage="8"><input id="wg-flow" type="checkbox"> Drainage / rivers</label></div>
     <div class="wg-map-scale" id="wg-map-scale">World width: 2,048 km</div>
     <div class="wg-measure-readout" id="wg-measure-readout" aria-live="polite" hidden></div>
     <div class="wg-map-bottom-tools" aria-label="Map layer controls"><label for="wg-map-layer-select" class="wg-screen-reader-only">Layer</label><select id="wg-map-layer-select" aria-label="Select generation layer"></select><button class="wg-layer-toggle" data-action="lock-or-unlock" aria-label="Lock current generation layer">Lock</button><button class="wg-explore-toggle" data-action="toggle-explore" aria-label="Open generation settings">Settings</button></div>
@@ -318,17 +321,18 @@ function rebuildUI(){
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
   html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>(stage!==2||option[0]!=='jitter'||settings.distribution==='jittered')&&(stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0]))))).map(settingRow).join('')}${!stageUsesSeed(stage)?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button type="button" class="wg-info" data-info="seed" aria-label="About random seed">i</button><div class="wg-seed-input"><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button type="button" data-action="reroll" aria-label="Reroll random seed" title="Reroll random seed">↻</button></div></div>`}</div>`;
-  if(stage===1||stage===2||stage===5)html+='<div id="wg-constraints" hidden></div>';
-  if(stage===4)html+='<p class="wg-hint">Physical height uses 2,700 m per saved elevation unit. Until layer 5 establishes sea level, heights refer to a provisional zero datum.</p>';
-  if(stage===5)html+='<p class="wg-hint">Coastlines are deterministic for the same locked elevation and coastline settings. Change the parameters above to reshape them; this layer has no independent random seed.</p>';
-  if(stage===7)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Its runoff input is preliminary; climate is calculated later and does not retroactively alter locked erosion or coastlines.</p>';
-  if(stage===8)html+='<p class="wg-hint">Planar climate approximation using notional latitude, winds, elevation and ocean proximity. January/July are opposite seasons; this layer does not change existing terrain.</p>';
-  if(stage===9)html+='<p class="wg-hint">Climate-aware runoff follows depression-resolved drainage paths to the ocean. Lakes require natural topographic basins. The resulting channels are Voronoi-scale approximations, not sub-cell rivers. Earlier layers remain locked.</p>';
-  if(stage===11)html+='<p class="wg-hint">Biomes represent potential natural environments inferred from temperature, precipitation, topography, hydrology and soil. Tree cover and ecological productivity are suitability estimates, not an evolving vegetation or animal simulation. Climate and terrain stay locked.</p>';
-  if(stage===12)html+='<p class="wg-hint">This is a deterministic, static vegetation and habitat snapshot. Canopy, ground cover, and biomass are modelled indices, not actual plant counts or a time-stepped ecosystem. Locked biomes, soils and rivers are preserved.</p>';
+  if(stage===1||stage===2||stage===5||stage===6)html+='<div id="wg-constraints" hidden></div>';
+  if(stage===4)html+='<p class="wg-hint">Elevation is entirely independent of ocean and continental ratios. White represents zero altitude, red positive altitude, and blue negative altitude.</p>';
+  if(stage===5)html+='<p class="wg-hint">Ocean flooding uses an exact zero-level threshold after the elevation offset. No target land percentage is imposed.</p>';
+  if(stage===6)html+='<p class="wg-hint">Coastal adjustments can change the Layer 5 flood boundary locally. No preset percentage of land or water is enforced.</p>';
+  if(stage===8)html+='<p class="wg-hint">Approximate Voronoi-scale erosion. Its runoff input is preliminary; climate is calculated later and does not retroactively alter locked erosion or coastlines.</p>';
+  if(stage===9)html+='<p class="wg-hint">Planar climate approximation using notional latitude, winds, elevation and ocean proximity. January/July are opposite seasons; this layer does not change existing terrain.</p>';
+  if(stage===10)html+='<p class="wg-hint">Climate-aware runoff follows depression-resolved drainage paths to the ocean. Lakes require natural topographic basins. The resulting channels are Voronoi-scale approximations, not sub-cell rivers. Earlier layers remain locked.</p>';
+  if(stage===12)html+='<p class="wg-hint">Biomes represent potential natural environments inferred from temperature, precipitation, topography, hydrology and soil. Tree cover and ecological productivity are suitability estimates, not an evolving vegetation or animal simulation. Climate and terrain stay locked.</p>';
+  if(stage===13)html+='<p class="wg-hint">This is a deterministic, static vegetation and habitat snapshot. Canopy, ground cover, and biomass are modelled indices, not actual plant counts or a time-stepped ecosystem. Locked biomes, soils and rivers are preserved.</p>';
   html+=`<div class="wg-actions"><button class="wg-secondary" data-action="reset-settings" title="Restore the default parameters for this layer">Reset settings</button><button class="wg-secondary" data-action="regenerate">Regenerate</button></div>`;
  }else if(row){
-  html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history. Use Unlock layer to edit it.</p>${[1,2,5].includes(stage)?'<div id="wg-constraints" hidden></div>':''}<div class="wg-actions"><button class="wg-secondary" data-action="save">Save checkpoint</button></div>`;
+  html+=`<p class="wg-summary">${describeStage(stage,row.data)} This layer is preserved as part of your world history. Use Unlock layer to edit it.</p>${[1,2,5,6].includes(stage)?'<div id="wg-constraints" hidden></div>':''}<div class="wg-actions"><button class="wg-secondary" data-action="save">Save checkpoint</button></div>`;
  }else{html+='<p class="wg-hint">Generate and lock the preceding layer to continue.</p>';}
  root.querySelector('#wg-stage-main').innerHTML=html;
  updateConstraintReport();
@@ -373,7 +377,7 @@ function updateConstraintReport(){
  try{
   if(stage===1)report=geometryConstraintReport(editable?generateGeometry(activeSettings()):record?.data);
   else if(stage===2&&!pending)report=meshConstraintReport(record?.data);
-  else if(stage===5)report=coastConstraintReport(latestData(2),editable?activeSettings():record?.settings,record?.data,{pending,historical:!editable||(!pending&&!record?.data?.coverage)});
+  else if((stage===5||stage===6)&&!pending){const coast=record?.data; if(coast?.water){const fraction=coast.landAreaFraction??landAreaFraction(latestData(2),coast.water);report={warning:fraction===0||fraction===1,messages:[`Land area: ${+(fraction*100).toFixed(2)}%. Ocean and land are determined solely by altitude at or below zero${stage===6?' after coastline reshaping':''}.`]};}}
  }catch{report={warning:true,messages:['Geographic feasibility could not be calculated for this world.']};}
  el.hidden=!report;
  el.className=report?.warning?'wg-constraint-report wg-constraint-warning':'wg-constraint-report';
@@ -441,14 +445,15 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
  case 2:return `${shortNumber(data.cells.length)} Voronoi cells across ${shortNumber(Math.round(data.areaKm2))} km².`;
  case 3:return `${data.plates.length} fixed tectonic territories and boundaries; crust and motion are defined in layer 4.`;
  case 4:return `${data.elevations.length} elevation samples with plate-boundary uplift · provisional height range ${shortNumber(Math.round(elevationToMetres(Math.min(...data.elevations))))} to ${shortNumber(Math.round(elevationToMetres(Math.max(...data.elevations))))} m.`;
- case 5:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${+((area??data.landFraction)*100).toFixed(2)}% land area · ${data.edgeWaterCells||0} outer-edge water cells · narrow rim ${data.edgeWidthKm||0} km · continental setback ${data.retreatWidthKm||0} km · sea datum ${shortNumber(Math.round(elevationToMetres(data.seaLevel)))} m relative to layer-4 zero.`;}
- case 6:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
- case 7:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)} · mean eroded depth ${elevationToMetres(data.summary.meanErosion).toFixed(1)} m${Number.isFinite(data.summary.exportedSediment)?` · exported sediment estimate ${sedimentToKm3(data.summary.exportedSediment).toFixed(1)} km³`:""}.`;
- case 8:return `${shortNumber(data.meanTemp.length)} climate cells · mean temperature ${data.summary.avgTemp.toFixed(1)} °C · mean precipitation ${Math.round(data.summary.avgRain)} mm/year.`;
- case 9:return `${shortNumber(data.channels.length)} river-channel cells · ${data.lakes.length} lakes · ${shortNumber(Math.round(data.summary.lakeAreaKm2))} km² lake area · ${data.summary.annualRunoffKm3.toFixed(1)} km³/year estimated runoff.`;
- case 10:return `${shortNumber(data.summary.landCells)} soil-bearing cells · mean regolith ${data.summary.meanDepthM.toFixed(2)} m · mean fertility ${Math.round(data.summary.meanFertility*100)}% · ${shortNumber(data.summary.highFertilityCells)} high-fertility cells.`;
- case 11:return `${data.counts.filter(Boolean).length} environmental classes · ${shortNumber(Math.round(data.summary.forestAreaKm2))} km² forest potential · ${shortNumber(Math.round(data.summary.drylandAreaKm2))} km² dryland · average thermal season ${data.summary.meanGrowingMonths.toFixed(1)} months.`;
- case 12:return `${data.counts.filter(Boolean).length} vegetation / habitat classes · ${shortNumber(Math.round(data.summary.forestAreaKm2))} km² closed forest · average canopy ${Math.round(data.summary.meanCanopy*100)}% · estimated mean vegetation height ${data.summary.meanHeightM.toFixed(1)} m.`;
+ case 5:return `${+((data.landAreaFraction??data.landFraction)*100).toFixed(2)}% land area after the offset · ${shortNumber(data.water.filter(Boolean).length)} cells flooded at or below zero.`;
+ case 6:{const area=data.landAreaFraction??landAreaFraction(latestData(2),data.water);return `${+((area??data.landFraction)*100).toFixed(2)}% land area after coastal adjustment · ${data.edgeWaterCells||0} boundary water cells.`;}
+ case 7:return `${shortNumber(data.classes.length)} terrain samples · ${data.volcanoes.length} volcanic cells · ${data.counts[6]} mountain cells.`;
+ case 8:return `${shortNumber(data.elevations.length)} eroded cells · ${data.channels.length} drainage-channel cells · maximum runoff ${data.summary.maxDischarge.toFixed(1)} · mean eroded depth ${elevationToMetres(data.summary.meanErosion).toFixed(1)} m${Number.isFinite(data.summary.exportedSediment)?` · exported sediment estimate ${sedimentToKm3(data.summary.exportedSediment).toFixed(1)} km³`:""}.`;
+ case 9:return `${shortNumber(data.meanTemp.length)} climate cells · mean temperature ${data.summary.avgTemp.toFixed(1)} °C · mean precipitation ${Math.round(data.summary.avgRain)} mm/year.`;
+ case 10:return `${shortNumber(data.channels.length)} river-channel cells · ${data.lakes.length} lakes · ${shortNumber(Math.round(data.summary.lakeAreaKm2))} km² lake area · ${data.summary.annualRunoffKm3.toFixed(1)} km³/year estimated runoff.`;
+ case 11:return `${shortNumber(data.summary.landCells)} soil-bearing cells · mean regolith ${data.summary.meanDepthM.toFixed(2)} m · mean fertility ${Math.round(data.summary.meanFertility*100)}% · ${shortNumber(data.summary.highFertilityCells)} high-fertility cells.`;
+ case 12:return `${data.counts.filter(Boolean).length} environmental classes · ${shortNumber(Math.round(data.summary.forestAreaKm2))} km² forest potential · ${shortNumber(Math.round(data.summary.drylandAreaKm2))} km² dryland · average thermal season ${data.summary.meanGrowingMonths.toFixed(1)} months.`;
+ case 13:return `${data.counts.filter(Boolean).length} vegetation / habitat classes · ${shortNumber(Math.round(data.summary.forestAreaKm2))} km² closed forest · average canopy ${Math.round(data.summary.meanCanopy*100)}% · estimated mean vegetation height ${data.summary.meanHeightM.toFixed(1)} m.`;
  default:return '';
 }}
 function nextSeed(){return Math.floor(Math.random()*0xffffffff);}
@@ -485,13 +490,7 @@ async function generateCurrent(){
 function defaultsForStage(stage){
  if(stage===2){const g=geometryData();return {...DEFAULTS[2],averageArea:formatNumber(g.areaKm2/1200)};}
  const settings={...(DEFAULTS[stage]||{})};
- if(stage===4){
-  const prior=workspace.locked[2]?.settings;
-  for(const key of ['continental','motion']){
-   const old=Number(prior?.[key]);
-   if(prior&&Number.isFinite(old))settings[key]=clamp(old,...controlBounds(4,key));
-  }
- }
+
  return settings;
 }
 function commitLayer(){
@@ -535,6 +534,7 @@ async function unlockLayer(stage){
 function rgb(r,g,b){return `rgb(${r|0},${g|0},${b|0})`;}
 function gradient(value,stops){const t=clamp(value,0,1);for(let i=1;i<stops.length;i++)if(t<=stops[i][0]){const [at,a]=stops[i-1],[bt,b]=stops[i],v=(t-at)/(bt-at);return rgb(...a.map((x,k)=>x+(b[k]-x)*v));}return rgb(...stops[stops.length-1][1]);}
 const heightColors=[[0,[24,54,83]],[.30,[43,104,130]],[.43,[138,157,153]],[.52,[110,145,116]],[.64,[172,168,124]],[.78,[137,115,95]],[1,[232,236,231]]];
+const altitudeColors=[[0,[18,55,134]],[.22,[39,123,209]],[.42,[139,202,239]],[.5,[248,249,246]],[.57,[247,198,190]],[.75,[215,92,70]],[1,[128,26,37]]];
 const landColors=[[0,[54,99,83]],[.38,[76,121,81]],[.57,[119,140,92]],[.72,[166,146,105]],[.88,[157,145,130]],[1,[234,235,223]]];
 const landformColors=['#1d4965','#4c8295','#b5a986','#6e9d6d','#779273','#9a977a','#d3cdbb','#746a65','#839778'];
 const soilColors=['#23566e','#777879','#9c9382','#cfb889','#85936b','#8f756c','#426852','#7b675c','#d9bf88','#b7b9ae'];
@@ -577,9 +577,9 @@ function drawSegments(segments,color,width){
 }
 
 function colorForCell(i,stage,display){
- const mesh=latestData(2)||(currentStage()===2?workspace.working.data:null),plates=latestData(3),heights=latestData(4),coasts=latestData(5),landforms=latestData(6),erosion=latestData(7),hydrology=stage>=9?latestData(9):null;
- const soils=stage>=10?latestData(10):null,biomes=stage>=11?latestData(11):null,vegetation=stage>=12?latestData(12):null;
- if(stage>=12&&vegetation&&['vegetation','habitats','canopyCover','groundCover','biomass','habitatComplexity','riparian','auto'].includes(display)){
+ const mesh=latestData(2)||(currentStage()===2?workspace.working.data:null),plates=latestData(3),heights=latestData(4),oceans=latestData(5),coasts=(stage>=6?latestData(6):oceans),landforms=latestData(7),erosion=latestData(8),hydrology=stage>=10?latestData(10):null;
+ const soils=stage>=11?latestData(11):null,biomes=stage>=12?latestData(12):null,vegetation=stage>=13?latestData(13):null;
+ if(stage>=13&&vegetation&&['vegetation','habitats','canopyCover','groundCover','biomass','habitatComplexity','riparian','auto'].includes(display)){
   if(display==='habitats')return vegetationColors[vegetation.coverClass[i]];
   if(display==='vegetation'||display==='auto'){if(vegetation.coverClass[i]<2)return vegetationColors[vegetation.coverClass[i]];return gradient(.58*vegetation.canopyCover[i]+.42*vegetation.groundCover[i],[[0,[174,163,123]],[.25,[137,155,103]],[.55,[73,134,78]],[1,[27,96,60]]]);}
   if(vegetation.coverClass[i]<2)return vegetationColors[vegetation.coverClass[i]];
@@ -589,7 +589,7 @@ function colorForCell(i,stage,display){
   if(display==='habitatComplexity')return gradient(vegetation.habitatComplexity[i],[[0,[161,148,117]],[.5,[144,165,122]],[1,[69,129,105]]]);
   if(display==='riparian')return gradient(vegetation.riparian[i],[[0,[133,124,104]],[.4,[107,156,137]],[1,[54,165,197]]]);
  }
- if(stage>=11&&biomes&&['biomes','productivity','treePotential','waterStress','growingSeason','ecotones','auto'].includes(display)){
+ if(stage>=12&&biomes&&['biomes','productivity','treePotential','waterStress','growingSeason','ecotones','auto'].includes(display)){
   if(display==='biomes'||display==='auto')return biomeColors[biomes.biome[i]];
   if(biomes.biome[i]<2)return biomeColors[biomes.biome[i]];
   if(display==='productivity')return gradient(biomes.productivity[i],[[0,[150,126,90]],[.4,[166,172,104]],[.7,[98,154,91]],[1,[35,111,67]]]);
@@ -599,8 +599,8 @@ function colorForCell(i,stage,display){
   if(display==='ecotones')return gradient(biomes.ecotone[i],[[0,[75,104,87]],[.5,[179,170,104]],[1,[223,130,75]]]);
  }
 
- const elev=(stage>=7?erosion?.elevations[i]:undefined)??(stage>=6?landforms?.elevations[i]:undefined)??(stage>=5?coasts?.elevations?.[i]:undefined)??heights?.elevations[i]??0;
- if(stage>=10&&soils&&['soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion','auto'].includes(display)){
+ const elev=(stage>=8?erosion?.elevations[i]:undefined)??(stage>=7?landforms?.elevations[i]:undefined)??(stage>=5?coasts?.elevations?.[i]:undefined)??heights?.elevations[i]??0;
+ if(stage>=11&&soils&&['soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion','auto'].includes(display)){
   if(soils.soilType[i]===0)return coasts.water[i]?'#234e66':'#4186a7';
   if(display==='soils'||display==='auto')return soilColors[soils.soilType[i]]||soilColors[4];
   if(display==='soilDepth')return gradient(soils.depthM[i]/5,[[0,[117,117,115]],[.25,[170,152,110]],[.6,[138,123,77]],[1,[73,98,69]]]);
@@ -609,7 +609,7 @@ function colorForCell(i,stage,display){
   if(display==='soilGroundwater')return gradient(soils.groundwater[i],[[0,[181,154,109]],[.5,[117,164,152]],[1,[50,110,166]]]);
   if(display==='soilErosion')return gradient(soils.erosionRisk[i],[[0,[72,131,98]],[.5,[202,177,103]],[1,[183,76,64]]]);
  }
- if(stage>=9&&hydrology){
+ if(stage>=10&&hydrology){
   if(display==='watersheds'){
    if(coasts.water[i])return '#214b63';
    const outlet=hydrology.outlet[i],h=(outlet*137.508+41)%360;
@@ -628,8 +628,8 @@ function colorForCell(i,stage,display){
  }
  if(display==='geometry'||stage===1){const h=((i*137.508)%360);return `hsl(${150+(h%55)},${18+(i%4)*2}%,${36+(i%7)*3}%)`;}
  if((display==='plates'||stage===3)&&plates){const owner=plates.owners[i],h=(owner*137.508+22)%360;return `hsl(${h},38%,42%)`;}
- if(stage>=8){
-  const climate=latestData(8);
+ if(stage>=9){
+  const climate=latestData(9);
   if(climate){
    if(display==='temperature'||display==='january'||display==='july'){
     const t=display==='january'?climate.janTemp[i]:display==='july'?climate.julTemp[i]:climate.meanTemp[i];
@@ -640,21 +640,21 @@ function colorForCell(i,stage,display){
    if(display==='seasonality')return gradient(climate.seasonalRange[i]/39,[[0,[65,129,152]],[.45,[171,189,153]],[.75,[224,174,104]],[1,[183,91,72]]]);
   }
  }
- if(display==='landforms'&&stage>=6&&landforms)return landformColors[landforms.classes[i]]||'#6e9d6d';
- if(display==='erosion'&&stage>=7&&erosion){const delta=elev-landforms.elevations[i];return delta<-.004?gradient(Math.min(1,-delta/.15),[[0,[105,111,105]],[1,[190,98,65]]]):delta>.004?gradient(Math.min(1,delta/.15),[[0,[105,111,105]],[1,[67,163,151]]]):'#78827b';}
- if(display==='flow'&&stage>=7&&erosion){if(coasts.water[i])return '#245773';const volume=erosion.discharge[i]/Math.max(1,erosion.summary.maxDischarge);return gradient(Math.pow(volume,.28),[[0,[104,115,100]],[.3,[115,145,132]],[1,[74,175,216]]]);}
- if((display==='height'||stage===4)&&heights)return gradient((elev+1.5)/3,heightColors);
+ if(display==='landforms'&&stage>=7&&landforms)return landformColors[landforms.classes[i]]||'#6e9d6d';
+ if(display==='erosion'&&stage>=8&&erosion){const delta=elev-landforms.elevations[i];return delta<-.004?gradient(Math.min(1,-delta/.15),[[0,[105,111,105]],[1,[190,98,65]]]):delta>.004?gradient(Math.min(1,delta/.15),[[0,[105,111,105]],[1,[67,163,151]]]):'#78827b';}
+ if(display==='flow'&&stage>=8&&erosion){if(coasts.water[i])return '#245773';const volume=erosion.discharge[i]/Math.max(1,erosion.summary.maxDischarge);return gradient(Math.pow(volume,.28),[[0,[104,115,100]],[.3,[115,145,132]],[1,[74,175,216]]]);}
+ if((display==='height'||stage===4)&&heights)return gradient(clamp((heights.elevations[i]+1.8)/3.6,0,1),altitudeColors);
  if((display==='coast'||stage>=5)&&coasts&&heights){const sea=coasts.seaLevel;return coasts.water[i]?gradient(clamp(.36+(elev-sea)*.7,0,1),[[0,[24,54,74]],[1,[61,116,146]]]):gradient(clamp((elev-sea)*1.6,0,1),landColors);}
  return 'rgb(54,99,83)';
 }
-const defaultPalettes=['geometry','geometry','geometry','plates','height','coast','landforms','coast','temperature','hydrology','soils','biomes','vegetation'];
+const defaultPalettes=['geometry','geometry','geometry','plates','height','coast','coast','landforms','coast','temperature','hydrology','soils','biomes','vegetation'];
 const paletteStages={
- natural:0,geometry:1,plates:3,height:4,coast:5,landforms:6,erosion:7,flow:7,
- temperature:8,rain:8,moisture:8,seasonality:8,january:8,july:8,
- hydrology:9,catchment:9,watersheds:9,
- soils:10,soilDepth:10,soilFertility:10,soilPermeability:10,soilGroundwater:10,soilErosion:10,
- biomes:11,productivity:11,treePotential:11,waterStress:11,growingSeason:11,ecotones:11,
- vegetation:12,habitats:12,canopyCover:12,groundCover:12,biomass:12,habitatComplexity:12,riparian:12
+ natural:0,geometry:1,plates:3,height:4,coast:5,landforms:7,erosion:8,flow:8,
+ temperature:9,rain:9,moisture:9,seasonality:9,january:9,july:9,
+ hydrology:10,catchment:10,watersheds:10,
+ soils:11,soilDepth:11,soilFertility:11,soilPermeability:11,soilGroundwater:11,soilErosion:11,
+ biomes:12,productivity:12,treePotential:12,waterStress:12,growingSeason:12,ecotones:12,
+ vegetation:13,habitats:13,canopyCover:13,groundCover:13,biomass:13,habitatComplexity:13,riparian:13
 };
 function resolvedDisplayMode(stage){
  const requested=workspace.viewMode;
@@ -695,27 +695,28 @@ function paint(){renderPending=false;if(!canvas||!ctx)return;
   if(!visible){const [x0,y0,x1,y1]=geometry.bounds[i];if(x1<bounds.x0||x0>bounds.x1||y1<bounds.y0||y0>bounds.y1)continue;}
   const path=geometry.paths[i];ctx.fillStyle=colorCache.colors[i];ctx.fill(path);
   if(stroke)ctx.stroke(path);
+  else if(stage>=3){ctx.strokeStyle=colorCache.colors[i];ctx.lineWidth=1.35/view.scale;ctx.stroke(path);}
  }
   if(stage>=3&&workspace.showPlateBorders&&latestData(3)){
    const plates=latestData(3);
    if(borderCache.mesh!==mesh||borderCache.plates!==plates){borderCache.mesh=mesh;borderCache.plates=plates;borderCache.plateLines=borderSegments(mesh,plates.owners);}
    drawSegments(borderCache.plateLines,'rgba(254,204,124,.96)',2.3);
   }
-  if(stage>=5&&workspace.showCoastBorders&&latestData(5)){
-   const coasts=latestData(5);
+  if(stage>=5&&workspace.showCoastBorders&&(stage>=6?latestData(6):latestData(5))){
+   const coasts=stage>=6?latestData(6):latestData(5);
    if(borderCache.mesh!==mesh||borderCache.coasts!==coasts){borderCache.mesh=mesh;borderCache.coasts=coasts;borderCache.coastLines=borderSegments(mesh,coasts.water);}
    drawSegments(borderCache.coastLines,'rgba(229,244,239,.93)',2.2);
   }
   // Use the same cell graph as the erosion solver; these are approximate
   // center-to-center drainage paths, not finalized river geometry.
-  if(stage>=7&&(allowed==='flow'||(stage<9&&workspace.showFlow))&&latestData(7)){
-   const flow=latestData(7);ctx.strokeStyle='rgba(130,226,247,.9)';ctx.lineCap='round';ctx.lineWidth=2.0/view.scale;ctx.beginPath();
+  if(stage>=8&&(allowed==='flow'||(stage<10&&workspace.showFlow))&&latestData(8)){
+   const flow=latestData(8);ctx.strokeStyle='rgba(130,226,247,.9)';ctx.lineCap='round';ctx.lineWidth=2.0/view.scale;ctx.beginPath();
    for(const i of flow.channels){const j=flow.flowTo[i];if(j<0)continue;ctx.moveTo(points[i].x,points[i].y);ctx.lineTo(points[j].x,points[j].y);}
    ctx.stroke();
   }
   // Hydrography only exists in layer 9 and never leaks into older stages.
-  if(stage>=9&&(allowed==='hydrology'||workspace.showFlow||allowed==='catchment'||allowed==='watersheds'||(stage>=10&&allowed==='soils'))&&latestData(9)){
-   const hydro=latestData(9),maxVolume=Math.max(.001,hydro.summary.maxDischarge);
+  if(stage>=10&&(allowed==='hydrology'||workspace.showFlow||allowed==='catchment'||allowed==='watersheds'||(stage>=11&&allowed==='soils'))&&latestData(10)){
+   const hydro=latestData(10),maxVolume=Math.max(.001,hydro.summary.maxDischarge);
    ctx.lineCap='round';ctx.strokeStyle='rgba(95,213,237,.89)';
    for(const i of hydro.channels){
     const j=hydro.flowTo[i];if(j<0||hydro.lakeId[i]>=0&&hydro.lakeId[j]===hydro.lakeId[i])continue;
@@ -753,37 +754,37 @@ function pickCell(x,y){const mesh=latestData(2)||(currentStage()===2?workspace.w
 function updateInspector(){const panel=root.querySelector('#wg-inspector');if(!panel)return;
  if(selectedId===null){panel.hidden=true;return;}
  const c=(latestData(2)||(currentStage()===2?workspace.working.data:null))?.cells?.[selectedId];if(!c){panel.hidden=true;return;}
- const stage=effectiveStage(),plate=latestData(3),elevation=latestData(4),sea=latestData(5),details=[`Position ${Math.round(c.x)}, ${Math.round(c.y)}`,`${c.neighbors.length} neighboring cells`];
- if(stage>=3&&plate){const p=plate.plates[plate.owners[selectedId]];details.push(`Plate ${p.id+1} · ${p.continental?'continental':'oceanic'} crust`);}
+ const stage=effectiveStage(),plate=latestData(3),elevation=latestData(4),sea=(stage>=6?latestData(6):latestData(5)),details=[`Position ${Math.round(c.x)}, ${Math.round(c.y)}`,`${c.neighbors.length} neighboring cells`];
+ if(stage>=3&&plate){const p=plate.plates[plate.owners[selectedId]];details.push(`Plate ${p.id+1}`);}
  if(stage>=4&&elevation){
-  const height=(stage>=7?latestData(7)?.elevations[selectedId]:undefined)??(stage>=6?latestData(6)?.elevations[selectedId]:undefined)??(stage>=5?sea?.elevations?.[selectedId]:undefined)??elevation.elevations[selectedId];
-  const datum=stage>=5&&sea?sea.seaLevel:0;
-  details.push(`Elevation: ${elevationToMetres(height,datum).toFixed(1)} m (${stage>=5&&sea?'relative to sea level':'provisional zero datum'})`);
+  const height=(stage>=8?latestData(8)?.elevations[selectedId]:undefined)??(stage>=7?latestData(7)?.elevations[selectedId]:undefined)??(stage>=5?sea?.elevations?.[selectedId]:undefined)??elevation.elevations[selectedId];
+  const datum=stage>=6&&sea?sea.seaLevel:0;
+  details.push(`Elevation: ${elevationToMetres(height,datum).toFixed(1)} m (${stage>=6&&sea?'relative to sea level':'provisional zero datum'})`);
  }
  if(stage>=5&&sea)details.push(sea.water[selectedId]?'Ocean cell':'Land cell');
- if(stage>=6&&latestData(6)){const l=latestData(6);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
- if(stage>=7&&latestData(7)){const e=latestData(7);details.push(`Eroded depth: ${elevationToMetres(e.erosionDepth[selectedId]).toFixed(1)} m`);details.push(`Deposited depth: ${elevationToMetres(e.deposition[selectedId]).toFixed(1)} m`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
- if(stage>=8&&latestData(8)){const c=latestData(8);details.push(`Latitude: ${c.latitudes[selectedId].toFixed(1)}°`);details.push(`Mean temperature: ${c.meanTemp[selectedId].toFixed(1)} °C`);details.push(`January / July: ${c.janTemp[selectedId].toFixed(1)} / ${c.julTemp[selectedId].toFixed(1)} °C`);details.push(`Precipitation: ${Math.round(c.precipitation[selectedId])} mm/year`);details.push(`Moisture index: ${Math.round(c.moisture[selectedId]*100)}%`);}
+ if(stage>=7&&latestData(7)){const l=latestData(7);details.push(`Landform: ${LANDFORM_NAMES[l.classes[selectedId]]}`);details.push(`Ruggedness: ${Math.round(l.ruggedness[selectedId]*100)}%`);}
+ if(stage>=8&&latestData(8)){const e=latestData(8);details.push(`Eroded depth: ${elevationToMetres(e.erosionDepth[selectedId]).toFixed(1)} m`);details.push(`Deposited depth: ${elevationToMetres(e.deposition[selectedId]).toFixed(1)} m`);details.push(`Estimated runoff: ${e.discharge[selectedId].toFixed(2)}`);if(e.flowTo[selectedId]>=0)details.push(`Downhill neighbor: cell ${e.flowTo[selectedId]+1}`);}
+ if(stage>=9&&latestData(9)){const c=latestData(9);details.push(`Latitude: ${c.latitudes[selectedId].toFixed(1)}°`);details.push(`Mean temperature: ${c.meanTemp[selectedId].toFixed(1)} °C`);details.push(`January / July: ${c.janTemp[selectedId].toFixed(1)} / ${c.julTemp[selectedId].toFixed(1)} °C`);details.push(`Precipitation: ${Math.round(c.precipitation[selectedId])} mm/year`);details.push(`Moisture index: ${Math.round(c.moisture[selectedId]*100)}%`);}
  details.push(`Cell area: ${shortNumber(Math.round(cellArea(c)))} km²`);
- if(stage>=9&&latestData(9)){
-  const h=latestData(9);details.push(`Upstream catchment: ${Math.round(h.catchmentArea[selectedId]).toLocaleString()} km²`);
+ if(stage>=10&&latestData(10)){
+  const h=latestData(10);details.push(`Upstream catchment: ${Math.round(h.catchmentArea[selectedId]).toLocaleString()} km²`);
   details.push(`Estimated flow: ${h.discharge[selectedId].toFixed(3)} km³/year`);
   if(h.lakeId[selectedId]>=0){const lake=h.lakes[h.lakeId[selectedId]];details.push(`Lake ${lake.id+1}: ${Math.round(lake.areaKm2)} km², depth ${elevationToMetres(h.lakeDepth[selectedId]).toFixed(1)} m · surface ${elevationToMetres(lake.level,sea.seaLevel).toFixed(1)} m above sea level`);}
   if(h.flowTo[selectedId]>=0)details.push(`Drainage toward: cell ${h.flowTo[selectedId]+1}`);
  }
- if(stage>=10&&latestData(10)){
-  const soil=latestData(10),kind=soil.soilType[selectedId];details.push(`Soil: ${SOIL_NAMES[kind]}`);
+ if(stage>=11&&latestData(11)){
+  const soil=latestData(11),kind=soil.soilType[selectedId];details.push(`Soil: ${SOIL_NAMES[kind]}`);
   if(kind!==0){details.push(`Soil depth: ${soil.depthM[selectedId].toFixed(2)} m`);details.push(`Organic matter: ${Math.round(soil.organicMatter[selectedId]*100)}% potential`);
    details.push(`Fertility: ${Math.round(soil.fertility[selectedId]*100)}% · Permeability: ${Math.round(soil.permeability[selectedId]*100)}%`);
    details.push(`Groundwater: ${Math.round(soil.groundwater[selectedId]*100)}% · Erosion risk: ${Math.round(soil.erosionRisk[selectedId]*100)}%`);}
  }
- if(stage>=11&&latestData(11)){
-  const biome=latestData(11),k=biome.biome[selectedId];details.push(`Biome: ${BIOME_NAMES[k]}`);
+ if(stage>=12&&latestData(12)){
+  const biome=latestData(12),k=biome.biome[selectedId];details.push(`Biome: ${BIOME_NAMES[k]}`);
   if(k>=2){details.push(`Tree-cover potential: ${Math.round(biome.treePotential[selectedId]*100)}%`);details.push(`Ecological productivity potential: ${Math.round(biome.productivity[selectedId]*100)}%`);
    details.push(`Warm months (>5 °C): ${biome.growingMonths[selectedId]} · drought stress ${Math.round(biome.waterStress[selectedId]*100)}%`);details.push(`Biome transition score: ${Math.round(biome.ecotone[selectedId]*100)}%`);}
  }
- if(stage>=12&&latestData(12)){
-  const v=latestData(12),i=selectedId;
+ if(stage>=13&&latestData(13)){
+  const v=latestData(13),i=selectedId;
   details.push(`Vegetation: ${VEGETATION_NAMES[v.coverClass[i]]}`);
   if(v.coverClass[i]>=2){
    details.push(`Canopy / ground cover: ${Math.round(v.canopyCover[i]*100)}% / ${Math.round(v.groundCover[i]*100)}%`);
@@ -870,8 +871,7 @@ function modal(html){openModal('World library',html);}
 function showLibrary(){
  modal(`<p class="wg-modal-caption">Automatic caching keeps your current work. Named checkpoints preserve full, independent world states.</p><div class="wg-library-actions"><button data-action="new-world">+ New world</button><button data-action="import">Import JSON</button><button data-action="export">Export selected layer</button><button data-action="export-all">Export entire world</button><button data-action="screenshot">Map PNG</button><button data-action="render">Explore 3D terrain</button></div><h3>Saved checkpoints <span>${snapshots.length}</span></h3><div class="wg-snapshot-list">${snapshots.length?snapshots.map(s=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>${escapeHTML(new Date(s.created).toLocaleString())} · Layer ${s.stage}</small></div><div><button data-action="restore" data-id="${escapeHTML(s.id)}">Open</button><button data-action="export-checkpoint" data-id="${escapeHTML(s.id)}">Export</button><button class="wg-delete" data-action="delete" data-id="${escapeHTML(s.id)}" aria-label="Delete checkpoint">×</button></div></div>`).join(''):'<p class="wg-hint">No checkpoints yet. Lock a layer, then tap Save.</p>'}</div><p class="wg-modal-caption">Exports include all locked layers, working data, settings, seeds, and generated geometry. Your world stays on this device unless you export it.</p>`);
 }
-/** 3D terrain follows the selected historical layer and uses its real
- * coastline sea level once that layer is available. Never changes saves. */
+/** 3D terrain follows the selected layer without changing saved data. */
 function showTerrain3D(){
  const selected=effectiveStage(),mesh=latestData(2),geometry=latestData(1);
  if(selected<ELEVATION_RENDER_STAGE||!latestData(ELEVATION_RENDER_STAGE)||!mesh||!geometry){
@@ -886,8 +886,8 @@ function showTerrain3D(){
  releaseTerrainViewer();
  const baseExaggeration=terrainVerticalScales(geometry).baseExaggeration;
  const description=terrain.usesEarlierTerrain?
-  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · ${terrain.terrainStage===4?'Legacy coastline heightfield':`Layer ${String(selected).padStart(2,'0')} ${terrainAppearanceName(selected).toLowerCase()} appearance`}${selected>=9?' · saved rivers and lakes':''}`:
-  `Layer ${String(terrain.terrainStage).padStart(2,'0')} · ${terrain.label} · ${terrain.hasCoast?'Actual sea level':'Provisional zero-height sea datum'}`;
+  `Layer ${String(terrain.terrainStage).padStart(2,'0')} terrain · Layer ${String(selected).padStart(2,'0')} ${terrainAppearanceName(selected).toLowerCase()} appearance${selected>=9?' · saved rivers and lakes':''}`:
+  `Layer ${String(terrain.terrainStage).padStart(2,'0')} · ${terrain.label} · ${terrain.hasCoast?'Zero-height flooding datum':'Signed altitude only (no water)'}`;
  openModal(`3D terrain · ${terrainAppearanceName(selected)}`,`<div class="wg-3d-root">
   <div class="wg-3d-intro">Read-only GPU terrain · ${escapeHTML(description)}</div>
   <div class="wg-3d-viewport"><canvas id="wg-3d-canvas" aria-label="Interactive 3D terrain from ${escapeHTML(terrain.label)}"></canvas>
@@ -911,7 +911,7 @@ function showTerrain3D(){
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
  const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
  terrainViewer=viewer;
- viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,label:selected>=8?`${terrain.label} + ${terrainAppearanceName(selected).toLowerCase()}`:terrain.label,hydrology:selected>=9?latestData(9):null,waterMask:selected>=5?latestData(5)?.water:null,appearance}).then(()=>{
+ viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,showOcean:terrain.hasCoast,label:selected>=9?`${terrain.label} + ${terrainAppearanceName(selected).toLowerCase()}`:terrain.label,hydrology:selected>=10?latestData(10):null,waterMask:selected>=6?latestData(6)?.water:selected>=5?latestData(5)?.water:null,appearance}).then(()=>{
   if(viewer.disposed)return;
   const loading=root.querySelector('#wg-3d-loading');if(loading)loading.hidden=true;
  }).catch(error=>{
@@ -925,8 +925,8 @@ function releaseTerrainViewer(){
  terrainViewer?.dispose();terrainViewer=null;
 }
 function closeModal(){releaseTerrainViewer();root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
-function changeWorld(world){if(!startupReady)return;const next=upgradeWorld(world);requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=next;resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
-async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());upgradeWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
+function changeWorld(world){if(!startupReady)return;const next=prepareWorld(world);requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=next;resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
+async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());prepareWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
  switch(action){
   case 'home':{if(host?.returnToLauncher){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))host.returnToLauncher();}else showLibrary();break;}
@@ -984,7 +984,7 @@ async function handleAction(action,button){
   case 'rename':{const name=prompt('World name',workspace.name);if(name!==null&&name.trim()){workspace.name=name.trim().slice(0,80);void persist();rebuildUI();}break;}
   case 'export':await doExport();break;
   case 'export-all':await exportAll();break;
-  case 'export-checkpoint':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(savedWorld){const upgraded=upgradeWorld(savedWorld);exportWorld(upgraded,saved.stage);}else notice('Checkpoint data unavailable',true);}break;}
+  case 'export-checkpoint':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(savedWorld){const loaded=prepareWorld(savedWorld);exportWorld(loaded,saved.stage);}else notice('Checkpoint data unavailable',true);}break;}
   case 'import':root.querySelector('#wg-import').click();break;
   case 'new-world':if(confirm('Create a new world? Your current working world will be replaced. Save a checkpoint or export it first if needed.'))changeWorld(newWorld());break;
   case 'restore':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved&&confirm(`Open checkpoint '${saved.name}'? This replaces your current working world.`)){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(!savedWorld){notice('Checkpoint data unavailable',true);break;}changeWorld(savedWorld);notice('Checkpoint restored');}break;}

@@ -72,7 +72,7 @@ test('actual detail worker honors mixed subdivisions and both resolutions agree 
  const geometry={shape:'rectangle',width:60,height:30};
  const mesh={width:60,height:30,areaKm2:1800,cells:Array.from({length:6},(_,i)=>({x:i*10+5,y:15,poly:[i*10,0,i*10+10,0,i*10+10,30,i*10,30],neighbors:[i-1,i+1].filter(j=>j>=0&&j<6)}))};
  const elevations=[-.5,.9,.35,.48,1.7,1.2],waterMask=[1,0,0,0,0,0],seaLevel=0;
- const appearance={stage:8,water:waterMask,climate:{meanTemp:[8,2,25,-9,17,5],moisture:[.9,.2,1,.1,.8,.4]}};
+ const appearance={stage:10,water:waterMask,climate:{meanTemp:[8,2,25,-9,17,5],moisture:[.9,.2,1,.1,.8,.4]}};
  const s=buildElevationSurface(geometry,mesh,elevations,()=>{},{waterMask,seaLevel,appearance});
  const [a,b]=s.levels[0].tiles;assert.equal(a.x1,b.x0);
  const tiles=[{...a,subdivisions:2},{...b,subdivisions:8}];

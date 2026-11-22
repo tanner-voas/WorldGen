@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {DEFAULTS,generateStage,newWorld,upgradeWorld,validateWorld,snapshotThroughStage} from '../src/engine.js';
+import {DEFAULTS,generateStage,newWorld,prepareWorld,validateWorld,snapshotThroughStage} from '../src/engine.js';
 import {createStartupStorage} from '../src/startup-storage.js';
 import {Terrain3DViewer} from '../src/terrain-3d.js';
 import {buildElevationSurface,selectTerrainSource} from '../src/terrain-3d-model.js';
@@ -9,11 +9,11 @@ import {selectTerrainAppearance} from '../src/terrain-3d-material.js';
 
 function world(shape,count=100,seed=49,extreme=false){
  const w=newWorld('Stabilization');
- for(let stage=1;stage<=12;stage++){
-  const settings={...DEFAULTS[stage],...(stage===1?shape:stage===2?{averageArea:w.locked[0].data.areaKm2/count, distribution:extreme?'clustered':'jittered', relaxation:extreme?0:1}:stage===5&&extreme?{land:.85,edgeOcean:1.5}:stage===7&&extreme?{iterations:40,hydraulic:1.6,thermal:1.6}:{}),...(stage!==1?{seed:seed+stage}: {})};
+ for(let stage=1;stage<=13;stage++){
+  const settings={...DEFAULTS[stage],...(stage===1?shape:stage===2?{averageArea:w.locked[0].data.areaKm2/count, distribution:extreme?'clustered':'jittered', relaxation:extreme?0:1}:stage===6&&extreme?{land:.85,edgeOcean:1.5}:stage===8&&extreme?{iterations:40,hydraulic:1.6,thermal:1.6}:{}),...(stage!==1?{seed:seed+stage}: {})};
   w.locked.push({stage,settings,data:generateStage(stage,w.locked,settings)});
  }
- w.working={stage:13,settings:{},data:null,dataSettings:null};w.viewStage=12;return w;
+ w.working={stage:14,settings:{},data:null,dataSettings:null};w.viewStage=12;return w;
 }
 const shapes=[{shape:'rectangle',width:2048,height:1024},{shape:'circle',radius:800},{shape:'ellipse',radiusX:1000,radiusY:500}];
 
@@ -38,9 +38,9 @@ test('imported and restored interface state is normalized without touching gener
  const w=world(shapes[0]);const before=structuredClone(w.locked);
  for(const value of [-9,1e9,Infinity,NaN,'invalid',null]){
   const broken=structuredClone(w);broken.viewStage=value;broken.viewport={scale:0,centerX:3,centerY:8};
-  const next=upgradeWorld(broken);assert.ok(Number.isInteger(next.viewStage)&&next.viewStage>=1&&next.viewStage<=12);assert.equal(next.viewport,undefined);assert.deepEqual(next.locked,before);
+  const next=prepareWorld(broken);assert.ok(Number.isInteger(next.viewStage)&&next.viewStage>=1&&next.viewStage<=13);assert.equal(next.viewport,undefined);assert.deepEqual(next.locked,before);
  }
- const older=snapshotThroughStage(w,4);older.viewStage=12;assert.equal(upgradeWorld(older).viewStage,5);
+ const older=snapshotThroughStage(w,4);older.viewStage=12;assert.equal(prepareWorld(older).viewStage,5);
 });
 
 test('message decoding failures terminate an initial terrain worker and settle its promise',async()=>{
@@ -74,12 +74,12 @@ test('normal and extreme worlds round-trip through all 12 stages and all histori
  const cases=[...shapes.map(s=>[s,100,false]),...shapes.map(s=>[s,1200,false]),...shapes.map(s=>[s,5000,false]),[{shape:'rectangle',width:20000,height:50},100,true],[{shape:'ellipse',radiusX:20000,radiusY:50},100,true],[{shape:'circle',radius:50},100,true]];
  for(const [shape,count,extreme] of cases){
   const w=world(shape,count,2048+count,extreme);validateWorld(w);
-  const raw=JSON.parse(JSON.stringify(w.locked)),loaded=upgradeWorld(JSON.parse(JSON.stringify(w)));assert.deepEqual(loaded.locked,raw);
-  for(let stage=1;stage<=12;stage++){const snap=snapshotThroughStage(loaded,stage);const restored=upgradeWorld(JSON.parse(JSON.stringify(snap)));assert.deepEqual(restored.locked,raw.slice(0,stage));assert.equal(restored.viewStage,stage);}
+  const raw=JSON.parse(JSON.stringify(w.locked)),loaded=prepareWorld(JSON.parse(JSON.stringify(w)));assert.deepEqual(loaded.locked,raw);
+  for(let stage=1;stage<=13;stage++){const snap=snapshotThroughStage(loaded,stage);const restored=prepareWorld(JSON.parse(JSON.stringify(snap)));assert.deepEqual(restored.locked,raw.slice(0,stage));assert.equal(restored.viewStage,stage);}
   const get=stage=>raw[stage-1]?.data;
   // The production stage selection, terrain and material path must work on every shape.
   for(const stage of count===100?[4,5,6,7,8,9,10,11,12]:[12]){
-   const source=selectTerrainSource(stage,get),surface=buildElevationSurface(get(1),get(2),source.elevations,()=>{},{seaLevel:source.seaLevel,waterMask:stage>=5?get(5).water:null,hydrology:stage>=9?get(9):null,appearance:selectTerrainAppearance(stage,get),includeUniformLevels:false});
+   const source=selectTerrainSource(stage,get),surface=buildElevationSurface(get(1),get(2),source.elevations,()=>{},{seaLevel:source.seaLevel,waterMask:stage>=6?get(6).water:null,hydrology:stage>=10?get(10):null,appearance:selectTerrainAppearance(stage,get),includeUniformLevels:false});
    assert.ok(surface.vertexData.length>0);assert.ok(surface.vertexData.every(Number.isFinite));assert.ok(surface.ocean.every(Number.isFinite));assert.ok(surface.hydrology.rivers.every(Number.isFinite));assert.ok(surface.hydrology.lakes.every(Number.isFinite));
    for(const level of surface.levels){assert.ok(level.indices.length%3===0);assert.ok(level.indices.every(i=>i<surface.vertexData.length/7));}
   }
@@ -89,6 +89,6 @@ test('normal and extreme worlds round-trip through all 12 stages and all histori
 
 test('application validates replacement before stopping generation and handles 2D lost capture',()=>{
  const code=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
- assert.match(code,/function changeWorld\(world\)\{if\(!startupReady\)return;const next=upgradeWorld\(world\);requestId\+\+;stopWorker\(\)/);
+ assert.match(code,/function changeWorld\(world\)\{if\(!startupReady\)return;const next=prepareWorld\(world\);requestId\+\+;stopWorker\(\)/);
  assert.match(code,/job\.onmessageerror=/);assert.match(code,/addEventListener\('lostpointercapture',pointerEnd\)/);
 });

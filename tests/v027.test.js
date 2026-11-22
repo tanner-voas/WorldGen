@@ -21,17 +21,17 @@ test('height controls use reciprocal 5% factors, default 1x, without clamp on th
  globalThis.clearTimeout=(id)=>{scheduled.delete(id);};
  try{
   assert.equal(viewer.heightMultiplier,1);
-  for(let i=0;i<100;i++)viewer.queueHeightStep(1,(steps,pending)=>states.push([steps,pending]));
-  assert.equal(viewer.heightSteps,100);
+  for(let i=0;i<101;i++)viewer.queueHeightStep(1,(steps,pending)=>states.push([steps,pending]));
+  assert.equal(viewer.heightSteps,101);
   assert.equal(scheduled.size,1,'repeated taps must restart the pending timer');
   assert.equal(drawings,0,'render must not update before debounce');
   assert.equal(viewer.heightMultiplier,1);
   const callback=[...scheduled.values()][0];scheduled.clear();callback();
-  assert.ok(Math.abs(viewer.heightMultiplier-1.05**100)<1e-12);
-  assert.ok(Math.abs(viewer.target[1]-.4*1.05**100)<1e-12);
+  assert.ok(Math.abs(viewer.heightMultiplier-1.05**101)<1e-12);
+  assert.ok(Math.abs(viewer.target[1]-.4*1.05**101)<1e-12);
   assert.equal(drawings,1);
-  assert.deepEqual(states.at(-1),[100,false]);
-  for(let i=0;i<100;i++)viewer.queueHeightStep(-1,()=>{});
+  assert.deepEqual(states.at(-1),[101,false]);
+  for(let i=0;i<101;i++)viewer.queueHeightStep(-1,()=>{});
   [...scheduled.values()][0]();
   assert.equal(viewer.heightSteps,0);
   assert.equal(viewer.heightMultiplier,1);

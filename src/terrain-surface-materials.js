@@ -21,22 +21,22 @@ const biomeProfiles=[unit(7),unit(7),[.05,0,0,0,0,.95,0,0],
 
 export function surfaceMaterialAtSite(appearance,i,lakeIds=null){
  const stage=appearance.stage;
- if(appearance.water[i]||(stage>=9&&lakeIds?.[i]>=0)||(stage>=11&&appearance.biomes?.biome[i]===1))return unit(7);
+ if(appearance.water[i]||(stage>=10&&lakeIds?.[i]>=0)||(stage>=12&&appearance.biomes?.biome[i]===1))return unit(7);
  const temp=appearance.climate.meanTemp[i],wet=clamp(appearance.climate.moisture[i]);
  const snow=clamp((-temp-4)/18),dry=clamp((.42-wet)/.42),trees=clamp((wet-.48)/.48)*clamp((temp+3)/16);
  let weights=normalize([.10,.65*dry,.23,.65*wet*(1-trees),.75*trees,0,.13*clamp((wet-.85)/.15),0]);
  weights=mix(weights,unit(5),snow);
- if(stage>=10&&appearance.soils){
+ if(stage>=11&&appearance.soils){
   weights=mix(weights,soilProfiles[appearance.soils.soilType[i]],.47*(1-snow));
  }
- if(stage>=11&&appearance.biomes){
+ if(stage>=12&&appearance.biomes){
   const kind=appearance.biomes.biome[i];
   weights=mix(weights,biomeProfiles[kind],.86);
   if(kind!==2&&kind!==14&&kind!==9&&kind!==15){
    weights=mix(weights,unit(4),.20*clamp(appearance.biomes.treePotential[i]));
   }
  }
- if(stage>=12&&appearance.vegetation){
+ if(stage>=13&&appearance.vegetation){
   // Coverage replaces the inferred vegetation component rather than merely
   // darkening the same forest color. Preserve the underlying substrate.
   const canopy=clamp(appearance.vegetation.canopyCover[i]),ground=clamp(appearance.vegetation.groundCover[i]);

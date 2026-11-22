@@ -12,7 +12,7 @@ function fixture(initial={}){
 }
 const metadata={id:'save-1',name:'Saved checkpoint',stage:1,created:'2026-01-01'};
 const savedWorld=()=>newWorld('Original world');
-const library=()=>({'checkpoint-index':[metadata],'checkpoint-index-v2':true,'checkpoint:save-1':newWorld('Checkpoint world')});
+const library=()=>({'checkpoint-index':[metadata],'checkpoint:save-1':newWorld('Checkpoint world')});
 
 test('confirmed empty storage opens a fresh world; a valid saved record opens unchanged',async()=>{
  const empty=fixture(),first=await empty.startup.load();assert.equal(first.kind,'ready');assert.equal(first.world.name,'Untitled world');assert.equal(empty.records.has('workspace'),false);
@@ -32,7 +32,7 @@ test('invalid and falsy stored records are not mistaken for missing records or m
  }
 });
 test('any library read failure prevents startup writes and replacement even with a valid workspace',async()=>{
- for(const key of ['checkpoint-index','snapshots','checkpoint-index-v2']){
+ for(const key of ['checkpoint-index']){
   const original=savedWorld(),f=fixture({workspace:original,...library()});f.readsFail.add(key);
   const state=await f.startup.load();assert.equal(state.kind,'recovery');assert.equal(state.rawAvailable,true);assert.deepEqual(state.world,original);assert.equal(state.library,null);
   const result=await f.startup.replace({kind:'new',confirmed:true});assert.equal(result.kind,'recovery');assert.equal(f.commits.length,0);assert.deepEqual(f.records.get('workspace'),original);
@@ -40,7 +40,7 @@ test('any library read failure prevents startup writes and replacement even with
 });
 test('malformed checkpoint index is not silently reset',async()=>{
  for(const index of [null,{},[{}],[metadata,metadata]]){
-  const f=fixture({workspace:savedWorld(),'checkpoint-index':index,'checkpoint-index-v2':true});const state=await f.startup.load();assert.equal(state.kind,'recovery');assert.equal(f.commits.length,0);assert.deepEqual(f.records.get('checkpoint-index'),index);
+  const f=fixture({workspace:savedWorld(),'checkpoint-index':index,});const state=await f.startup.load();assert.equal(state.kind,'recovery');assert.equal(f.commits.length,0);assert.deepEqual(f.records.get('checkpoint-index'),index);
  }
 });
 test('explicit replacement requires confirmation and successful storage transaction',async()=>{
@@ -60,16 +60,12 @@ test('missing or corrupt checkpoint cannot replace original workspace',async()=>
   const result=await f.startup.replace({kind:'checkpoint',id:metadata.id,confirmed:true});assert.equal(result.kind,'recovery');assert.match(result.errors.at(-1),/Recovery failed/);assert.equal(f.commits.length,0);assert.deepEqual(f.records.get('workspace'),original);
  }
 });
-test('legacy checkpoint migration is staged only after healthy reads and is retriable atomically',async()=>{
- const legacyWorld={schema:1,name:'Old world',locked:[],working:{stage:1,settings:{},data:null}},legacy=[{...metadata,stage:0,world:legacyWorld}];
- const f=fixture({workspace:savedWorld(),snapshots:legacy});f.readsFail.add('workspace');const state=await f.startup.load();assert.equal(state.kind,'recovery');assert.equal(f.commits.length,0);assert.equal((await readRecoveryCheckpoint(f.read,state,metadata.id)).name,'Old world');
- f.readsFail.clear();f.failCommit(true);assert.equal((await f.startup.load()).kind,'recovery');assert.deepEqual(f.records.get('snapshots'),legacy);assert.equal(f.records.has('checkpoint-index'),false);
- f.failCommit(false);const ready=await f.startup.load();assert.equal(ready.kind,'ready');assert.equal(ready.snapshots[0].stage,1);assert.equal(f.records.has('snapshots'),false);assert.deepEqual(f.records.get('checkpoint:save-1'),legacyWorld);assert.equal(f.records.get('checkpoint-index-v2'),true);
- const after=await f.startup.load();assert.equal(after.snapshots[0].stage,1);
-});
-test('legacy working-world migration validates a clone and persists only on a successful startup',async()=>{
- const original={schema:1,name:'Old world',locked:[],working:{stage:1,settings:{},data:null}};const f=fixture({workspace:original,...library()});f.readsFail.add('checkpoint-index');const blocked=await f.startup.load();assert.equal(blocked.kind,'recovery');assert.deepEqual(blocked.raw,original);assert.equal(f.commits.length,0);
- f.readsFail.clear();const ready=await f.startup.load();assert.equal(ready.kind,'ready');assert.equal(ready.world.schema,2);assert.equal(f.records.get('workspace').schema,2);assert.equal(ready.world.name,'Old world');
+test('unsupported world schemas enter recovery instead of being migrated',async()=>{
+ const original={schema:1,name:'Unsupported',locked:[],working:{stage:1,settings:{},data:null}};
+ const f=fixture({workspace:original,...library()});
+ const state=await f.startup.load();
+ assert.equal(state.kind,'recovery');assert.deepEqual(f.records.get('workspace'),original);
+ assert.equal(f.commits.length,0);
 });
 
 test('startup stays quarantined until an explicit replacement has actually committed',async()=>{

@@ -57,11 +57,11 @@ test('river ribbons reach the rendered ocean and both sides of a saved lake, but
 
 test('all generated river triangles conform to base terrain and survive every global LOD',()=>{
  for(const shape of [{shape:'rectangle',width:2048,height:1024},{shape:'circle',radius:800},{shape:'ellipse',radiusX:1000,radiusY:500}]){
-  const locked=[];for(let stage=1;stage<=9;stage++){
+  const locked=[];for(let stage=1;stage<=11;stage++){
    const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:locked[0].data.areaKm2/1200}:{})};
    locked.push({stage,data:generateStage(stage,locked,settings)});
   }
-  const [geometry,mesh,,,coast,,erosion,,hydrology]=locked.map(r=>r.data);
+  const [geometry,mesh,,,,coast,,erosion,,hydrology]=locked.map(r=>r.data);
   const s=buildElevationSurface(geometry,mesh,erosion.elevations,()=>{},{waterMask:coast.water,seaLevel:coast.seaLevel,hydrology});
   const r=s.hydrology.rivers,m=s.hydrology.riverMask;assert.ok(r.length>0&&m);
   let error=0;for(let i=0;i<r.length;i+=9){

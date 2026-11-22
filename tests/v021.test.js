@@ -5,7 +5,7 @@ import {terrainHeightScale,buildHydrologySurface,buildElevationSurface,selectTer
 
 function worldAtHydrology(shape,count=340){
  const world=newWorld('3D water regression');
- for(let stage=1;stage<=9;stage++){
+ for(let stage=1;stage<=11;stage++){
   const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:world.locked[0].data.areaKm2/count,relaxation:0}:{})};
   world.locked.push({stage,settings,data:generateStage(stage,world.locked,settings)});
  }
@@ -16,7 +16,7 @@ const shapes=[{shape:'rectangle',width:1650,height:880},{shape:'circle',radius:7
 test('3D river geometry is finite, deterministic, and derived without rewriting saves for all shapes',()=>{
  for(const shape of shapes){
   const world=worldAtHydrology(shape,430);
-  const geom=world.locked[0].data,mesh=world.locked[1].data,coast=world.locked[4].data,erosion=world.locked[6].data,hydro=world.locked[8].data;
+  const geom=world.locked[0].data,mesh=world.locked[1].data,coast=world.locked[4].data,erosion=world.locked[7].data,hydro=world.locked[9].data;
   const frozen=JSON.stringify(world.locked);
   const first=buildElevationSurface(geom,mesh,erosion.elevations,()=>{},{seaLevel:coast.seaLevel,hydrology:hydro,waterMask:coast.water});
   const second=buildElevationSurface(geom,mesh,erosion.elevations,()=>{},{seaLevel:coast.seaLevel,hydrology:hydro,waterMask:coast.water});
@@ -35,9 +35,9 @@ test('3D water remains absent from earlier terrain stages and absent when hydrol
  const world=worldAtHydrology(shapes[0],300),get=stage=>world.locked[stage-1]?.data;
  const terrain4=selectTerrainSource(4,get),terrain8=selectTerrainSource(8,get),terrain9=selectTerrainSource(9,get);
  assert.equal(terrain4.terrainStage,4);
- assert.equal(terrain8.terrainStage,7);
- assert.equal(terrain9.terrainStage,7);
- const empty=buildElevationSurface(get(1),get(2),get(7).elevations,()=>{},{seaLevel:get(5).seaLevel});
+ assert.equal(terrain8.terrainStage,8);
+ assert.equal(terrain9.terrainStage,8);
+ const empty=buildElevationSurface(get(1),get(2),get(8).elevations,()=>{},{seaLevel:get(6).seaLevel});
  assert.equal(empty.hydrology.rivers.length,0);
  assert.equal(empty.hydrology.lakes.length,0);
 });

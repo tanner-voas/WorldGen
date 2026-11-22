@@ -45,7 +45,7 @@ export function createAutosave({getWorld,commit,onStatus=()=>{},delay=260,schedu
     const world=getWorld();
     if(full||typeof world.id!=='string'||!world.id||typeof world.updated!=='string'){
      attemptedFull=true;
-     // Keep the embedded preferences for JSON exports and older app builds.
+     // Keep embedded preferences so JSON exports are self-contained.
      // Delete the sidecar in the same transaction, including on world switches.
      if(typeof world.id!=='string'||!world.id)world.id=`world-${Date.now()}-${Math.random().toString(36).slice(2)}`;
      lastStamp=Math.max(Date.now(),lastStamp+1);

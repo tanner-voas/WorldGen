@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {DEFAULTS,MAX_CELLS,generateGeometry,generateMesh,meshTargetCount,newWorld,upgradeWorld,validateWorld} from '../src/engine.js';
+import {DEFAULTS,MAX_CELLS,generateGeometry,generateMesh,meshTargetCount,newWorld,prepareWorld,validateWorld} from '../src/engine.js';
 const app=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
 const css=readFileSync(new URL('../src/styles.css',import.meta.url),'utf8');
 
@@ -23,7 +23,7 @@ test('Lloyd relaxation has matching UI, runtime, and upgrade limits',()=>{
  assert.equal(Number(s?.[1]),8);
  const g=generateGeometry(DEFAULTS[1]),w=newWorld();w.locked.push({stage:1,settings:DEFAULTS[1],data:g});
  w.working={stage:2,settings:{...DEFAULTS[2],relaxation:100},data:null,dataSettings:null};
- assert.equal(upgradeWorld(w).working.settings.relaxation,8);
+ assert.equal(prepareWorld(w).working.settings.relaxation,8);
  assert.match(readFileSync(new URL('../src/engine.js',import.meta.url),'utf8'),/const passes=clamp\(Math\.round\(settings\.relaxation\),0,8\)/);
 });
 test('stage 2 jitter is contextual and random seed reroll remains icon-only',()=>{

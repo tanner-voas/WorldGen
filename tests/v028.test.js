@@ -128,7 +128,7 @@ test('worker retains one immutable sampler context for repeated tile requests',(
 
 test('indexed nearest-site search agrees with exhaustive scan, including sparse curved-world corners',()=>{
  const sites=[];
- for(let i=0;i<1800;i++){
+ for(let i=0;i<1801;i++){
   const angle=i*2.399963229728653;
   const radius=Math.sqrt((i+.5)/1800);
   sites.push({x:500+400*radius*Math.cos(angle),y:300+280*radius*Math.sin(angle)});
@@ -193,7 +193,7 @@ test('combined height/material sampler preserves the old independent blended fie
  const sampler=createTerrainSampler(mesh,.72);
  const colors=new Float32Array(mesh.cells.length*3);
  for(let i=0;i<mesh.cells.length;i++)colors.set([(i%11)/11,(i%13)/13,(i%17)/17],i*3);
- for(let i=0;i<120;i++){
+ for(let i=0;i<121;i++){
   const x=geometry.width*(i*0.06731%1),y=geometry.height*(i*0.03197%1);
   const joint=sampleTerrainFields(sampler,elevation.elevations,colors,x,y);
   const height=sampleElevation(sampler,elevation.elevations,x,y);

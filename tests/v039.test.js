@@ -9,12 +9,12 @@ import {perspectiveMatrix,lookAtMatrix,multiplyMatrices,Terrain3DViewer} from '.
 const shapes=[{shape:'circle',radius:800},{shape:'ellipse',radiusX:1000,radiusY:500}];
 function world(shape,sites=1200){
  const locked=[];
- for(let stage=1;stage<=9;stage++){
+ for(let stage=1;stage<=11;stage++){
   const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:locked[0].data.areaKm2/sites}:{})};
   locked.push({stage,data:generateStage(stage,locked,settings)});
  }
- const [geometry,mesh,,,coast,,erosion,climate,hydrology]=locked.map(r=>r.data);
- const options={waterMask:coast.water,seaLevel:coast.seaLevel,hydrology,appearance:{stage:8,water:coast.water,climate}};
+ const [geometry,mesh,,,ocean,coast,,erosion,climate,hydrology]=locked.map(r=>r.data);
+ const options={waterMask:coast.water,seaLevel:coast.seaLevel,hydrology,appearance:{stage:10,water:coast.water,climate}};
  const surface=buildElevationSurface(geometry,mesh,erosion.elevations,()=>{},options);
  surface.riverMask=surface.hydrology.riverMask;
  return {geometry,mesh,elevations:erosion.elevations,options,surface};

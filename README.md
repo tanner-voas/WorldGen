@@ -1,4 +1,4 @@
-# WorldGen v0.2.2
+# WorldGen v0.2.3
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -9,23 +9,21 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 
 ## Generation stages
 
-1. **World geometry (new)** — choose rectangle (width and height in km), circle (radius in km), or ellipse (horizontal and vertical radius in km). All worlds are planar; no depth is generated. Bounds for each linear dimension/radius: 50–20,000 km. The selected shape becomes part of each checkpoint and drives geometry clipping and the map's physical units.
-2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–20,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
-3. **Tectonic plates** — immutable plate territories and their boundaries; no crust properties or motion are defined yet.
-4. **Elevation** — continental/oceanic crust ratio and plate motion are first defined here, together with terrain noise, tectonic uplift and relief. The locked plate territories do not change.
-5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. The original *edge ocean bias* keeps the outermost ring of polygons underwater with its narrow 63 km default taper (capped at 12% of the shorter world dimension). An independent *continental setback* (default strength 1.15, default width 420 km; capped to 16% of the shorter world dimension) gently depresses a much broader band, discouraging continents from following the world outline. Both effects fade smoothly, the interior elevation layer stays unchanged, and sea level is recalculated to preserve the desired land-area percentage. Border-touching polygons remain water while edge ocean bias is enabled. Existing locked heights and older saved coastlines remain unchanged.
-6. **Landforms** — ridges, valleys, ruggedness, volcanoes; preserves the locked coast mask.
-7. **Erosion** — preliminary rainfall/runoff, sediment transfer, slope weathering, drainage channels; preserves earlier layers and locked coastlines.
+1. **World geometry** — select a rectangular, circular or elliptical world and its physical dimensions in kilometres. This is a planar world, not a spherical globe.
+2. **Voronoi mesh** — generate 100–20,000 polygons based on average cell area, blue-noise random placement by default, optional jittered/clustered placement, and up to eight Lloyd relaxation passes.
+3. **Tectonic plates** — define *only* the number of plates and their geometrical territories using a seed. No plate motion, crust type, height or water exists in this record.
+4. **Elevation** — generate a signed heightfield from convergent/divergent boundary stress, motion, uplift reach and coherent noise. Map colors run from **blue (below zero) through white (zero) to red (above zero)**. The saved plates remain unchanged. There is no land/ocean designation at this stage.
+5. **Oceans** — apply a global **ocean elevation offset** to the Layer 4 heights and flood every cell with resulting altitude **at or below zero**. A positive offset exposes more terrain; a negative offset floods more. There is no target land fraction or automatic sea-level selection. The Layer 4 elevation is never rewritten.
+6. **Coastlines** — optionally reshape coastal relief with edge-ocean bias and continental setback *after* the initial sea-level decision. This does not pick a new sea level or an exact target proportion of land. The Layer 5 initial flood is preserved as a separate historical layer.
+7. **Landforms** — mountains, ridges, valleys, terrain roughness and volcanoes using the locked coastline and relief.
+8. **Erosion** — rainfall/runoff, sediment transfer, thermal weathering and drainage channels without changing the locked water mask.
+9. **Climate** — approximate latitude-dependent temperature, wind/rain shadows, precipitation and seasonal temperature fields, with marine moderation.
+10. **Hydrology** — climate-driven runoff, connected river and catchment graph, drainage basins and approximate inland lakes. Inland lakes are not guaranteed to form.
+11. **Soils** — physical soil depth, texture, fertility, organic potential, permeability and groundwater potential, based on the saved upstream layers.
+12. **Biomes** — natural environmental classifications and suitability from climate, hydrology, soils and terrain.
+13. **Vegetation & habitats** — static estimates of canopy/ground cover, biomass, vegetation height, riparian influence and habitat complexity.
 
-8. **Climate** — deterministic, notional-latitude temperature, prevailing-wind rain shadows, annual precipitation, moisture index, and January/July temperatures. Coastal proximity moderates seasonal temperature swings; the model does not simulate global atmospheric circulation. Climate map overlays and per-cell inspection show all fields. Earlier locked erosion runoff remains preliminary and is not silently recomputed.
-
-9. **Hydrology** — priority-flood drainage over the locked erosion elevations, with annual climate-driven runoff, infiltration, temperature-based evapotranspiration, river threshold and approximate topographic lakes. Each non-ocean cell has an acyclic outlet route; catchment area and annual flow are available for inspection. Rivers are center-to-center lines on the Voronoi graph, not high-resolution river geometry. Lake occupancy requires natural closed topographic basins and may be absent from some worlds. This layer does not modify the locked coasts, erosion or climate.
-
-10. **Soils** — derived soil thickness, texture class, organic matter potential, permeability, fertility potential, groundwater recharge potential, and erosion susceptibility. Soil formation uses geology, terrain, erosion/deposition, climate, and hydrology. Ocean and lake cells do not receive soil. Five controls tune weathering, organic accumulation, alluvium, permeability and recharge. Soil maps and per-cell inspection are available without changing earlier layers.
-
-11. **Biomes** — potential natural environments derived from the locked climate, soil, topography, rivers and lakes. The classification distinguishes cold, temperate, tropical, mountain, dryland and wetland environments. Independent settings adjust effective biome temperature, rainfall response, forest moisture threshold, wetland threshold, alpine summer threshold and smooth regional variation without rewriting earlier climate or terrain. Additional Voronoi-scale maps visualize ecological productivity potential, tree-cover potential, drought stress, the thermal growing season and biome transitions. This is environmental suitability, not vegetation growth or animal-population simulation.
-
-12. **Vegetation and habitats** — deterministic, Voronoi-scale canopy and ground cover, biomass index, estimated vegetation height, riparian influence, and structural habitat classes. Density, maturity, disturbance, riverside boost, and spatial patchiness are adjustable. This is a static vegetation snapshot, not a population, ecological succession, or wildlife simulation. Previous biomes, climate, soils and rivers remain immutable.
+The number of layers increased from 12 to 13 in v0.2.3 because the former ocean/coastline stage was split into distinct **Oceans** and **Coastlines** stages. This is a deliberate pre-1.0 save-format break: previous worlds and checkpoints are not imported or migrated.
 
 Future stage: local detail. Generated terrain is a procedural approximation, not a full physical simulation. Computation currently runs in a Web Worker on the CPU, not WebGPU.
 
@@ -39,13 +37,13 @@ The first stage previews its geometry immediately. Lock it to proceed to Voronoi
 
 v0.1.5 also fixes the JavaScript `ReferenceError: Can't find variable: stored` shown when opening WorldGen from AppLauncher. The loaded workspace variable is now correctly scoped across storage recovery and interface initialization. The fix lives in WorldGen; no AppLauncher update is required.
 
-## Navigation, saving and compatibility
+## Navigation and saving
 
 Drag and pinch to navigate, use the view selector for terrain/tectonic/erosion/climate/hydrology modes, toggle mesh and geographic overlays, examine individual cells, compare previously generated stages, and export the visible canvas to PNG.
 
-Automatic caching and named checkpoints preserve all generated layers, parameters, seeds and data. A checkpoint saved through layer N contains every layer 1–N; revising a locked layer creates a new working branch after confirmation. Exports are complete JSON records; keep an external copy because mobile browser storage may be evicted.
+Automatic caching and named checkpoints preserve all generated layers, parameters, seeds and data. A checkpoint saved through layer N contains every layer 1–N; revising a locked layer creates a new working branch (and retains an automatic recovery checkpoint). Exports are complete JSON records; keep an external copy because mobile browser storage may be evicted.
 
-**Save schema v2:** Existing WorldGen v0.1.0–v0.1.3 saves are upgraded on import or local load. Migration prepends a 2,048 × 1,024 km rectangular geometry layer, increases all previous layer numbers by one, and retains generated polygon coordinates, tectonic data, elevations, coastlines, landforms, and erosion data rather than regenerating them. Previously saved checkpoints and a working Voronoi preview are supported. The internal IndexedDB namespace remains `worldgen-v1` to preserve upgrades.
+**Save schema v3 (development-only):** WorldGen does not migrate older saved-world or checkpoint formats before v1.0.0. This version starts with its own IndexedDB namespace (`worldgen-dev-023`) so an automatically cached v0.2.2 working world cannot prevent startup. Earlier databases are left untouched but are not read. JSON imports using old schemas are rejected clearly; no old coastline, plate properties, or water masks are reconstructed.
 
 ## v0.1.9 refinement and performance pass
 

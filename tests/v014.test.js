@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {generateGeometry,insideGeometry,DEFAULTS,meshTargetCount,MAX_CELLS,generateMesh,generateStage,cellArea,newWorld,upgradeWorld,validateWorld,snapshotThroughStage,SCHEMA_VERSION} from '../src/engine.js';
+import {generateGeometry,insideGeometry,DEFAULTS,meshTargetCount,MAX_CELLS,generateMesh,generateStage,cellArea,newWorld,prepareWorld,validateWorld,snapshotThroughStage,SCHEMA_VERSION} from '../src/engine.js';
 const shapes=[
  {shape:'rectangle',width:1200,height:800},
  {shape:'circle',radius:450},
  {shape:'ellipse',radiusX:850,radiusY:240}
 ];
-function staged(shape,meshCount=160,through=7){
+function staged(shape,meshCount=160,through=8){
  const world=newWorld('Shape verification');
  for(let stage=1;stage<=through;stage++){
   const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:world.locked[0].data.areaKm2/meshCount,relaxation:0}:{})};
@@ -54,7 +54,7 @@ test('geometry and density carry through all seven deterministic stages',()=>{
  for(const shape of shapes){
   const world=staged(shape,130),mesh=world.locked[1].data;
   assert.equal(mesh.cells.length,130);
-  assert.equal(world.locked[6].data.elevations.length,130);
+  assert.equal(world.locked[7].data.elevations.length,130);
   assert.doesNotThrow(()=>validateWorld(world));
   const snapshot=snapshotThroughStage(world,4);
   assert.equal(snapshot.locked.length,4);
@@ -69,37 +69,6 @@ test('cannot import a mismatched mesh or geometrically invalid site',()=>{
  assert.throws(()=>validateWorld(bad),/Invalid world mesh/);
  const badSite=structuredClone(world);badSite.locked[1].data.cells[0].x=-1;
  assert.throws(()=>validateWorld(badSite),/Invalid mesh site/);
-});
-test('v0.1.3 rectangular legacy save migrates without rerunning or modifying generated arrays',()=>{
- const current=staged(DEFAULTS[1],133);
- const old=structuredClone(current);
- old.schema=1;
- old.locked=old.locked.slice(1).map(r=>({...r,stage:r.stage-1}));
- old.working.stage=7;old.viewStage=6;
- old.locked[0].settings={...DEFAULTS[2],count:133};delete old.locked[0].settings.averageArea;
- const legacyMesh=old.locked[0].data;
- delete legacyMesh.shape;delete legacyMesh.areaKm2;
- const oldArrays=old.locked.slice(1).map(r=>JSON.stringify(r.data));
- const upgraded=upgradeWorld(old);
- assert.equal(upgraded.schema,SCHEMA_VERSION);
- assert.equal(upgraded.locked.length,7);
- assert.equal(upgraded.locked[0].data.shape,'rectangle');
- assert.equal(upgraded.locked[1].data.cells.length,133);
- assert.ok(Math.abs(upgraded.locked[1].settings.averageArea-DEFAULTS[1].width*DEFAULTS[1].height/133)<1e-6);
- assert.deepEqual(upgraded.locked.slice(2).map(r=>JSON.stringify(r.data)),oldArrays);
- assert.doesNotThrow(()=>validateWorld(upgraded));
-});
-test('legacy v0.1.3 first-layer working preview survives insertion of geometry stage',()=>{
- const source=staged(DEFAULTS[1],120,2);
- const working={schema:1,name:'Unfinished world',created:'2026-11-21',locked:[],working:{stage:1,settings:{...DEFAULTS[2],count:120},data:source.locked[1].data,dataSettings:{...DEFAULTS[2],count:120}},viewStage:1};
- delete working.working.settings.averageArea;
- delete working.working.dataSettings.averageArea;
- const restored=upgradeWorld(working);
- assert.equal(restored.locked.length,1);
- assert.equal(restored.working.stage,2);
- assert.equal(restored.working.data.cells.length,120);
- assert.equal(restored.working.settings.averageArea,DEFAULTS[1].width*DEFAULTS[1].height/120);
- assert.doesNotThrow(()=>validateWorld(restored));
 });
 test('checkpoint saved through new geometry stage carries sensible next-stage area defaults',()=>{
  const world=staged(shapes[2],120,1);

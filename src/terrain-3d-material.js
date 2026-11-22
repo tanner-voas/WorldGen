@@ -36,33 +36,33 @@ const SOIL_COLORS=[
 ];
 
 export function selectTerrainAppearance(stage,getLayer){
- if(stage<8)return null;
- const climate=getLayer(8),coast=getLayer(5);
+ if(stage<9)return null;
+ const climate=getLayer(9),coast=getLayer(6);
  if(!climate?.meanTemp||!climate?.moisture||!coast?.water)throw Error('3D climate appearance requires completed climate and coast layers');
  const result={stage,climate:{meanTemp:climate.meanTemp,moisture:climate.moisture},water:coast.water};
- if(stage>=10){
-  const soils=getLayer(10);
-  if(!soils?.soilType||!soils?.fertility)throw Error('3D soil appearance requires layer 10');
+ if(stage>=11){
+  const soils=getLayer(11);
+  if(!soils?.soilType||!soils?.fertility)throw Error('3D soil appearance requires layer 11');
   result.soils={soilType:soils.soilType,fertility:soils.fertility};
  }
- if(stage>=11){
-  const biomes=getLayer(11);
-  if(!biomes?.biome||!biomes?.treePotential)throw Error('3D biome appearance requires layer 11');
+ if(stage>=12){
+  const biomes=getLayer(12);
+  if(!biomes?.biome||!biomes?.treePotential)throw Error('3D biome appearance requires layer 12');
   result.biomes={biome:biomes.biome,treePotential:biomes.treePotential};
  }
- if(stage>=12){
-  const vegetation=getLayer(12);
-  if(!vegetation?.canopyCover||!vegetation?.groundCover)throw Error('3D vegetation appearance requires layer 12');
+ if(stage>=13){
+  const vegetation=getLayer(13);
+  if(!vegetation?.canopyCover||!vegetation?.groundCover)throw Error('3D vegetation appearance requires layer 13');
   result.vegetation={canopyCover:vegetation.canopyCover,groundCover:vegetation.groundCover};
  }
  return result;
 }
 
 export function terrainAppearanceName(stage){
- if(stage>=12)return 'Vegetation';
- if(stage>=11)return 'Biomes';
- if(stage>=10)return 'Soils';
- if(stage>=8)return 'Climate';
+ if(stage>=13)return 'Vegetation';
+ if(stage>=12)return 'Biomes';
+ if(stage>=11)return 'Soils';
+ if(stage>=9)return 'Climate';
  return 'Elevation';
 }
 

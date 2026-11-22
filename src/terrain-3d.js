@@ -365,6 +365,8 @@ export class Terrain3DViewer{
  async initialize(geometry,mesh,elevations,options={}){
   if(this.disposed)return;
   this.label=options.label||'Elevation';
+  // Altitude exists before oceans; the 3D viewer must not invent a sea plane.
+  this.showOcean=options.showOcean!==false;
   const seaLevel=Number(options.seaLevel??0);
   if(!Number.isFinite(seaLevel))throw Error('Invalid 3D sea level');
   this.onStatus(`Preparing ${this.label.toLowerCase()} mesh…`);
@@ -1021,8 +1023,10 @@ export class Terrain3DViewer{
    gl.bindVertexArray(water.vao);gl.drawArrays(gl.TRIANGLES,0,water.count);
    gl.disable(gl.POLYGON_OFFSET_FILL);
   }
-  gl.uniform1i(this.waterLocation,1);
-  gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
+  if(this.showOcean!==false){
+   gl.uniform1i(this.waterLocation,1);
+   gl.bindVertexArray(this.waterVAO);gl.drawArrays(gl.TRIANGLES,0,s.ocean.length/3);
+  }
   for(const water of this.hydroGeometry||[]){
    if(water.kind!==3)continue;
    gl.uniform1i(this.waterLocation,3);

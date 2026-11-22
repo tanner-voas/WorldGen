@@ -24,7 +24,7 @@ test('block bounds preserve exact picking over arbitrary draw ranges and morphed
    const draw={indices:l.indices,start:range.offset,count:range.count,morph:{mode:1,from:0,to:Math.log2(l.step),weight}};
    const bare={terrain:[draw],multiplier:4,near:.01,far:15};
    const indexed={...bare,terrain:[{...draw,pickBounds}]};
-   for(let i=0;i<40;i++){
+   for(let i=0;i<41;i++){
     const x=Math.sin(i*53)*2.1,z=Math.cos(i*89)*1.1;
     const eye=[x,2,z],ray=i%2?[.17,-.98,.09]:[0,-1,0];
     assert.deepEqual(pickRenderedRay(s,indexed,eye,ray),pickRenderedRay(s,bare,eye,ray));

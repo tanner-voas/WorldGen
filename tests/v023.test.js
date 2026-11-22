@@ -1,152 +1,110 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels,adaptiveTileLod,TERRAIN_TILE_CELLS,TERRAIN_LOD_STEPS} from '../src/terrain-3d-lod.js';
-import {DEFAULTS,generateStage} from '../src/engine.js';
-import {buildElevationSurface} from '../src/terrain-3d-model.js';
+import {readFileSync} from 'node:fs';
+import {SCHEMA_VERSION,IMPLEMENTED,DEFAULTS,STAGES,newWorld,generateStage,generateOceans,validateWorld,prepareWorld,snapshotThroughStage,cellArea} from '../src/engine.js';
+import {selectTerrainSource} from '../src/terrain-3d-model.js';
 
-function planarArea(a,b,c,cols){
- const stride=cols+1;
- const ax=a%stride,ay=Math.floor(a/stride),bx=b%stride,by=Math.floor(b/stride),cx=c%stride,cy=Math.floor(c/stride);
- // Grid coordinates run right/east and down/south. Clockwise triangles
- // have an upward-facing normal in the 3D world coordinate frame.
- return ((cx-ax)*(by-ay)-(bx-ax)*(cy-ay))/2;
+function makeHistory(last=13,count=180){
+ const world=newWorld('Signed altitude and oceans');
+ for(let stage=1;stage<=last;stage++){
+  const settings={...DEFAULTS[stage],...(stage===1?{shape:'ellipse',radiusX:770,radiusY:540}:{}),
+   ...(stage===2?{averageArea:Math.PI*770*540/count,relaxation:0}:{}),
+   ...(stage===3?{plates:14}:{}),...(stage===8?{iterations:2}:{})};
+  const frozen=JSON.stringify(world.locked);
+  const data=generateStage(stage,world.locked,settings);
+  assert.equal(JSON.stringify(world.locked),frozen,`stage ${stage} may not rewrite prior layers`);
+  world.locked.push({stage,settings,data});
+ }
+ world.working={stage:last+1,settings:{...DEFAULTS[last+1]},data:null,dataSettings:null};
+ world.viewStage=last;
+ return world;
 }
 
-function boundaryVertices(level,tile,cols){
- const edge=[new Set(),new Set(),new Set(),new Set()];
- const stride=cols+1;
- for(const v of level.indices.subarray(tile.offset,tile.offset+tile.count)){
-  const x=v%stride,y=Math.floor(v/stride);
-  if(y===tile.y0)edge[0].add(x);
-  if(x===tile.x1)edge[1].add(y);
-  if(y===tile.y1)edge[2].add(x);
-  if(x===tile.x0)edge[3].add(y);
- }
- return edge;
-}
-
-test('tile-local LOD covers a rectangular world exactly, with upward-facing triangles',()=>{
- const cols=72,rows=48,inside=new Uint8Array((cols+1)*(rows+1)).fill(1);
- const levels=buildAdaptiveTerrainLevels(cols,rows,inside,4.8,3.2);
- assert.equal(TERRAIN_TILE_CELLS,32);
- assert.deepEqual(levels.map(level=>level.step),TERRAIN_LOD_STEPS);
- const baseline=levels[0].indices.length;
- let before=Infinity;
- for(const level of levels){
-  assert.ok(level.indices.length<before);
-  before=level.indices.length;
-  let sum=0;
-  for(const tile of level.tiles){
-   let tileArea=0;
-   for(let k=tile.offset;k<tile.offset+tile.count;k+=3){
-    const triangleArea=planarArea(level.indices[k],level.indices[k+1],level.indices[k+2],cols);
-    assert.ok(triangleArea>0,`tile ${tile.id} step ${level.step}: triangle winding or zero area`);
-    tileArea+=triangleArea;
-   }
-   assert.equal(tileArea,(tile.x1-tile.x0)*(tile.y1-tile.y0),`tile ${tile.id} step ${level.step}: exact surface coverage`);
-   sum+=tileArea;
-  }
-  assert.equal(sum,cols*rows);
- }
- assert.ok(levels[3].indices.length<baseline/4);
- const uniform=buildUniformTerrainLevels(cols,rows,inside);
- assert.ok(uniform[3].indices.length<levels[3].indices.length/3,'uniform far view avoids dense stitched boundaries');
- for(const level of uniform){
-  let area=0;
-  for(let k=0;k<level.indices.length;k+=3)area+=planarArea(level.indices[k],level.indices[k+1],level.indices[k+2],cols);
-  assert.equal(area,cols*rows);
+test('v0.2.3 defines thirteen independent stage boundaries',()=>{
+ assert.equal(SCHEMA_VERSION,3);assert.equal(IMPLEMENTED,13);
+ assert.equal(STAGES[3][0],'Tectonic plates');assert.equal(STAGES[4][0],'Elevation');
+ assert.equal(STAGES[5][0],'Oceans');assert.equal(STAGES[6][0],'Coastlines');
+ assert.equal(STAGES[13][0],'Vegetation & habitats');
+ const world=makeHistory(13,160);
+ assert.doesNotThrow(()=>validateWorld(world));
+ for(let stage of [2,3,4,5,6,8,10,13]){
+  const snap=snapshotThroughStage(world,stage);
+  assert.equal(snap.locked.length,stage);
+  assert.equal(snap.working.stage,stage+1);
+  assert.doesNotThrow(()=>validateWorld(prepareWorld(structuredClone(snap))));
  }
 });
 
-test('every tile LOD preserves all shared boundary vertices to eliminate T-junction cracks',()=>{
- const cols=72,rows=48,inside=new Uint8Array((cols+1)*(rows+1)).fill(1);
- const levels=buildAdaptiveTerrainLevels(cols,rows,inside,4.8,3.2);
- for(const level of levels)for(const tile of level.tiles){
-  const edges=boundaryVertices(level,tile,cols);
-  for(let x=tile.x0;x<=tile.x1;x++){
-   assert.ok(edges[0].has(x),`top edge: tile ${tile.id} level ${level.step}, x=${x}`);
-   assert.ok(edges[2].has(x),`bottom edge: tile ${tile.id} level ${level.step}, x=${x}`);
-  }
-  for(let y=tile.y0;y<=tile.y1;y++){
-   assert.ok(edges[1].has(y),`right edge: tile ${tile.id} level ${level.step}, y=${y}`);
-   assert.ok(edges[3].has(y),`left edge: tile ${tile.id} level ${level.step}, y=${y}`);
+test('plate geometry contains no water, height, crust classification or velocities',()=>{
+ const world=makeHistory(4,250),record=world.locked[2];
+ assert.deepEqual(Object.keys(record.data).sort(),['owners','plates']);
+ assert.ok(record.data.plates.every(p=>Object.keys(p).sort().join(',')==='id,x,y'));
+ assert.deepEqual(Object.keys(record.settings).sort(),['plates','seed']);
+ const layer4=world.locked[3].data;
+ assert.equal(layer4.plateProperties.length,record.data.plates.length);
+ assert.ok(layer4.elevations.some(h=>h<-.03)&&layer4.elevations.some(h=>h>.03));
+ assert.ok(layer4.elevations.every(Number.isFinite));
+});
+
+test('raising boundary stress changes signed relief, never stage-3 cell ownership',()=>{
+ const world=makeHistory(3,280),original=JSON.stringify(world.locked[2].data);
+ const low=generateStage(4,world.locked,{...DEFAULTS[4],motion:0});
+ const high=generateStage(4,world.locked,{...DEFAULTS[4],motion:2});
+ assert.notDeepEqual(high.elevations,low.elevations);
+ assert.deepEqual(high,generateStage(4,world.locked,{...DEFAULTS[4],motion:2}));
+ assert.equal(JSON.stringify(world.locked[2].data),original);
+ assert.ok(low.plateProperties.every(p=>p.vx===0&&p.vy===0));
+});
+
+test('ocean offset is a monotonic global shift, flooding precisely elevations <= zero',()=>{
+ const world=makeHistory(4,340),mesh=world.locked[1].data,elevation=world.locked[3].data;
+ const sea=generateOceans(elevation,{oceanOffset:0},mesh);
+ const raised=generateOceans(elevation,{oceanOffset:.2},mesh);
+ const lowered=generateOceans(elevation,{oceanOffset:-.2},mesh);
+ assert.ok(raised.landAreaFraction>sea.landAreaFraction);
+ assert.ok(sea.landAreaFraction>lowered.landAreaFraction);
+ for(const [offset,record] of [[0,sea],[.2,raised],[-.2,lowered]]){
+  assert.equal(record.seaLevel,0);
+  for(let i=0;i<mesh.cells.length;i++){
+   assert.equal(record.water[i],Number(record.elevations[i]<=0));
+   assert.equal(record.elevations[i],+Math.max(-1.8,Math.min(1.8,elevation.elevations[i]+offset)).toFixed(4));
   }
  }
- const fine=levels[0],coarse=levels[3];
- // Check a neighboring fine and coarse tile share precisely the same edge.
- const a=fine.tiles.find(t=>t.x1===32&&t.y0===0),b=coarse.tiles.find(t=>t.x0===32&&t.y0===0);
- assert.ok(a&&b);
- assert.deepEqual([...boundaryVertices(fine,a,cols)[1]].sort((x,y)=>x-y),[...boundaryVertices(coarse,b,cols)[3]].sort((x,y)=>x-y));
+ assert.equal(sea.landAreaFraction,
+  mesh.cells.reduce((a,c,i)=>a+(sea.water[i]?0:cellArea(c)),0)/mesh.cells.reduce((a,c)=>a+cellArea(c),0));
+ assert.deepEqual(elevation,world.locked[3].data);
 });
 
-test('adaptive LOD respects camera distance and does not require regeneration',()=>{
- const tile={x:1,z:0};
- assert.equal(adaptiveTileLod([1,1,0],tile),1);
- assert.equal(adaptiveTileLod([1,7,0],tile),2);
- assert.equal(adaptiveTileLod([1,14,0],tile),4);
- assert.equal(adaptiveTileLod([1,21,0],tile),8);
- assert.ok(adaptiveTileLod([1,7,0],tile,2)<=adaptiveTileLod([1,7,0],tile));
- assert.throws(()=>buildAdaptiveTerrainLevels(15,16,[],4,4),/Invalid adaptive terrain grid/);
+test('stage-6 coast edits preserve stage-5 flood map and stage-4 relief',()=>{
+ const world=makeHistory(5,250),previous=JSON.stringify(world.locked);
+ const noCoast=generateStage(6,world.locked,{...DEFAULTS[6],edgeOcean:0,setbackStrength:0});
+ const shaped=generateStage(6,world.locked,{...DEFAULTS[6],edgeOcean:1.2,setbackStrength:1.2});
+ assert.deepEqual(noCoast.water,world.locked[4].data.water);
+ assert.deepEqual(noCoast.elevations,world.locked[4].data.elevations);
+ assert.ok(shaped.landAreaFraction<=noCoast.landAreaFraction);
+ assert.notDeepEqual(shaped.water,noCoast.water);
+ assert.equal(JSON.stringify(world.locked),previous);
 });
 
-test('adaptive tile ranges and geometry stay compatible with all map shapes',()=>{
- for(const shape of [{shape:'rectangle',width:1000,height:600},{shape:'circle',radius:550},{shape:'ellipse',radiusX:800,radiusY:420}]){
-  const locked=[];
-  for(let stage=1;stage<=4;stage++){
-   const settings={...DEFAULTS[stage],...(stage===1?shape:{}),...(stage===2?{averageArea:locked[0].data.areaKm2/220}:{})};
-   locked.push({stage,data:generateStage(stage,locked,settings)});
-  }
-  const [geometry,mesh,,height]=locked.map(x=>x.data);
-  const original=JSON.stringify(height.elevations);
-  const surface=buildElevationSurface(geometry,mesh,height.elevations);
-  assert.equal(JSON.stringify(height.elevations),original);
-  assert.ok(surface.levels.length===4);
-  assert.ok(surface.uniformLevels.length===4);
-  for(const level of surface.levels){
-   assert.ok(level.tiles?.length>0);
-   let end=0;
-   for(const tile of level.tiles){
-    assert.equal(tile.offset,end);
-    assert.equal(tile.count%3,0);
-    end+=tile.count;
-    assert.ok(Number.isFinite(tile.x)&&Number.isFinite(tile.z));
-   }
-   assert.equal(end,level.indices.length);
-   assert.ok(level.indices.every(index=>index<surface.vertexCount));
-  }
+test('older world schemas are rejected rather than migrated',()=>{
+ const current=makeHistory(6,180);
+ for(const oldSchema of [1,2]){
+  const unsupported={...structuredClone(current),schema:oldSchema};
+  assert.throws(()=>prepareWorld(unsupported),/Unsupported or invalid world save/);
+  assert.equal(unsupported.schema,oldSchema);
  }
 });
 
-test('3D draw path uses a single call for uniform LOD and tile draws only when mixed',async()=>{
- const {Terrain3DViewer}=await import('../src/terrain-3d.js');
- const cols=64,rows=64,inside=new Uint8Array((cols+1)*(rows+1)).fill(1);
- const s={cols,rows,planeWidth:4.8,planeDepth:4.8,
-  levels:buildAdaptiveTerrainLevels(cols,rows,inside,4.8,4.8),
-  uniformLevels:buildUniformTerrainLevels(cols,rows,inside),
-  ocean:new Float32Array(18),hydrology:null,seaLevel:0,materialColors:null};
- const calls=[];
- const gl={COLOR_BUFFER_BIT:1,DEPTH_BUFFER_BIT:2,TRIANGLES:4,UNSIGNED_INT:5125,ELEMENT_ARRAY_BUFFER:34963,
-  BLEND:3042,SRC_ALPHA:770,ONE_MINUS_SRC_ALPHA:771,
-  viewport(){},clear(){},useProgram(){},uniformMatrix4fv(){},uniform3fv(){},uniform1f(){},uniform1i(){},
-  disable(){},enable(){},depthMask(){},bindVertexArray(){},bindBuffer(){},blendFunc(){},
-  drawArrays(){},drawElements(mode,count,type,offset){calls.push({mode,count,type,offset});}};
- const viewer=Object.create(Terrain3DViewer.prototype);
- viewer.canvas={width:0,height:0,getBoundingClientRect(){return {width:540,height:350};}};
- Object.assign(viewer,{gl,surface:s,disposed:false,lost:false,program:{},target:[0,0,0],pitch:.94,yaw:-.72,
-  terrainVAO:{},waterVAO:{},hydroGeometry:[],onStatus(){},lastDrawStatus:'',
-  levelBuffers:s.levels.map(level=>({step:level.step,tiles:level.tiles,count:level.indices.length,buffer:{step:level.step}})),
-  uniformLevelBuffers:s.uniformLevels.map(level=>({step:level.step,count:level.indices.length,buffer:{step:level.step}}))});
- const oldWindow=globalThis.window;
- try{
-  globalThis.window={devicePixelRatio:1};
-  viewer.distance=25;viewer.draw();assert.equal(calls.length,1,'far overview should use one uniform draw');
-  assert.equal(calls[0].count,s.uniformLevels[3].indices.length);
-  assert.equal(viewer.renderedFrame.terrain.length,1);
-  assert.equal(viewer.renderedFrame.terrain[0].indices,s.uniformLevels[3].indices);
-  calls.length=0;
-  viewer.distance=5.5;viewer.draw();
-  assert.ok(calls.length>1,'mixed nearby and distant tiles should use multiple stitched draws');
-  assert.ok(calls.every(call=>call.count>0&&call.count%3===0));
-  assert.deepEqual(viewer.renderedFrame.terrain.map(d=>[d.count,d.start*4]),calls.map(c=>[c.count,c.offset]));
- }finally{if(oldWindow===undefined)delete globalThis.window;else globalThis.window=oldWindow;}
+test('map controls use a right rail on tall maps, and mesh-off mode strokes no dark lines',()=>{
+ const app=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const css=readFileSync(new URL('../src/styles.css',import.meta.url),'utf8');
+ assert.match(css,/wg-map-short[\s\S]*flex-direction:row/);
+ assert.match(app,/mapHeight<260/);
+ assert.match(css,/wg-map-buttons[\s\S]*flex-direction:column/);
+ assert.match(app,/else if\(stage>=3\)\{ctx\.strokeStyle=colorCache\.colors\[i\]/);
+ assert.match(app,/const altitudeColors=.*\[\.5,\[248,249,246\]\]/);
+ assert.doesNotMatch(app,/APP_VERSION='0\.2\.2'/);
+ assert.match(app,/showOcean:terrain\.hasCoast/);
+ const source=selectTerrainSource(4,n=>n===4?{elevations:[-.5,.5]}:null);
+ assert.equal(source.hasCoast,false);
 });

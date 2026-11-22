@@ -1,26 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,existsSync} from 'node:fs';
-import {DEFAULTS,IMPLEMENTED,newWorld,generateStage,stageUsesSeed,upgradeWorld,snapshotThroughStage} from '../src/engine.js';
+import {DEFAULTS,IMPLEMENTED,newWorld,generateStage,stageUsesSeed,prepareWorld,snapshotThroughStage} from '../src/engine.js';
 import * as sampler from '../src/terrain-sampler.js';
 
 const source=name=>readFileSync(new URL(`../src/${name}`,import.meta.url),'utf8');
 function coastWorld(shape={shape:'rectangle',width:1000,height:600}){
  const world=newWorld();
- for(let stage=1;stage<=4;stage++){
+ for(let stage=1;stage<=5;stage++){
   const settings={...DEFAULTS[stage],...(stage===1?shape:{})};
   if(stage===2)settings.averageArea=world.locked[0].data.areaKm2/180;
   world.locked.push({stage,settings,data:generateStage(stage,world.locked,settings)});
  }
- const settings={...DEFAULTS[5],seed:4294967295};
- world.working={stage:5,settings,data:generateStage(5,world.locked,settings),dataSettings:{...settings}};
+ const settings={...DEFAULTS[6],seed:4294967295};
+ world.working={stage:6,settings,data:generateStage(6,world.locked,settings),dataSettings:{...settings}};
  world.viewStage=5;
  return world;
 }
 
 test('only layers that use an independent seed expose seed controls',()=>{
- assert.deepEqual(Array.from({length:IMPLEMENTED},(_,i)=>i+1).filter(stageUsesSeed),[2,3,4,6,7,8,9,10,11,12]);
- for(const invalid of [-1,0,13,NaN,Infinity,4.5,'5'])assert.equal(stageUsesSeed(invalid),false);
+ assert.deepEqual(Array.from({length:IMPLEMENTED},(_,i)=>i+1).filter(stageUsesSeed),[2,3,4,7,8,9,10,11,12,13]);
+ for(const invalid of [-1,0,14,NaN,Infinity,4.5,'5'])assert.equal(stageUsesSeed(invalid),false);
  const code=source('app.js');
  assert.match(code,/!stageUsesSeed\(stage\)\?'':`<div class="wg-seed-row"/);
  assert.match(code,/case 'reroll':if\(viewStage\(\)!==currentStage\(\)\|\|!stageUsesSeed\(currentStage\(\)\)\)break/);
@@ -30,27 +30,27 @@ test('only layers that use an independent seed expose seed controls',()=>{
 test('coast generation is seed-independent on all map shapes',()=>{
  for(const shape of [{shape:'rectangle',width:1000,height:600},{shape:'circle',radius:500},{shape:'ellipse',radiusX:700,radiusY:300}]){
   const world=coastWorld(shape),{settings,data}=world.working;
-  assert.deepEqual(generateStage(5,world.locked,{...settings,seed:0}),data);
-  assert.deepEqual(generateStage(5,world.locked,{...settings,seed:12345}),data);
-  assert.notDeepEqual(generateStage(5,world.locked,{...settings,land:.65}),data);
+  assert.deepEqual(generateStage(6,world.locked,{...settings,seed:0}),data);
+  assert.deepEqual(generateStage(6,world.locked,{...settings,seed:12345}),data);
+  assert.notDeepEqual(generateStage(6,world.locked,{...settings,edgeOcean:1.4}),data);
  }
 });
 
 test('legacy coast seeds, locked geometry and working data survive upgrade and checkpoint export',()=>{
- const before=coastWorld(),saved=upgradeWorld(JSON.parse(JSON.stringify(before)));
+ const before=coastWorld(),saved=prepareWorld(JSON.parse(JSON.stringify(before)));
  assert.equal(saved.working.settings.seed,4294967295);
  assert.deepEqual(saved.working.dataSettings,before.working.dataSettings);
  assert.deepEqual(saved.working.data,before.working.data);
  assert.deepEqual(saved.locked,before.locked);
- const checkpoint=snapshotThroughStage(saved,5);
+ const checkpoint=snapshotThroughStage(saved,6);
  assert.equal(checkpoint.working.settings.seed,4294967295);
  assert.deepEqual(checkpoint.working.data,saved.working.data);
  // Locking the layer also preserves the original seed and geography.
- saved.locked.push({stage:5,settings:saved.working.settings,data:saved.working.data});
- saved.working={stage:6,settings:{...DEFAULTS[6]},data:null,dataSettings:null};
- const lockedCheckpoint=snapshotThroughStage(saved,5);
- assert.equal(lockedCheckpoint.locked[4].settings.seed,4294967295);
- assert.deepEqual(lockedCheckpoint.locked[4].data,before.working.data);
+ saved.locked.push({stage:6,settings:saved.working.settings,data:saved.working.data});
+ saved.working={stage:7,settings:{...DEFAULTS[7]},data:null,dataSettings:null};
+ const lockedCheckpoint=snapshotThroughStage(saved,6);
+ assert.equal(lockedCheckpoint.locked[5].settings.seed,4294967295);
+ assert.deepEqual(lockedCheckpoint.locked[5].data,before.working.data);
 });
 
 test('retired renderer is absent but editor PNG export and 3D entry/relief controls survive',()=>{

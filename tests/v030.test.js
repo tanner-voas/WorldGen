@@ -33,18 +33,18 @@ test('idle flush is a no-op, navigation saves only a tiny record, and does not c
 test('full writes include latest preferences, atomically clear the sidecar, and cannot be delayed by panning',async()=>{
  const f=autosaveFixture();f.world.showEdges=false;f.saver.mark('preferences',650);await f.saver.flush();
  f.world.name='Renamed';f.saver.mark();const [key,timer]=[...f.timers.entries()][0];assert.equal(timer.delay,260);
- for(let i=0;i<50;i++){f.world.viewport={scale:1,centerX:i,centerY:20};f.saver.mark('preferences',650);}
+ for(let i=0;i<51;i++){f.world.viewport={scale:1,centerX:i,centerY:20};f.saver.mark('preferences',650);}
  assert.equal(f.timers.size,1);assert.equal(f.timers.get(key),timer);await f.saver.flush();
  assert.deepEqual(f.commits.at(-1).map(ch=>ch.key),['workspace',PREFERENCES_KEY]);assert.equal(f.records.has(PREFERENCES_KEY),false);
- assert.equal(f.records.get('workspace').name,'Renamed');assert.equal(f.records.get('workspace').viewport.centerX,49);
+ assert.equal(f.records.get('workspace').name,'Renamed');assert.equal(f.records.get('workspace').viewport.centerX,50);
 });
 test('an in-flight full write is immutable; subsequent edits coalesce and saved only appears after all commits',async()=>{
  let world=newWorld(),transactions=[],resolvers=[],statuses=[];
  const saver=createAutosave({getWorld:()=>world,commit:changes=>{transactions.push(changes);return new Promise(resolve=>resolvers.push(resolve));},onStatus:status=>statuses.push(status)});
  world.name='First';saver.mark();const flushed=saver.flush();await tick();assert.equal(transactions.length,1);
- for(let i=0;i<25;i++){world.name=`Edit ${i}`;saver.mark();}world.showFlow=true;saver.mark('preferences');
+ for(let i=0;i<26;i++){world.name=`Edit ${i}`;saver.mark();}world.showFlow=true;saver.mark('preferences');
  assert.equal(transactions[0][0].value.name,'First');assert.equal(saver.status,'saving');assert.equal(saver.flush(),flushed);
- resolvers.shift()();await tick();assert.equal(transactions.length,2);assert.equal(transactions[1][0].value.name,'Edit 24');assert.equal(transactions[1][0].value.showFlow,true);assert.equal(saver.status,'saving');
+ resolvers.shift()();await tick();assert.equal(transactions.length,2);assert.equal(transactions[1][0].value.name,'Edit 25');assert.equal(transactions[1][0].value.showFlow,true);assert.equal(saver.status,'saving');
  resolvers.shift()();assert.equal(await flushed,true);assert.deepEqual(statuses,['pending','saving','saved']);
 });
 test('failed full commit retains world changes; preference changes cannot turn retry into a preference-only write',async()=>{

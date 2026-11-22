@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {newWorld,upgradeWorld} from '../src/engine.js';
+import {newWorld,prepareWorld} from '../src/engine.js';
 
 const app=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
 const css=readFileSync(new URL('../src/styles.css',import.meta.url),'utf8');
@@ -11,11 +11,11 @@ test('v0.2.0 stores a resizable drawer height as optional recoverable world meta
  assert.equal(created.consoleHeightRatio,.36);
  const old=structuredClone(created);
  delete old.consoleHeightRatio;
- assert.equal(upgradeWorld(old).consoleHeightRatio,.36);
+ assert.equal(prepareWorld(old).consoleHeightRatio,.36);
  for(const [invalid,expected] of [[null,.36],[NaN,.36],[-100,.1],[Infinity,.36],[3,.95]]){
   const world=structuredClone(created);
   world.consoleHeightRatio=invalid;
-  assert.equal(upgradeWorld(world).consoleHeightRatio,expected);
+  assert.equal(prepareWorld(world).consoleHeightRatio,expected);
  }
 });
 
@@ -41,7 +41,7 @@ test('drawer can be dragged and resized without disabling map exploration',()=>{
 test('unavailable overlays and palettes are removed, not disabled',()=>{
  assert.match(app,/availablePalettes=shown>2\?Object\.entries\(palettes\)\.filter/);
  assert.match(app,/displayBar\.hidden=shown<2/);
- for(const stage of [2,3,5,7])assert.match(app,new RegExp(`data-overlay-stage="${stage}"`));
+ for(const stage of [2,3,5,8])assert.match(app,new RegExp(`data-overlay-stage="${stage}"`));
  assert.match(app,/label\.hidden=Number\(label\.dataset\.overlayStage\)>shown/);
 });
 

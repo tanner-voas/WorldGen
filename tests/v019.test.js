@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {generateGeometry,generateMesh,generateStage,DEFAULTS,newWorld,upgradeWorld,validateWorld,snapshotThroughStage,cellArea} from '../src/engine.js';
+import {generateGeometry,generateMesh,generateStage,DEFAULTS,newWorld,prepareWorld,validateWorld,snapshotThroughStage,cellArea} from '../src/engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint,polygonContainsPoint} from '../src/spatial.js';
 
 const shapes=[
@@ -24,7 +24,7 @@ test('spatial index finds exactly the same visible cells as a full scan for all 
   const mesh=meshFor(shape),index=buildCellIndex(mesh);
   let seed=137;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/2**32;};
   const cases=[[0,0,mesh.width,mesh.height],[-100,-100,150,150],[-200,-200,-10,-10]];
-  for(let i=0;i<120;i++){
+  for(let i=0;i<121;i++){
    const x=(random()*.95-.1)*mesh.width,y=(random()*.95-.1)*mesh.height;
    const w=(random()*.2+.005)*mesh.width,h=(random()*.2+.005)*mesh.height;
    cases.push([x,y,x+w,y+h]);
@@ -74,14 +74,14 @@ test('Voronoi neighbor graph remains symmetric and reflects actual bisectors nea
 });
 test('existing stage data, complete snapshots, and numeric units remain unchanged',()=>{
  const world=newWorld('Unmodified data');
- for(let stage=1;stage<=5;stage++){
+ for(let stage=1;stage<=7;stage++){
   const settings={...DEFAULTS[stage],...(stage===2?{averageArea:15000,relaxation:0}:{})};
   const data=generateStage(stage,world.locked,settings);
   world.locked.push({stage,settings,data});
  }
- world.working={stage:6,settings:{...DEFAULTS[6]},data:null,dataSettings:null};
+ world.working={stage:8,settings:{...DEFAULTS[7]},data:null,dataSettings:null};
  const saved=JSON.stringify(world.locked);
- const copy=upgradeWorld(structuredClone(world));
+ const copy=prepareWorld(structuredClone(world));
  assert.equal(JSON.stringify(copy.locked),saved);
  const snapshot=snapshotThroughStage(copy,4);
  assert.equal(snapshot.locked.length,4);

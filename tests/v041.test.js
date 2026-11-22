@@ -5,7 +5,7 @@ import {createTerrainSampler} from '../src/terrain-sampler.js';
 import {buildElevationSurface} from '../src/terrain-3d-model.js';
 import {Terrain3DViewer,TERRAIN_FRAGMENT_SHADER} from '../src/terrain-3d.js';
 const climate={meanTemp:[18,18,18,18,18,18,18,18],moisture:[.4,.4,.4,.4,.4,.4,.4,.4]};
-const appearance={stage:11,climate,water:[0,0,0,0,0,0,0,1],soils:{soilType:[1,3,4,4,4,9,6,0],fertility:Array(8).fill(.6)},biomes:{biome:[14,9,10,7,6,2,15,0],treePotential:[0,0,0,0,.9,0,0,0]}};
+const appearance={stage:13,climate,water:[0,0,0,0,0,0,0,1],soils:{soilType:[1,3,4,4,4,9,6,0],fertility:Array(8).fill(.6)},biomes:{biome:[14,9,10,7,6,2,15,0],treePotential:[0,0,0,0,.9,0,0,0]}};
 const mesh={width:80,height:20,areaKm2:1600,cells:Array.from({length:8},(_,i)=>({x:5+i*10,y:10,poly:[i*10,0,i*10+10,0,i*10+10,20,i*10,20],neighbors:[i-1,i+1].filter(j=>j>=0&&j<8)}))};
 const geometry={shape:'rectangle',width:80,height:20};
 const elevations=[.5,.3,.4,.2,.4,.6,.1,-.5];
@@ -15,18 +15,18 @@ const near=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<e,`${a} != ${b}`);
 
 test('historical climate, soil, biome and vegetation profiles use only their own stage data',()=>{
  const a=structuredClone(appearance),before=JSON.stringify(a);
- const c={...a,stage:8}; assert.deepEqual(profile(c,0),profile(c,1));
+ const c={...a,stage:9}; assert.deepEqual(profile(c,0),profile(c,1));
  assert.deepEqual(profile(c,0),profile({...c,soils:undefined,biomes:undefined},0));
- const s={...a,stage:10};assert.equal(largest(profile(s,0)),0);assert.equal(largest(profile(s,1)),1);
+ const s={...a,stage:12};assert.equal(largest(profile(s,0)),0);assert.equal(largest(profile(s,1)),1);
  for(const [i,kind] of [[0,0],[1,1],[3,3],[4,4],[5,5],[6,6],[7,7]])assert.equal(largest(profile(a,i)),kind,SURFACE_MATERIALS[kind]);
- const v={...a,stage:12,vegetation:{canopyCover:Array(8).fill(.85),groundCover:Array(8).fill(.85)}};
+ const v={...a,stage:13,vegetation:{canopyCover:Array(8).fill(.85),groundCover:Array(8).fill(.85)}};
  assert.ok(profile(v,3)[4]>profile(a,3)[4]);
  const bare={...v,vegetation:{canopyCover:Array(8).fill(0),groundCover:Array(8).fill(0)}};
  assert.equal(profile(bare,4)[4],0);assert.equal(profile(bare,4)[3],0);
  for(const p of [a,c,s,v,bare])for(let i=0;i<8;i++){
   const w=profile(p,i);assert.equal(w.length,8);assert.ok(w.every(x=>Number.isFinite(x)&&x>=0&&x<=1));near(w.reduce((a,b)=>a+b,0),1);
  }
- assert.deepEqual(surfaceMaterialAtSite({...a,stage:9},0,[0,-1,-1,-1,-1,-1,-1,-1]),[0,0,0,0,0,0,0,1]);
+ assert.deepEqual(surfaceMaterialAtSite({...a,stage:11},0,[0,-1,-1,-1,-1,-1,-1,-1]),[0,0,0,0,0,0,0,1]);
  assert.deepEqual(surfaceMaterialAtSite(c,0,[0,-1,-1,-1,-1,-1,-1,-1]),profile(c,0));
  assert.equal(JSON.stringify(a),before);
 });

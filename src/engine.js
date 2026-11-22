@@ -1,15 +1,15 @@
-// The legacy elevation fields remain in encoded units; physical calculations
-// use the shared 2.7 km/unit convention without migrating locked worlds.
+// Elevation uses a shared 2.7 km/unit scale for physical calculations.
 import {REFERENCE_DISTANCE_KM,REFERENCE_AREA_KM2,distanceLoss} from './geographic-units.js';
 import {ELEVATION_KM_PER_UNIT,elevationToKm,physicalSlope} from './elevation-units.js';
-export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
+export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=3;
 export const STAGES=[
   ['World setup','Coordinate system and world dimensions'],
   ['World geometry','Define the 2D world shape and its physical size in kilometers'],
   ['Voronoi mesh','Spatial cells and topology'],
   ['Tectonic plates','Plate territories and boundaries'],
-  ['Elevation','Crust properties, plate motion, collision uplift and terrain noise'],
-  ['Oceans & coasts','Sea level, water coverage and coastlines'],
+  ['Elevation','Signed boundary uplift, rifts and continuous altitude variation'],
+  ['Oceans','Elevation offset and zero-datum flooding'],
+  ['Coastlines','Optional coastal reshaping after initial flooding'],
   ['Landforms','Mountains, valleys, geology and fine terrain variation'],
   ['Erosion','Downhill runoff, sediment transport and thermal weathering'],
   ['Climate','Seasonal temperature, precipitation, ocean moderation and orographic rain shadows'],
@@ -19,11 +19,9 @@ export const STAGES=[
   ['Vegetation & habitats','Potential vegetation cover and structural habitat mosaic'],
   ['Local detail','Future: zoom-dependent microterrain']
 ];
-export const IMPLEMENTED=12;
-/** Geometry and coastline generation are deterministic without an independent
- * seed. Keep historical seed fields in existing saves; this is UI capability,
- * not a change to the generation inputs or save schema. */
-export function stageUsesSeed(stage){return Number.isInteger(stage)&&stage>=2&&stage<=IMPLEMENTED&&stage!==5;}
+export const IMPLEMENTED=13;
+/** Geometry and ocean/coastline stages do not use a random seed. */
+export function stageUsesSeed(stage){return Number.isInteger(stage)&&stage>=2&&stage<=IMPLEMENTED&&stage!==5&&stage!==6;}
 export const SOIL_NAMES=['Open water','Exposed rock','Thin upland','Coarse / sandy','Loam','Clay-rich','Organic wetland','Volcanic','Arid mineral','Cold / tundra'];
 export const BIOME_NAMES=['Ocean','Freshwater lake','Permanent snow / ice','Tundra','Boreal forest','Temperate rainforest','Temperate forest','Temperate grassland','Dry steppe','Desert / barren','Dry shrubland','Tropical rainforest','Tropical seasonal forest','Savanna','Alpine','Wetland','Montane forest'];
 export const VEGETATION_NAMES=['Ocean','Freshwater','Bare / ice','Sparse tundra','Grassland','Shrubland','Open woodland','Closed forest','Wet forest','Wetland vegetation','Riparian corridor','Alpine meadow','Desert scrub'];
@@ -33,15 +31,16 @@ export const DEFAULTS={
   1:{shape:'rectangle',width:2048,height:1024,radius:750,radiusX:1100,radiusY:600},
   2:{averageArea:2300,distribution:'random',jitter:0.74,relaxation:1,seed:271828},
   3:{plates:15,seed:314159},
-  4:{continental:0.42,motion:0.7,uplift:0.73,roughness:0.46,continentalHeight:0.32,seed:161803},
-  5:{land:0.38,edgeOcean:0.9,edgeFade:1.5,setbackStrength:1.15,setbackWidth:10,seed:141421},
-  6:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
-  7:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607},
- 8:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829},
- 9:{runoffScale:1,infiltration:0.32,evaporation:0.52,riverThreshold:4,lakeDepth:0.008,minLakeCells:1,seed:314160},
- 10:{weathering:1,organicInput:1,alluvialInput:1,permeabilityBias:1,groundwaterRecharge:1,seed:173206},
- 11:{temperatureShift:0,rainfallResponse:1,forestThreshold:.90,wetlandThreshold:.65,alpineLimit:9,patchVariation:.12,seed:271830},
- 12:{vegetationDensity:1,maturity:.8,disturbance:.16,riparianStrength:.65,patchiness:.16,seed:271831}
+ 4:{motion:0.7,uplift:0.9,roughness:0.46,upliftWidth:126,seed:161803},
+ 5:{oceanOffset:0},
+ 6:{edgeOcean:0.4,edgeFade:1.5,setbackStrength:0.3,setbackWidth:10},
+ 7:{ridge:0.65,detail:0.58,valleys:0.5,volcanism:0.22,seed:173205},
+  8:{rainfall:0.85,hydraulic:0.78,thermal:0.4,hardness:0.48,iterations:18,seed:223607},
+ 9:{equatorTemp:29,latitudeCenter:0,latitudeSpan:125,axialTilt:23.5,rainfall:1100,windDirection:45,rainShadow:0.9,maritime:0.7,seed:271829},
+ 10:{runoffScale:1,infiltration:0.32,evaporation:0.52,riverThreshold:4,lakeDepth:0.008,minLakeCells:1,seed:314160},
+ 11:{weathering:1,organicInput:1,alluvialInput:1,permeabilityBias:1,groundwaterRecharge:1,seed:173206},
+ 12:{temperatureShift:0,rainfallResponse:1,forestThreshold:.90,wetlandThreshold:.65,alpineLimit:9,patchVariation:.12,seed:271830},
+ 13:{vegetationDensity:1,maturity:.8,disturbance:.16,riparianStrength:.65,patchiness:.16,seed:271831}
 };
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
@@ -87,7 +86,7 @@ export function cellArea(cell){
  for(let j=0;j<p.length;j+=2){const k=(j+2)%p.length;sum+=p[j]*p[k+1]-p[k]*p[j+1];}
  return Math.abs(sum)*0.5;
 }
-/** Recalculate geographic land share for old checkpoints that only stored cell share. */
+/** Land share weighted by geographic cell area. */
 export function landAreaFraction(mesh,water){
  if(!mesh?.cells||mesh.cells.length!==water?.length)return null;
  let land=0,total=0;
@@ -202,55 +201,88 @@ function farSeeds(cells,count,seed){const rng=random(seed),chosen=[Math.floor(rn
  for(let j=1;j<count;j++){let best=0,bestScore=-1;for(let i=0;i<cells.length;i++){const score=distances[i]*(0.65+0.7*hash2(i,j,seed));if(score>bestScore){bestScore=score;best=i;}}chosen.push(best);for(let i=0;i<cells.length;i++)distances[i]=Math.min(distances[i],(cells[i].x-cells[best].x)**2+(cells[i].y-cells[best].y)**2);}
  return chosen;
 }
-export function generatePlates(mesh,settings){const rng=random(settings.seed),cells=mesh.cells,pCount=clamp(Math.round(settings.plates),3,50),seeds=farSeeds(cells,pCount,settings.seed),plates=seeds.map((index,id)=>{const theta=rng()*Math.PI*2;const continental=settings.continental??DEFAULTS[4].continental,motion=settings.motion??DEFAULTS[4].motion;return {id,x:cells[index].x,y:cells[index].y,continental:rng()<continental,vx:Math.cos(theta)*motion,vy:Math.sin(theta)*motion};});
- const owners=cells.map(c=>{let chosen=0,min=Infinity;for(const plate of plates){const dx=(c.x-plate.x)/mesh.width,dy=(c.y-plate.y)/mesh.height,d=dx*dx+dy*dy;if(d<min){min=d;chosen=plate.id;}}return chosen;});
+/** Layer 3 owns only territory centroids and their immutable cell assignments.
+ * A random seed here must not encode crust, ocean, height, or motion. */
+export function generatePlates(mesh,settings){
+ const cells=mesh.cells,pCount=clamp(Math.round(settings.plates),3,50),seeds=farSeeds(cells,pCount,settings.seed);
+ const plates=seeds.map((index,id)=>({id,x:cells[index].x,y:cells[index].y}));
+ const owners=cells.map(c=>{let chosen=0,min=Infinity;
+  for(const plate of plates){const dx=(c.x-plate.x)/mesh.width,dy=(c.y-plate.y)/mesh.height,d=dx*dx+dy*dy;
+   if(d<min){min=d;chosen=plate.id;}}
+  return chosen;});
  return {plates,owners};
 }
-/** Stage 3 saves IDs, centroids, and owners only. Stage 4 assigns geological attributes to
- * those same plates, with the stage-3 seed so the random directions/crust
- * choices remain identical to v0.2.1 when values are unchanged. No plate
- * boundary or owner is ever recalculated when editing elevation settings. */
-export function assignPlateGeology(plateData,settings,plateSeed){
- const rng=random(plateSeed),continental=clamp(Number(settings.continental),.1,.9),motion=clamp(Number(settings.motion),0,2);
- return {...plateData,plates:plateData.plates.map(plate=>{
-  const theta=rng()*Math.PI*2,crust=rng()<continental;
-  return {...plate,continental:crust,vx:Math.cos(theta)*motion,vy:Math.sin(theta)*motion};
- })};
+/** These are local uplift directions, not continental/oceanic classifications.
+ * They are generated in Layer 4, never stored in Layer 3. */
+function upliftDirections(plateData,settings){
+ const rng=random(settings.seed),motion=clamp(Number(settings.motion),0,2);
+ return plateData.plates.map(plate=>{const theta=rng()*Math.PI*2;
+  return {id:plate.id,x:plate.x,y:plate.y,vx:Math.cos(theta)*motion,vy:Math.sin(theta)*motion};
+ });
 }
-/** Existing v0.2.1 layers have no stage-4 plateProperties field. Their
- * stage-3 attributes are retained as a read-only compatibility fallback. */
+/** Combine the saved plate territories with the uplift directions defined in Layer 4. */
 function geologicalPlates(locked){
- const regionData=locked[2]?.data,properties=locked[3]?.data?.plateProperties;
- if(!properties)return regionData;
- return {...regionData,plates:regionData.plates.map((plate,i)=>({...plate,...properties[i]}))};
+ const plateData=locked[2]?.data,properties=locked[3]?.data?.plateProperties;
+ return {...plateData,plates:plateData.plates.map((plate,i)=>({...plate,...properties[i]}))};
 }
-// Crust height, uplift and terrain noise remain calibrated in the compact
-// elevation encoding. Every encoded unit represents 2.7 km of relief.
-export function generateElevation(mesh,plateData,settings){const cells=mesh.cells,{plates,owners}=plateData,base=new Float32Array(cells.length),boundary=new Float32Array(cells.length),frontier=[];
+/** A signed, continuous altitude field around a fixed zero datum. Plate
+ * boundaries are the seed lines; convergence gives positive uplift, divergence
+ * gives negative rifts. Neither coastline nor continent categories exist. */
+export function generateElevation(mesh,plateData,settings){
+ const cells=mesh.cells,{owners}=plateData,plates=upliftDirections(plateData,settings);
+ const boundary=new Float32Array(cells.length),frontier=[];
  for(let i=0;i<cells.length;i++){
-  const c=cells[i],plate=plates[owners[i]];let coll=0,edge=false;
-  for(const j of c.neighbors){if(owners[j]===owners[i])continue;edge=true;const o=plates[owners[j]],vX=o.vx-plate.vx,vY=o.vy-plate.vy,dx=cells[j].x-c.x,dy=cells[j].y-c.y;
-   // Opposing velocities raise convergent mountain belts; divergence creates rifts.
-   const convergence=-(vX*dx+vY*dy)/(Math.hypot(dx,dy)||1);
-   coll+=clamp(convergence,-1.8,1.8)*(plate.continental||o.continental?1:0.45);
+  const cell=cells[i],a=plates[owners[i]];let force=0,count=0;
+  for(const j of cell.neighbors){if(owners[j]===owners[i])continue;
+   const b=plates[owners[j]],dx=cells[j].x-cell.x,dy=cells[j].y-cell.y;
+   const convergence=-((b.vx-a.vx)*dx+(b.vy-a.vy)*dy)/(Math.hypot(dx,dy)||1);
+   force+=clamp(convergence,-2,2);count++;
   }
-  boundary[i]=edge?Math.sign(coll||1)*Math.min(Math.abs(coll),2):0;
-  if(edge)frontier.push(i);
-  const continent=plate.continental?(settings.continentalHeight+0.12):-(0.48-settings.continentalHeight*0.2);
-  const macro=fbm(c.x/550,c.y/550,settings.seed,4)*0.32;
-  const local=fbm(c.x/90,c.y/90,settings.seed+999,5)*(0.08+settings.roughness*0.25);
-  base[i]=continent+macro+local;
+  if(count){boundary[i]=force/count;frontier.push(i);}
  }
- // Follow the nearest plate boundary in physical kilometres. Carry its
- // signed pressure inland; a denser graph must not narrow mountain belts.
- const {distance:dist,source}=geographicDistances(cells,frontier);
- const elevations=new Array(cells.length);
- for(let i=0;i<cells.length;i++){
-  const pressure=source[i]>=0?boundary[source[i]]:0;
-  const ridge=Math.exp(-dist[i]*.63/REFERENCE_DISTANCE_KM)*pressure*settings.uplift*.43;
-  elevations[i]=+clamp(base[i]+ridge,-1.8,1.8).toFixed(4);
- }
- return {elevations};
+ const {distance,source}=geographicDistances(cells,frontier);
+ const width=clamp(Number(settings.upliftWidth??126),30,500);
+ const uplift=clamp(Number(settings.uplift),0,1.6),roughness=clamp(Number(settings.roughness),0,1.4);
+ const elevations=cells.map((cell,i)=>{
+  const line=source[i]<0?0:boundary[source[i]];
+  // Vary signed uplift continuously along the fault, not per polygon.
+  const variation=.80+.35*fbm(cell.x/(REFERENCE_DISTANCE_KM*3),cell.y/(REFERENCE_DISTANCE_KM*3),settings.seed+41,4);
+  const ridge=line*Math.exp(-distance[i]/Math.max(1,width))*uplift*.65*variation;
+  const macro=fbm(cell.x/(REFERENCE_DISTANCE_KM*8),cell.y/(REFERENCE_DISTANCE_KM*8),settings.seed+127,5)*roughness*.36;
+  const detail=fbm(cell.x/(REFERENCE_DISTANCE_KM*1.8),cell.y/(REFERENCE_DISTANCE_KM*1.8),settings.seed+723,4)*roughness*.09;
+  return +clamp(ridge+macro+detail,-1.8,1.8).toFixed(4);
+ });
+ return {elevations,plateProperties:plates.map(({vx,vy})=>({vx,vy}))};
+}
+/** Layer 5 sets a single global elevation offset. Only transformed height <= 0
+ * is ocean. This never changes the immutable Layer 4 altitude data. */
+export function generateOceans(elevationData,settings,mesh=null){
+ const source=elevationData?.elevations,offset=Number(settings.oceanOffset);
+ if(!Array.isArray(source)||!source.length||!Number.isFinite(offset)||offset< -1.8||offset>1.8)throw Error('Invalid ocean offset or elevation data');
+ if(mesh&&mesh.cells.length!==source.length)throw Error('Elevation/mesh size mismatch');
+ const elevations=source.map(v=>+clamp(v+offset,-1.8,1.8).toFixed(4));
+ const water=elevations.map(v=>v<=0?1:0),landFraction=water.reduce((a,v)=>a+(v?0:1),0)/water.length;
+ return {elevations,water,seaLevel:0,landFraction,
+  landAreaFraction:mesh?landAreaFraction(mesh,water):landFraction,oceanOffset:offset};
+}
+/** Layer 6 can reshape the coastline near the world edge, after the initial
+ * offset/flood calculation. It does not choose sea level or a target land %. */
+export function refineCoastlines(oceans,settings,mesh){
+ const source=oceans?.elevations;
+ if(!mesh?.cells||!Array.isArray(source)||source.length!==mesh.cells.length)throw Error('Ocean and mesh data required');
+ const strength=clamp(Number(settings.edgeOcean)||0,0,1.5),fade=clamp(Number(settings.edgeFade??1.5),.5,5);
+ const setback=clamp(Number(settings.setbackStrength)||0,0,1.8),setbackWidth=clamp(Number(settings.setbackWidth??10),2,18);
+ const shortSide=Math.min(mesh.width,mesh.height),edgeWidthKm=Math.min(fade*REFERENCE_DISTANCE_KM,shortSide*.12);
+ const retreatWidthKm=Math.min(setbackWidth*REFERENCE_DISTANCE_KM,shortSide*.16);
+ const {near,touches}=boundaryCells(mesh,boundaryPolygon(mesh));
+ const elevations=source.map((v,i)=>{
+  const x=clamp(1-near[i]/Math.max(.001,edgeWidthKm),0,1),y=clamp(1-near[i]/Math.max(.001,retreatWidthKm),0,1);
+  const delta=strength*x*x*(3-2*x)+setback*y*y*(3-2*y);
+  return +clamp(touches[i]&&strength>0?Math.min(v-delta,-.015):v-delta,-1.8,1.8).toFixed(4);
+ });
+ const water=elevations.map(v=>v<=0?1:0),landFraction=water.reduce((a,v)=>a+(v?0:1),0)/water.length;
+ return {elevations,water,seaLevel:0,landFraction,landAreaFraction:landAreaFraction(mesh,water),
+  edgeWaterCells:touches.filter((v,i)=>v&&water[i]).length,edgeWidthKm,retreatWidthKm};
 }
 /** Distance to the actual clipped world outline, in km. For circles and
  * ellipses the outline is the same 128-segment path as the Voronoi clipper,
@@ -290,109 +322,8 @@ function boundaryCells(mesh,outline){
  }
  return {near,touches};
 }
-/** The protected rim is a topological constraint, not a width in km. The
- * bound uses actual clipped polygon areas, including on elongated worlds. */
-export function boundaryLandCapacity(mesh){
- const weights=mesh.cells.map(cellArea),total=weights.reduce((a,b)=>a+b,0);
- if(!(total>0))throw Error('Invalid geographic cell areas');
- const {touches}=boundaryCells(mesh,boundaryPolygon(mesh));
- return rimCapacity(weights,total,touches);
-}
-function rimCapacity(weights,total,protectedCells){
- let availableArea=0,protectedCount=0;
- for(let i=0;i<weights.length;i++){
-  if(protectedCells[i])protectedCount++;else availableArea+=weights[i];
- }
- return {protectedCount,availableCount:weights.length-protectedCount,
-  maxLandFraction:clamp(availableArea/total,0,1)};
-}
-/** Select geographic-area-weighted sea level with an edge-local ocean bias.
- * A narrow rim and a broader continental setback fade independently; the
- * inner elevation field remains unchanged beyond both influence widths. All actual boundary-contacting polygons remain
- * water, even when a high continental plate reaches the edge. Edge water is
- * counted toward the target rather than silently increasing overall ocean
- * coverage whenever sufficient non-edge cells are available.
- *
- * With no mesh (legacy direct API), or with both edge strengths zero, the
- * original sea-level threshold behavior is preserved. This layer owns its adjusted elevations:
- * the locked tectonic/elevation layers are never modified. Later landforms
- * consume this coastal field so land/sea and heights remain consistent.
- */
-export function generateCoasts(elevationData,settings,mesh=null){
- const es=elevationData.elevations,landTarget=clamp(Number(settings.land),0.05,0.9);
- if(!Number.isFinite(landTarget))throw Error('Land coverage target must be finite');
- if(!Array.isArray(es)||!es.length)throw Error('Elevation samples required');
- if(mesh&&mesh.cells.length!==es.length)throw Error('Elevation and mesh dimensions differ');
- const weights=mesh?mesh.cells.map(cellArea):es.map(()=>1);
- const total=weights.reduce((a,b)=>a+b,0);
- if(!(total>0))throw Error('Invalid geographic cell areas');
- const strength=clamp(Number(settings.edgeOcean)||0,0,1.5);
- const fade=clamp(Number(settings.edgeFade??1.5),.5,5);
- // The guaranteed one-polygon wet rim is deliberately separate from this
- // broad, low-frequency continental setback. The broad component weakens
- // gradually with distance, without any noise tied to the map outline.
- const setbackStrength=clamp(Number(settings.setbackStrength??0),0,1.8);
- const setbackWidth=clamp(Number(settings.setbackWidth??9),2,18);
- const protectedCells=new Array(es.length).fill(false);
- const elevations=es.slice();
- let edgeWidthKm=0,retreatWidthKm=0;
- if(mesh&&(strength>0||setbackStrength>0)){
-  const outline=boundaryPolygon(mesh);
-  const {near,touches}=boundaryCells(mesh,outline);
-  // Prevent the ocean rim from engulfing thin maps or very coarse meshes.
-  edgeWidthKm=Math.min(fade*REFERENCE_DISTANCE_KM,Math.min(mesh.width,mesh.height)*.12);
-  retreatWidthKm=Math.min(setbackWidth*REFERENCE_DISTANCE_KM,Math.min(mesh.width,mesh.height)*.16);
-  for(let i=0;i<es.length;i++){
-   protectedCells[i]=strength>0&&touches[i];
-   const normalized=clamp(1-near[i]/Math.max(.001,edgeWidthKm),0,1);
-   const smooth=normalized*normalized*(3-2*normalized);
-   const inland=clamp(1-near[i]/Math.max(.001,retreatWidthKm),0,1);
-   const broad=inland*inland*(3-2*inland);
-   // No noise is added along the edge: the underlying geology supplies
-   // variation, while smoothstep prevents an artificial concentric ridge.
-   elevations[i]=+clamp(es[i]-strength*smooth-setbackStrength*broad,-1.8,1.8).toFixed(4);
-  }
- }
- const capacity=rimCapacity(weights,total,protectedCells);
- const available=es.map((_,i)=>i).filter(i=>!protectedCells[i]);
- const availableArea=available.reduce((sum,i)=>sum+weights[i],0);
- const target=clamp(availableArea-total*landTarget,0,availableArea);
- const indices=available.sort((a,b)=>elevations[a]-elevations[b]||a-b);
- let seaLevel;
- if(!indices.length)seaLevel=0;
- else if(target<=0)seaLevel=elevations[indices[0]]-.000001;
- else if(target>=availableArea)seaLevel=elevations[indices.at(-1)]+.000001;
- else{
-  // Consider both endpoints as well as each distinct elevation boundary.
-  // Equal-height groups cannot be split by a single sea-level datum. At an
-  // exact tie prefer the smaller water area; never split a plateau arbitrarily.
-  let accumulated=0,bestDifference=target,bestSplit=0;
-  for(let k=1;k<=indices.length;k++){
-   accumulated+=weights[indices[k-1]];
-   if(k<indices.length&&elevations[indices[k-1]]===elevations[indices[k]])continue;
-   const difference=Math.abs(accumulated-target);
-   if(difference<bestDifference){bestDifference=difference;bestSplit=k;}
-  }
-  seaLevel=bestSplit===0?elevations[indices[0]]-.000001:
-   bestSplit===indices.length?elevations[indices.at(-1)]+.000001:
-   (elevations[indices[bestSplit-1]]+elevations[indices[bestSplit]])*.5;
- }
- const water=elevations.map((value,i)=>protectedCells[i]||value<seaLevel?1:0);
- // The boundary must be below sea level in the *derived* height field, too.
- // Leave the original tectonic elevations intact for stage-4 exploration.
- for(let i=0;i<elevations.length;i++)if(protectedCells[i])elevations[i]=Math.min(elevations[i],seaLevel-.015);
- const landFraction=water.filter(v=>!v).length/water.length;
- const landAreaFraction=mesh?landAreaFractionFromWeights(weights,water,total):landFraction;
- const edgeWaterCells=protectedCells.filter(Boolean).length;
- return {seaLevel,water,landFraction,landAreaFraction,elevations,edgeWaterCells,coverage:{target:landTarget,maxLandFraction:capacity.maxLandFraction,availableCount:capacity.availableCount},edgeWidthKm:+edgeWidthKm.toFixed(2),retreatWidthKm:+retreatWidthKm.toFixed(2)};
-}
-
-function landAreaFractionFromWeights(weights,water,total){
- let land=0;for(let i=0;i<water.length;i++)if(!water[i])land+=weights[i];
- return land/total;
-}
 /** Detailed relief is added *without mutating* the locked height/sea layers.
- * Preserve the layer-4 land/water mask so locked coastlines remain stable.
+ * Preserve the Layer 6 coastline water mask so previously locked oceans remain stable.
  * Class IDs match LANDFORM_NAMES and will remain part of the save schema.
  */
 export function generateLandforms(mesh,plateData,heightData,coastData,settings){
@@ -539,7 +470,7 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
  const sorted=flowing.map(i=>discharge[i]).sort((a,b)=>a-b);
  const cutoff=sorted.length?sorted[Math.floor(sorted.length*.88)]:Infinity;
  const channels=flowing.filter(i=>discharge[i]>=cutoff);
- // Legacy persisted depths are in elevation units, exported sediment in unit × km².
+ // Stored erosion depths are in elevation units, exported sediment in unit × km².
  const erosionDepth=Array.from(removed,x=>+x.toFixed(5));
  const deposition=Array.from(deposited,x=>+x.toFixed(5));
  onProgress?.(1);
@@ -732,7 +663,7 @@ export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgres
   // The moisture gate suppresses permanent lakes in the most arid basins.
   if(depth>=lakeMinDepth&&climate.moisture[i]>=.12&&localRunoff[i]>0)candidate[i]=1;
  }
- // Persist spill elevations, lake levels and depths in legacy elevation units.
+ // Persist spill elevations, lake levels and depths in elevation units.
  const lakes=[];
  for(let i=0;i<n;i++){
   if(!candidate[i]||lakeId[i]!==-1)continue;
@@ -780,7 +711,6 @@ export function generateSoils(mesh,plates,landforms,coasts,erosion,climate,hydro
   const noSoil=!!coasts.water[i]||hydrology.lakeId[i]>=0;
   if(noSoil){soilType[i]=0;depthM[i]=0;organicMatter[i]=0;permeability[i]=0;fertility[i]=0;groundwater[i]=0;erosionRisk[i]=0;areaCount[0]++;continue;}
   const c=cells[i],temp=climate.meanTemp[i],precip=climate.precipitation[i],moist=clamp(climate.moisture[i],0,1),rough=clamp(landforms.ruggedness[i],0,1);
-  const continental=!!plates.plates[plates.owners[i]]?.continental;
   const volcanic=landforms.classes[i]===7;
   const polar=clamp((-temp+4)/20,0,1),dry=clamp((350-precip)/350,0,1),temperature=clamp((temp+8)/35,0,1);
   // Slope normalized to a fixed reference distance, rather than raw
@@ -789,7 +719,7 @@ export function generateSoils(mesh,plates,landforms,coasts,erosion,climate,hydro
   const proximity=clamp(Math.log1p(hydrology.catchmentArea[i])/Math.log1p(maxCatchment),0,1);
   const floodplain=clamp((1-slope)*(1-rough*.7)*(.33+proximity*.67),0,1);
   const deposited=clamp(elevationToKm(erosion.deposition[i])*(9/ELEVATION_KM_PER_UNIT),0,1),stripped=clamp(elevationToKm(erosion.erosionDepth[i])*(5/ELEVATION_KM_PER_UNIT),0,1);
-  const mineral=clamp(.42+.22*(continental?1:0)+.2*(volcanic?1:0)+noise(c.x/300,c.y/300,seed+31)*.12,0,1);
+  const mineral=clamp(.48+.2*(volcanic?1:0)+noise(c.x/300,c.y/300,seed+31)*.12,0,1);
   const wetWeathering=clamp(.2+.8*moist,0,1)*(.38+.62*temperature)*(1-polar*.75);
   const buildup=weathering*wetWeathering*(.45+.55*mineral)*(1-slope*.6);
   const accumulation=alluvialInput*(floodplain*.5+deposited*.9);
@@ -1007,16 +937,17 @@ export function generateStage(stage,locked,settings,onProgress=null){
  const geometry=locked[0]?.data,mesh=locked[1]?.data;
  if(stage===1)return generateGeometry(settings);
  if(stage===2){if(!geometry)throw Error('World geometry required');return generateMesh(settings,onProgress,geometry);}
- if(stage===3){if(!mesh)throw Error('Voronoi mesh required');const {plates,owners}=generatePlates(mesh,settings);return {plates:plates.map(({id,x,y})=>({id,x,y})),owners};}
- if(stage===4){if(!locked[2]?.data)throw Error('Tectonic layer required');const geology=assignPlateGeology(locked[2].data,settings,locked[2].settings?.seed??DEFAULTS[3].seed);return {...generateElevation(mesh,geology,settings),plateProperties:geology.plates.map(({continental,vx,vy})=>({continental,vx,vy}))};}
- if(stage===5){if(!locked[3]?.data)throw Error('Elevation layer required');return generateCoasts(locked[3].data,settings,mesh);}
- if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return generateLandforms(mesh,geologicalPlates(locked),locked[3].data,locked[4].data,settings);}
- if(stage===7){if(!locked[5]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[4].data,locked[5].data,settings,onProgress);}
- if(stage===8){if(!locked[6]?.data)throw Error('Erosion layer required');return generateClimate(mesh,locked[4].data,locked[6].data,settings,onProgress);}
- if(stage===9){if(!locked[7]?.data)throw Error('Climate layer required');return generateHydrology(mesh,locked[4].data,locked[6].data,locked[7].data,settings,onProgress);}
- if(stage===10){if(!locked[8]?.data)throw Error('Hydrology layer required');return generateSoils(mesh,geologicalPlates(locked),locked[5].data,locked[4].data,locked[6].data,locked[7].data,locked[8].data,settings,onProgress);}
- if(stage===11){if(!locked[9]?.data)throw Error('Soil layer required');return generateBiomes(mesh,locked[4].data,locked[5].data,locked[6].data,locked[7].data,locked[8].data,locked[9].data,settings,onProgress);}
- if(stage===12){if(!locked[10]?.data)throw Error('Biome layer required');return generateVegetation(mesh,locked[4].data,locked[7].data,locked[8].data,locked[9].data,locked[10].data,settings,onProgress);}
+ if(stage===3){if(!mesh)throw Error('Voronoi mesh required');return generatePlates(mesh,settings);}
+ if(stage===4){if(!locked[2]?.data)throw Error('Tectonic layer required');return generateElevation(mesh,locked[2].data,settings);}
+ if(stage===5){if(!locked[3]?.data)throw Error('Elevation layer required');return generateOceans(locked[3].data,settings,mesh);}
+ if(stage===6){if(!locked[4]?.data)throw Error('Ocean layer required');return refineCoastlines(locked[4].data,settings,mesh);}
+ if(stage===7){if(!locked[5]?.data)throw Error('Coastline layer required');return generateLandforms(mesh,geologicalPlates(locked),locked[3].data,locked[5].data,settings);}
+ if(stage===8){if(!locked[6]?.data)throw Error('Landform layer required');return generateErosion(mesh,locked[5].data,locked[6].data,settings,onProgress);}
+ if(stage===9){if(!locked[7]?.data)throw Error('Erosion layer required');return generateClimate(mesh,locked[5].data,locked[7].data,settings,onProgress);}
+ if(stage===10){if(!locked[8]?.data)throw Error('Climate layer required');return generateHydrology(mesh,locked[5].data,locked[7].data,locked[8].data,settings,onProgress);}
+ if(stage===11){if(!locked[9]?.data)throw Error('Hydrology layer required');return generateSoils(mesh,geologicalPlates(locked),locked[6].data,locked[5].data,locked[7].data,locked[8].data,locked[9].data,settings,onProgress);}
+ if(stage===12){if(!locked[10]?.data)throw Error('Soil layer required');return generateBiomes(mesh,locked[5].data,locked[6].data,locked[7].data,locked[8].data,locked[9].data,locked[10].data,settings,onProgress);}
+ if(stage===13){if(!locked[11]?.data)throw Error('Biome layer required');return generateVegetation(mesh,locked[5].data,locked[8].data,locked[9].data,locked[10].data,locked[11].data,settings,onProgress);}
  throw Error('Stage not yet implemented');
 }
 export function newWorld(name='Untitled world'){
@@ -1057,19 +988,16 @@ export function validateWorld(world){
   if(record.stage<=2)continue;
   if(!n)throw Error('Missing base mesh for a generated layer');
   const d=record.data;
-  if(record.stage===3&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||(['vx','vy','continental'].some(k=>Object.hasOwn(p,k))&&(!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||typeof p.continental!=='boolean')))))throw Error('Invalid plate data');
-  if((record.stage===4||record.stage===6||record.stage===7)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
-  if(record.stage===4&&d.plateProperties===undefined){
-   const legacyPlates=records.find(r=>r.stage===3)?.data?.plates;
-   if(!legacyPlates?.every(p=>typeof p.continental==='boolean'&&Number.isFinite(p.vx)&&Number.isFinite(p.vy)))throw Error('Elevation layer lacks plate properties');
-  }
-  if(record.stage===4&&d.plateProperties!==undefined){
+  if(record.stage===3&&(!Array.isArray(d.plates)||d.plates.length<3||d.plates.length>50||!Array.isArray(d.owners)||d.owners.length!==n||d.owners.some(x=>!Number.isInteger(x)||x<0||x>=d.plates.length)||d.plates.some((p,i)=>p.id!==i||!Number.isFinite(p.x)||!Number.isFinite(p.y)||Object.keys(p).sort().join(',')!=='id,x,y')))throw Error('Invalid plate data');
+  if((record.stage===4||record.stage===7||record.stage===8)&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid elevation data');
+  if(record.stage===4){
    const count=records.find(r=>r.stage===3)?.data?.plates?.length;
-   if(!Array.isArray(d.plateProperties)||d.plateProperties.length!==count||d.plateProperties.some(p=>typeof p?.continental!=='boolean'||!Number.isFinite(p.vx)||!Number.isFinite(p.vy)||Math.hypot(p.vx,p.vy)>2.000001))throw Error('Invalid elevation plate properties');
+   if(!Array.isArray(d.plateProperties)||d.plateProperties.length!==count||d.plateProperties.some(p=>!Number.isFinite(p?.vx)||!Number.isFinite(p?.vy)||Math.hypot(p.vx,p.vy)>2.000001||Object.keys(p).sort().join(',')!=='vx,vy'))throw Error('Invalid uplift directions');
   }
-  if(record.stage===5&&(!Array.isArray(d.water)||d.water.length!==n||!Number.isFinite(d.seaLevel)||d.water.some(x=>x!==0&&x!==1)||d.elevations!==undefined&&(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2))))throw Error('Invalid coast data');
-  if(record.stage===6&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
-  if(record.stage===7){
+  if(record.stage===5&&(!Array.isArray(d.water)||d.water.length!==n||d.seaLevel!==0||!Array.isArray(d.elevations)||d.elevations.length!==n||d.water.some(v=>v!==0&&v!==1)||d.elevations.some(v=>!Number.isFinite(v)||Math.abs(v)>2)))throw Error('Invalid ocean mask');
+  if(record.stage===6&&(!Array.isArray(d.water)||d.water.length!==n||d.seaLevel!==0||d.water.some(x=>x!==0&&x!==1)||(!Array.isArray(d.elevations)||d.elevations.length!==n||d.elevations.some(x=>!Number.isFinite(x)||Math.abs(x)>2))))throw Error('Invalid coast data');
+  if(record.stage===7&&(!Array.isArray(d.classes)||d.classes.length!==n||d.classes.some(x=>!Number.isInteger(x)||x<0||x>=LANDFORM_NAMES.length)||!Array.isArray(d.ruggedness)||d.ruggedness.length!==n||d.ruggedness.some(x=>!Number.isFinite(x)||x<0||x>1)||!Array.isArray(d.counts)||d.counts.length!==LANDFORM_NAMES.length||d.counts.some(x=>!Number.isInteger(x)||x<0)||d.counts.reduce((a,b)=>a+b,0)!==n||!Array.isArray(d.volcanoes)||d.volcanoes.some(x=>!Number.isInteger(x)||x<0||x>=n)))throw Error('Invalid landform data');
+  if(record.stage===8){
    if(!Array.isArray(d.erosionDepth)||!Array.isArray(d.deposition)||!Array.isArray(d.flowTo)||!Array.isArray(d.discharge)||!Array.isArray(d.channels)
     ||[d.erosionDepth,d.deposition,d.flowTo,d.discharge].some(a=>a.length!==n)
     ||d.erosionDepth.some(x=>!Number.isFinite(x)||x<0||x>3)
@@ -1079,20 +1007,20 @@ export function validateWorld(world){
     ||d.channels.some(x=>!Number.isInteger(x)||x<0||x>=n)
     ||!d.summary||!Number.isFinite(d.summary.meanErosion)||!Number.isFinite(d.summary.maxDischarge))throw Error('Invalid erosion data');
   }
-  if(record.stage===8){
+  if(record.stage===9){
    const bounded={meanTemp:[-65,55],seasonalRange:[0,39],latitudes:[-90,90],precipitation:[8,12000],humidity:[0,1],moisture:[0,1],janTemp:[-90,75],julTemp:[-90,75],janRain:[0,12000],julRain:[0,12000]};
    for(const [key,[min,max]] of Object.entries(bounded))if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(x=>!Number.isFinite(x)||x<min||x>max))throw Error(`Invalid climate data: ${key}`);
    if(!d.summary||!Number.isFinite(d.summary.avgTemp)||!Number.isFinite(d.summary.avgRain)||!Number.isFinite(d.summary.minTemp)||!Number.isFinite(d.summary.maxTemp))throw Error('Invalid climate summary');
   }
 
-  if(record.stage===9){
+  if(record.stage===10){
    const lengths=['flowTo','catchmentArea','localRunoff','discharge','spillElevation','lakeId','lakeDepth','lakeLevel','outlet'];
    if(lengths.some(k=>!Array.isArray(d[k])||d[k].length!==n)||!Array.isArray(d.channels)||!Array.isArray(d.lakes)||!d.summary)throw Error('Invalid hydrology arrays');
    if(d.flowTo.some((j,i)=>!Number.isInteger(j)||j< -1||j>=n||j===i||(j>=0&&!mesh.cells[i].neighbors.includes(j))))throw Error('Invalid hydrology routes');
    for(const key of ['catchmentArea','localRunoff','discharge','lakeDepth'])if(d[key].some(x=>!Number.isFinite(x)||x<0))throw Error(`Invalid hydrology ${key}`);
    if(d.spillElevation.some(x=>!Number.isFinite(x)||Math.abs(x)>2)||d.lakeLevel.some(x=>x!==null&&(!Number.isFinite(x)||Math.abs(x)>2)))throw Error('Invalid hydrology levels');
    if(d.outlet.some(x=>!Number.isInteger(x)||x<0||x>=n)||d.lakeId.some(x=>!Number.isInteger(x)||x< -1||x>=d.lakes.length))throw Error('Invalid hydrology ids');
-   if(d.channels.some(x=>!Number.isInteger(x)||x<0||x>=n||records.find(r=>r.stage===5)?.data?.water?.[x]))throw Error('Invalid hydrology channels');
+   if(d.channels.some(x=>!Number.isInteger(x)||x<0||x>=n||records.find(r=>r.stage===6)?.data?.water?.[x]))throw Error('Invalid hydrology channels');
    const seenLakes=new Set();
    for(let id=0;id<d.lakes.length;id++){const lake=d.lakes[id];
     if(lake.id!==id||!Array.isArray(lake.cells)||!lake.cells.length||!Number.isFinite(lake.areaKm2)||lake.areaKm2<=0||!Number.isFinite(lake.level)||!Number.isFinite(lake.maxDepth)||lake.cells.some(j=>!Number.isInteger(j)||j<0||j>=n||d.lakeId[j]!==id||seenLakes.has(j)))throw Error('Invalid hydrology lakes');
@@ -1106,11 +1034,11 @@ export function validateWorld(world){
     for(const k of path)state[k]=2;
    }
   }
-  if(record.stage===10){
+  if(record.stage===11){
    const fields={depthM:[0,7],organicMatter:[0,1],permeability:[0,1],fertility:[0,1],groundwater:[0,1],erosionRisk:[0,1]};
    if(!Array.isArray(d.soilType)||d.soilType.length!==n||d.soilType.some(v=>!Number.isInteger(v)||v<0||v>=SOIL_NAMES.length)||!Array.isArray(d.counts)||d.counts.length!==SOIL_NAMES.length||d.counts.some(v=>!Number.isInteger(v)||v<0)||d.counts.reduce((a,b)=>a+b,0)!==n)throw Error('Invalid soil classification');
    for(const [key,[lo,hi]] of Object.entries(fields))if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(x=>!Number.isFinite(x)||x<lo||x>hi))throw Error(`Invalid soil field: ${key}`);
-   const hyd=records.find(r=>r.stage===9)?.data,coast=records.find(r=>r.stage===5)?.data;
+   const hyd=records.find(r=>r.stage===10)?.data,coast=records.find(r=>r.stage===6)?.data;
    if(!hyd||!coast||d.soilType.some((v,i)=>(!!coast.water[i]||hyd.lakeId[i]>=0)!==(v===0)))throw Error('Invalid soil water mask');
    for(let i=0;i<n;i++)if(d.soilType[i]===0&&Object.keys(fields).some(key=>d[key][i]!==0))throw Error('Invalid soil on water');
    const expected=Array.from({length:SOIL_NAMES.length},(_,kind)=>d.soilType.filter(v=>v===kind).length);
@@ -1118,7 +1046,7 @@ export function validateWorld(world){
    if(!d.summary||d.summary.landCells!==n-expected[0]||d.summary.deepSoilCells<0||d.summary.deepSoilCells>d.summary.landCells||d.summary.highFertilityCells<0||d.summary.highFertilityCells>d.summary.landCells)throw Error('Invalid soil summary');
    for(const [key,max] of [['meanDepthM',7],['meanFertility',1],['meanGroundwater',1],['highFertilityAreaKm2',mesh.areaKm2*1.001]])if(!Number.isFinite(d.summary[key])||d.summary[key]<0||d.summary[key]>max)throw Error(`Invalid soil summary ${key}`);
   }
-  if(record.stage===12){
+  if(record.stage===13){
    if(!Array.isArray(d.coverClass)||d.coverClass.length!==n||d.coverClass.some(v=>!Number.isInteger(v)||v<0||v>=VEGETATION_NAMES.length))throw Error('Invalid vegetation classes');
    for(const key of ['canopyCover','groundCover','biomass','habitatComplexity','riparian'])
     if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(v=>!Number.isFinite(v)||v<0||v>1))throw Error(`Invalid vegetation field: ${key}`);
@@ -1126,7 +1054,7 @@ export function validateWorld(world){
    const actual=Array.from({length:VEGETATION_NAMES.length},(_,k)=>d.coverClass.filter(v=>v===k).length);
    if(!Array.isArray(d.counts)||d.counts.length!==actual.length||d.counts.some((v,k)=>v!==actual[k]))throw Error('Invalid vegetation totals');
    if(!Array.isArray(d.areaKm2ByClass)||d.areaKm2ByClass.length!==actual.length||d.areaKm2ByClass.some(v=>!Number.isFinite(v)||v<0||v>mesh.areaKm2*1.001))throw Error('Invalid vegetation areas');
-   const coast=records.find(r=>r.stage===5)?.data,hyd=records.find(r=>r.stage===9)?.data;
+   const coast=records.find(r=>r.stage===6)?.data,hyd=records.find(r=>r.stage===10)?.data;
    if(!coast||!hyd||d.coverClass.some((v,i)=>coast.water[i]?v!==0:hyd.lakeId[i]>=0?v!==1:v<2))throw Error('Vegetation water mask mismatch');
    for(let i=0;i<n;i++)if(d.coverClass[i]<2&&['canopyCover','groundCover','biomass','heightM','habitatComplexity','riparian'].some(key=>d[key][i]!==0))throw Error('Vegetation assigned to water');
    const areaError=Math.abs(d.areaKm2ByClass.reduce((a,b)=>a+b,0)-(mesh.areaKm2||mesh.width*mesh.height));
@@ -1138,7 +1066,7 @@ export function validateWorld(world){
    if(Math.abs(summary.forestAreaKm2-(d.areaKm2ByClass[7]+d.areaKm2ByClass[8]))>.05||
     Math.abs(summary.vegetatedAreaKm2-d.areaKm2ByClass.slice(3).reduce((a,b)=>a+b,0))>.1)throw Error('Vegetation area summary mismatch');
   }
-  if(record.stage===11){
+  if(record.stage===12){
    if(!Array.isArray(d.biome)||d.biome.length!==n||d.biome.some(k=>!Number.isInteger(k)||k<0||k>=BIOME_NAMES.length))throw Error('Invalid biome classes');
    const fields=['treePotential','productivity','waterStress','ecotone'];
    for(const key of fields)if(!Array.isArray(d[key])||d[key].length!==n||d[key].some(v=>!Number.isFinite(v)||v<0||v>1))throw Error(`Invalid biome field: ${key}`);
@@ -1146,7 +1074,7 @@ export function validateWorld(world){
    const actual=Array.from({length:BIOME_NAMES.length},(_,k)=>d.biome.filter(v=>v===k).length);
    if(!Array.isArray(d.counts)||d.counts.length!==actual.length||d.counts.some((v,k)=>v!==actual[k]))throw Error('Invalid biome totals');
    if(!Array.isArray(d.areaKm2ByBiome)||d.areaKm2ByBiome.length!==actual.length||d.areaKm2ByBiome.some(v=>!Number.isFinite(v)||v<0||v>mesh.areaKm2*1.001))throw Error('Invalid biome areas');
-   const ocean=records.find(r=>r.stage===5)?.data?.water,hydro=records.find(r=>r.stage===9)?.data?.lakeId;
+   const ocean=records.find(r=>r.stage===6)?.data?.water,hydro=records.find(r=>r.stage===10)?.data?.lakeId;
    if(!ocean||!hydro||d.biome.some((k,i)=>ocean[i]?k!==0:hydro[i]>=0?k!==1:k<2))throw Error('Biome water mask disagrees with upstream layers');
    for(let i=0;i<n;i++)if(d.biome[i]<2&&(d.treePotential[i]!==0||d.productivity[i]!==0||d.growingMonths[i]!==0||d.waterStress[i]!==0||d.ecotone[i]!==0))throw Error('Invalid aquatic biome fields');
    // Circular and elliptical geometry uses a 128-sided boundary for mesh
@@ -1167,68 +1095,20 @@ const INPUT_RANGES={
  1:{width:[50,20000],height:[50,20000],radius:[50,20000],radiusX:[50,20000],radiusY:[50,20000]},
  2:{jitter:[0,1.7],relaxation:[0,8]},
  3:{plates:[3,50]},
- 4:{continental:[0.1,0.9],motion:[0,2],uplift:[0,1.6],roughness:[0,1.4],continentalHeight:[0.05,0.8]},
- 5:{land:[0.1,0.85],edgeOcean:[0,1.5],edgeFade:[0.5,5],setbackStrength:[0,1.8],setbackWidth:[2,18]},
- 6:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
- 7:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]},
- 8:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]},
- 9:{runoffScale:[0.1,2.5],infiltration:[0,0.95],evaporation:[0,1.5],riverThreshold:[2,120],lakeDepth:[0.002,0.3],minLakeCells:[1,15]},
- 10:{weathering:[0,2],organicInput:[0,2],alluvialInput:[0,2],permeabilityBias:[0.25,2],groundwaterRecharge:[0,2]},
- 11:{temperatureShift:[-12,12],rainfallResponse:[.4,1.8],forestThreshold:[.45,1.8],wetlandThreshold:[.4,.95],alpineLimit:[0,16],patchVariation:[0,.4]},
- 12:{vegetationDensity:[.2,1.8],maturity:[0,1],disturbance:[0,1],riparianStrength:[0,1.5],patchiness:[0,.45]}
+ 4:{motion:[0,2],uplift:[0,1.6],roughness:[0,1.4],upliftWidth:[30,500]},
+ 5:{oceanOffset:[-1.8,1.8]},
+ 6:{edgeOcean:[0,1.5],edgeFade:[0.5,5],setbackStrength:[0,1.8],setbackWidth:[2,18]},
+ 7:{ridge:[0,1.6],detail:[0,1.6],valleys:[0,1.6],volcanism:[0,1]},
+ 8:{rainfall:[0,1.6],hydraulic:[0,1.6],thermal:[0,1.6],hardness:[0,1],iterations:[1,40]},
+ 9:{equatorTemp:[10,40],latitudeCenter:[-70,70],latitudeSpan:[20,180],axialTilt:[0,45],rainfall:[100,4000],windDirection:[-180,180],rainShadow:[0,2],maritime:[0,1.5]},
+ 10:{runoffScale:[0.1,2.5],infiltration:[0,0.95],evaporation:[0,1.5],riverThreshold:[2,120],lakeDepth:[0.002,0.3],minLakeCells:[1,15]},
+ 11:{weathering:[0,2],organicInput:[0,2],alluvialInput:[0,2],permeabilityBias:[0.25,2],groundwaterRecharge:[0,2]},
+ 12:{temperatureShift:[-12,12],rainfallResponse:[.4,1.8],forestThreshold:[.45,1.8],wetlandThreshold:[.4,.95],alpineLimit:[0,16],patchVariation:[0,.4]},
+ 13:{vegetationDensity:[.2,1.8],maturity:[0,1],disturbance:[0,1],riparianStrength:[0,1.5],patchiness:[0,.45]}
 };
-/** Convert 0.1.0–0.1.3 saves into complete layer-1 geometry + shifted layers.
- * Do not regenerate any locked content; existing 2048 × 1024 data is still km-space. */
-function migrateLegacyWorld(world){
- if(world.schema!==1)throw Error('Unsupported or invalid world save');
- // Validate the old stage ordering before migration.
- if(!Array.isArray(world.locked)||world.locked.length>6||!world.working||world.working.stage!==world.locked.length+1||typeof world.name!=='string')throw Error('Invalid legacy world save');
- for(let i=0;i<world.locked.length;i++)if(world.locked[i]?.stage!==i+1||!world.locked[i].data)throw Error('Invalid legacy layer order');
- const rectangle=generateGeometry(DEFAULTS[1]);
- const first={stage:1,settings:{...DEFAULTS[1]},data:rectangle,lockedAt:world.created||new Date().toISOString()};
- const previous=[...world.locked];
- for(const record of previous){
-  if(record.stage===1){
-   const count=record.data.cells?.length||record.settings?.count||900;
-   record.settings={...record.settings,averageArea:rectangle.areaKm2/count};
-   delete record.settings.count;
-   record.data={...record.data,width:rectangle.width,height:rectangle.height,shape:rectangle.shape,areaKm2:rectangle.areaKm2};
-  }
-  record.stage++;
- }
- world.locked=[first,...previous];
- const oldWorking=world.working;
- if(oldWorking.stage===1){
-  const count=Number(oldWorking.settings?.count)||oldWorking.data?.cells?.length||900;
-  const generatedCount=Number(oldWorking.dataSettings?.count)||oldWorking.data?.cells?.length||count;
-  oldWorking.settings={...DEFAULTS[2],...oldWorking.settings,averageArea:rectangle.areaKm2/count};
-  delete oldWorking.settings.count;
-  if(oldWorking.data)oldWorking.data={...oldWorking.data,width:rectangle.width,height:rectangle.height,shape:rectangle.shape,areaKm2:rectangle.areaKm2};
-  if(oldWorking.dataSettings){oldWorking.dataSettings={...oldWorking.dataSettings,averageArea:rectangle.areaKm2/generatedCount};delete oldWorking.dataSettings.count;}
- }
- oldWorking.stage++;
- world.viewStage=Math.max(1,Math.min(8,(Number(world.viewStage)||1)+1));
- // An empty legacy world starts at new layer 1 instead of inventing a locked shape.
- if(previous.length===0&&!oldWorking.data){world.locked=[];world.working={stage:1,settings:{...DEFAULTS[1]},data:rectangle,dataSettings:{...DEFAULTS[1]}};world.viewStage=1;}
- world.schema=SCHEMA_VERSION;
- return world;
-}
-export function upgradeWorld(world){
- if(world?.schema===1)migrateLegacyWorld(world);
+export function prepareWorld(world){
+ // Pre-1.0 saves are deliberately not migrated. Accept only the current schema.
  validateWorld(world);
- // In old saves, these were stage-3 controls even though their first
- // consequential use is stage 4. Carry those values forward without touching
- // historical elevation data or modifying the immutable plate boundaries.
- const previousPlates=world.locked[2]?.settings;
- const elevationRecord=world.locked[3]||(world.working.stage===4?world.working:null);
- if(elevationRecord?.settings){
-  for(const key of ['continental','motion']){
-   if(!Object.hasOwn(elevationRecord.settings,key)){
-    const previous=Number(previousPlates?.[key]);
-    elevationRecord.settings[key]=Number.isFinite(previous)?previous:DEFAULTS[4][key];
-   }
-  }
- }
 
  const stage=world.working.stage;
  // Interface metadata is recoverable: invalid selections must never strand
@@ -1246,19 +1126,11 @@ export function upgradeWorld(world){
    next[key]=clamp(Number(next[key]),min,max);
    if(['relaxation','plates','iterations','minLakeCells'].includes(key))next[key]=Math.round(next[key]);
   }
-  if(stage===3){
-   // Prior stage-3 saves may still carry the formerly exposed geology values.
-   // They remain for the eventual stage-4 handoff, not for plate-territory UI.
-   for(const key of ['continental','motion'])if(key in next){
-    const old=Number(next[key]),fallback=DEFAULTS[4][key],bounds=INPUT_RANGES[4][key];
-    next[key]=clamp(Number.isFinite(old)?old:fallback,...bounds);
-   }
-  }
   if(stage===2){
    const geometry=world.locked[0]?.data||generateGeometry(DEFAULTS[1]);
    next.averageArea=clamp(Number(next.averageArea),geometry.areaKm2/MAX_CELLS,geometry.areaKm2/100);
   }
-  if(stage!==1){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
+  if(stageUsesSeed(stage)){const seed=Number(next.seed);next.seed=Number.isFinite(seed)?Math.floor(clamp(seed,0,0xffffffff)):defaults.seed;}
   world.working.settings=next;
  }
  if(!['auto','natural','geometry','plates','height','coast','landforms','erosion','flow','temperature','rain','moisture','seasonality','january','july','hydrology','catchment','watersheds','soils','soilDepth','soilFertility','soilPermeability','soilGroundwater','soilErosion','biomes','productivity','treePotential','waterStress','growingSeason','ecotones','vegetation','canopyCover','groundCover','biomass','habitatComplexity','habitats','riparian'].includes(world.viewMode))world.viewMode='auto';
@@ -1281,7 +1153,7 @@ export function snapshotThroughStage(world,stage){
  result.locked=result.locked.filter(record=>record.stage<=stage);
  if(world.working.stage!==stage){
   const nextStage=stage+1,base=nextStage===2?{...DEFAULTS[2],averageArea:result.locked[0].data.areaKm2/1200}:{...DEFAULTS[nextStage]};
-  if(nextStage===4){for(const key of ['continental','motion']){const old=Number(result.locked[2]?.settings?.[key]);if(Number.isFinite(old))base[key]=clamp(old,...INPUT_RANGES[4][key]);}}
+
   result.working={stage:nextStage,settings:nextStage<=IMPLEMENTED?base:{},data:null,dataSettings:null};
  }
  result.viewStage=stage;

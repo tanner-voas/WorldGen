@@ -15,9 +15,7 @@ import {createFocusedOutline,appendFocusedOutlineIndices} from './terrain-3d-out
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const ELEVATION_RENDER_STAGE=4;
-/** Display height scale retained for compatibility with the existing mesh API.
- * The physical height scale and base visual exaggeration are explicit in
- * terrainVerticalScales; neither changes the stored elevation field. */
+/** The viewer height scale does not change the saved elevation field. */
 export function terrainHeightScale(geometry){return terrainVerticalScales(geometry).heightScale;}
 const smoothstep=(a,b,v)=>{const x=clamp((v-a)/(b-a),0,1);return x*x*(3-2*x);};
 
@@ -30,19 +28,15 @@ const smoothstep=(a,b,v)=>{const x=clamp((v-a)/(b-a),0,1);return x*x*(3-2*x);};
 export function selectTerrainSource(stage,getLayer){
  const selected=Number(stage);
  if(!Number.isInteger(selected)||selected<ELEVATION_RENDER_STAGE)throw Error('Elevation has not been generated');
- const names={4:'Elevation',5:'Oceans & coasts',6:'Landforms',7:'Erosion'};
- let terrainStage=selected>=7?7:selected;
+ const names={4:'Elevation',5:'Oceans',6:'Coastlines',7:'Landforms',8:'Erosion'};
+ let terrainStage=selected>=8?8:selected;
  let record=getLayer(terrainStage);
- // Pre-v0.1.5 coast records stored a water mask and threshold but not an
- // adjusted elevation array. Their layer-4 heights remain the valid fallback.
- const legacyCoast=terrainStage===5&&!record?.elevations;
- if(legacyCoast){terrainStage=4;record=getLayer(4);}
  if(!record?.elevations)throw Error(`Layer ${terrainStage} terrain is unavailable`);
- const coast=selected>=5?getLayer(5):null;
- if(selected>=5&&(!coast||!Number.isFinite(coast.seaLevel)))throw Error('Coastline sea level is unavailable');
+ const coast=selected>=6?getLayer(6):selected>=5?getLayer(5):null;
+ if(selected>=5&&(!coast||!Number.isFinite(coast.seaLevel)))throw Error('Ocean sea level is unavailable');
  return {elevations:record.elevations,seaLevel:coast?.seaLevel??0,terrainStage,
-  label:legacyCoast?'Elevation with legacy coast level':names[terrainStage],
-  hasCoast:selected>=5,usesEarlierTerrain:selected>7||legacyCoast};
+  label:names[terrainStage],
+  hasCoast:selected>=5,usesEarlierTerrain:selected>8};
 }
 
 export function terrainGridSize(geometry,cellCount){
@@ -53,7 +47,7 @@ export function terrainGridSize(geometry,cellCount){
  return {segmentsX,segmentsY};
 }
 
-/** Prepare the shared height sampler with the historical coastline, if any. */
+/** Prepare the shared height sampler with the current locked coastline, if any. */
 export function createSurfaceSampler(mesh,elevations,{waterMask=null,seaLevel=0,hydrology=null}={}){
  const sampler=createTerrainSampler(mesh,.72);
  sampler.coastline=createCoastlineConstraint(mesh,elevations,waterMask,seaLevel);
