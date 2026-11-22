@@ -367,7 +367,7 @@ export class Terrain3DViewer{
    };
    worker.onerror=e=>{if(this.detailWorker===worker)this._failFocusedDetail(e.message||'worker failed');};
    worker.postMessage({kind:'init-detail',...source,grid:{cols:s.cols,rows:s.rows,
-    planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale,riverMask:s.hydrology?.riverMask||null}});
+    planeWidth:s.planeWidth,planeDepth:s.planeDepth,heightScale:s.heightScale,insideMask:s.insideMask,riverMask:s.hydrology?.riverMask||null}});
   }catch(error){
    worker?.terminate();this._failFocusedDetail(error.message);
   }

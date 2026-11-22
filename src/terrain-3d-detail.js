@@ -35,23 +35,15 @@ export function focusedTerrainTiles(surface,target){
   for(const x of [tx,tx+(fractionX>=.5?1:-1)]){
    if(x<0||y<0||x>=tileCols||y>=tileRows)continue;
    const tile=tiles[y*tileCols+x];if(!tile||!tile.count)continue;
-   // Partial-outline tiles need the original boundary triangulation.
-   // The near edge of a circular/elliptical world remains stable rather
-   // than being remeshed by a second clipping algorithm.
    if(!refinableTile(surface,tile))continue;
    candidates.push({id:tile.id,x0:tile.x0,y0:tile.y0,x1:tile.x1,y1:tile.y1});
   }
  return candidates.sort((a,b)=>a.id-b.id);
 }
 
-// Partially clipped tiles continue to use the existing base tessellation.
-// Boundary-aware local refinement is a separate release.
+// Nonempty clipped tiles retain the exact base-triangle footprint.
 function refinableTile(surface,tile){
- const inside=surface.insideMask,stride=surface.cols+1;
- if(!inside||!tile.count)return false;
- const probes=[[tile.x0,tile.y0],[tile.x1,tile.y0],[tile.x0,tile.y1],[tile.x1,tile.y1],
-  [Math.floor((tile.x0+tile.x1)/2),Math.floor((tile.y0+tile.y1)/2)]];
- return probes.every(([x,y])=>inside[y*stride+x]===1);
+ return !!surface.insideMask&&tile.count>0;
 }
 
 /** Project a height-bounded tile, clipping its box edges at the near plane.

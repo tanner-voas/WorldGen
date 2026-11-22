@@ -10,6 +10,7 @@ import {createLakeConstraint} from './terrain-lakes.js';
 import {buildRiverDecals,riverDetailFade} from './terrain-rivers.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
+import {createFocusedOutline,appendFocusedOutlineIndices} from './terrain-3d-outline.js';
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 export const ELEVATION_RENDER_STAGE=4;
@@ -126,7 +127,8 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
     elevations?.length!==mesh?.cells?.length)throw Error('Invalid focused terrain patch');
  const nx=(x1-x0)*subdivisions,ny=(y1-y0)*subdivisions;
  const count=(nx+1)*(ny+1),stride=nx+1;
- const vertexData=new Float32Array(count*7),inside=new Uint8Array(count),raw=new Float32Array(count);
+ const vertexData=new Float32Array(count*7),raw=new Float32Array(count);
+ const outline=createFocusedOutline(geometry,grid,area);
  // The viewer worker reuses this immutable sampling context across nearby
  // tiles. Standalone patch calls still build their own context as before.
  const sourceColors=options.sourceColors===undefined?
@@ -153,18 +155,18 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const fx=gx-ax,fy=gy-ay;
   const a=anchorAt(ax,ay),b=anchorAt(ax+1,ay),c=anchorAt(ax,ay+1),d=anchorAt(ax+1,ay+1);
-  const coarse=(sampler.coastline||sampler.lakes||riverMask)?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
+  const outlineFade=outline?.fade(gx,gy)??1;
+  const coarse=(sampler.coastline||sampler.lakes||riverMask||outlineFade<1)?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
    (a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
   const accurate=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
   const border=Math.min(gx-x0,x1-gx,gy-y0, y1-gy);
-  const borderFade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border);
+  const borderFade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,border)*outlineFade;
   const fade=borderFade*riverDetailFade(riverMask,cols,ax,ay,fx,fy);
   const id=j*stride+i,offset=id*7;
   raw[id]=coarse+(accurate-coarse)*fade;
   vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
   vertexData[offset+2]=zz;vertexData[offset+6]=raw[id];
-  inside[id]=insideGeometry(wx,wy,geometry)?1:0;
   if(materialColors){
    // Mixed-density patches must share the base mesh's linear material
    // edge, not independently resample nonlinear colors along that edge.
@@ -202,11 +204,13 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const tx=gx-ax,ty=gy-ay,coarseStride=x1-x0+1;
   const base=(xx,yy,dim)=>normalAnchors[((yy-y0)*coarseStride+xx-x0)*3+dim];
-  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy))*riverDetailFade(riverMask,cols,ax,ay,tx,ty);
+  const outlineFade=outline?.fade(gx,gy)??1;
+  const fade=smoothstep(0,(sampler.coastline||sampler.lakes) ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy))*riverDetailFade(riverMask,cols,ax,ay,tx,ty)*outlineFade;
   const blended=[];
   for(let c=0;c<3;c++){
-   const anchor=(base(ax,ay,c)*(1-tx)+base(ax+1,ay,c)*tx)*(1-ty)+
-    (base(ax,ay+1,c)*(1-tx)+base(ax+1,ay+1,c)*tx)*ty;
+   const a=base(ax,ay,c),b=base(ax+1,ay,c),d=base(ax,ay+1,c),e=base(ax+1,ay+1,c);
+   const anchor=outlineFade<1?(tx+ty<=1?a+(b-a)*tx+(d-a)*ty:e+(d-e)*(1-tx)+(b-e)*(1-ty)):
+    (a*(1-tx)+b*tx)*(1-ty)+(d*(1-tx)+e*tx)*ty;
    const fine=[-gradX/length,1/length,-gradZ/length][c];
    blended.push(anchor*(1-fade)+fine*fade);
   }
@@ -214,11 +218,7 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   for(let c=0;c<3;c++)vertexData[offset+3+c]=blended[c]/scale;
  }
  const indices=[];
- for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
-  const a=j*stride+i,b=a+1,c=a+stride,d=c+1;
-  if(inside[a]&&inside[b]&&inside[c])indices.push(a,c,b);
-  if(inside[b]&&inside[c]&&inside[d])indices.push(b,c,d);
- }
+ appendFocusedOutlineIndices(indices,outline,area,subdivisions);
  return {vertexData,materialColors,indices:new Uint32Array(indices),x0,y0,x1,y1,subdivisions,vertexCount:count};
 }
 
