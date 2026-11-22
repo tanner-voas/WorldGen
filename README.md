@@ -1,4 +1,4 @@
-# WorldGen v0.1.42
+# WorldGen v0.1.43
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -281,3 +281,7 @@ The 3D viewer now uses geographically anchored procedural surface materials for 
 ## v0.1.42 — Lighting and water
 
 Terrain uses warmer directional illumination, cooler hemispheric ambient light, material-dependent roughness and restrained distance haze. Oceans and lakes use depth-dependent absorption colors derived from the shared base elevation texture; rivers use a shallow-water profile. All water has angle-dependent sky reflection, filtered static ripple normals and subtle highlights, with opaque depth-tested rendering instead of order-dependent transparency. No terrain or save data changes. An optional real-graphics smoke test is available on Linux/Mesa with Node and NumPy (`python3 tests/shader-smoke.py`). See `RELEASE_v0.1.42.md`.
+
+## v0.1.43 — Camera and exploration
+
+The 3D viewer fits conservative world bounds into both viewport axes and refits on resize while Fit is active. Double-tap/click intersects the terrain triangles submitted in the last frame, including their LOD morphs, refined patches and actual water geometry. Close-up camera clearance checks local grid crossings and samples lake surfaces; pan and pinch use projected ground-plane anchoring, with a fallback near the horizon. Pointer cancellation resets the gesture. Existing world data and render profiles are unchanged. See `RELEASE_v0.1.43.md`.

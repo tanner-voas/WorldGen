@@ -1,6 +1,6 @@
 import {advanceLodMorph,advanceDetailMorph,morphWeight} from './terrain-3d-morph.js';
 import {lodStepForDistance,adaptiveTileLod,tileVisibleInFrustum} from './terrain-3d-lod.js';
-import {cameraRay,pickTerrainRay,surfaceHeightAt} from './terrain-3d-focus.js';
+import {cameraRay,pickTerrainRay,surfaceHeightAt,fitTerrainCamera,orbitEye,pickRenderedRay,createLakeHeightLookup,clearTerrainEye,gridTriangleHeight,gridCrossingTimes} from './terrain-3d-focus.js';
 import {closeUpCameraLimits,planFocusedTerrainTiles,DETAIL_CACHE_BYTE_BUDGET,DETAIL_TRIANGLE_BUDGET,focusedTileTriangles} from './terrain-3d-detail.js';
 /** Offline WebGL2 elevation viewer, intentionally independent of Three.js/CDNs.
  * The Web Worker prepares a fixed height mesh; WebGL2 supplies perspective,
@@ -329,11 +329,11 @@ export class Terrain3DViewer{
   this.disposed=false;this.lost=false;this.worker=null;this.gl=null;this.surface=null;this.label='Elevation';
   this.pitch=.93;this.yaw=-.69;this.distance=7.5;this.target=[0,0,0];this.mode='orbit';
   this.pointers=new Map();this.gesture=null;this.pendingFrame=0;this.tileLodHistory=new Map();
-  this.tapStart=null;this.lastTap=null;this.lastFocusTime=0;
+  this.tapStart=null;this.lastTap=null;this.lastFocusTime=-Infinity;this.fitActive=false;this.renderedFrame=null;
   // Height control is viewer-only. Saved elevation and GPU buffers stay unchanged.
   this.heightSteps=0;this.heightMultiplier=1;this.heightTimer=null;this.heightStateCallback=null;
   this.detailWorker=null;this.detailState=null;this.detailSignature='';this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSource=null;this.detailFailure=null;
-  this.onLost=e=>{e.preventDefault();this.lost=true;
+  this.onLost=e=>{e.preventDefault();this.lost=true;this.renderedFrame=null;
    this.detailWorker?.terminate();this.detailWorker=null;this.detailState=null;this.detailSignature='';
    this.onStatus('Graphics context interrupted');};
   this.onRestored=()=>{this.lost=false;if(this.surface){this._initializeGL();this._uploadSurface();this.drawSoon();}};
@@ -342,15 +342,16 @@ export class Terrain3DViewer{
   this.onPointerDown=e=>this.pointerDown(e);
   this.onPointerMove=e=>this.pointerMove(e);
   this.onPointerUp=e=>this.pointerUp(e);
-  this.onWheel=e=>{e.preventDefault();this.zoom(Math.exp(e.deltaY*.001));};
+  this.onWheel=e=>{e.preventDefault();this.zoom(Math.exp(clamp(e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?this.canvas.clientHeight||400:1),-500,500)*.001),{x:e.clientX,y:e.clientY});};
   this.onDoubleTap=e=>{if(e.detail>=2)this.focusAt(e.clientX,e.clientY);};
   canvas.addEventListener('pointerdown',this.onPointerDown);
   canvas.addEventListener('pointermove',this.onPointerMove);
   canvas.addEventListener('pointerup',this.onPointerUp);
   canvas.addEventListener('pointercancel',this.onPointerUp);
+  canvas.addEventListener('lostpointercapture',this.onPointerUp);
   canvas.addEventListener('wheel',this.onWheel,{passive:false});
   canvas.addEventListener('dblclick',this.onDoubleTap);
-  this.resizeObserver=typeof ResizeObserver!=='undefined'?new ResizeObserver(()=>this.drawSoon()):null;
+  this.resizeObserver=typeof ResizeObserver!=='undefined'?new ResizeObserver(()=>{if(this.fitActive)this._fitCamera();this.drawSoon();}):null;
   this.resizeObserver?.observe(canvas);
  }
  async initialize(geometry,mesh,elevations,options={}){
@@ -391,7 +392,7 @@ export class Terrain3DViewer{
    }catch(error){finish(error);}
   });
   if(this.disposed)return;
-  this.surface=surface;
+  this.surface=surface;this.lakeHeightAt=createLakeHeightLookup(surface);
   this.detailSource={geometry,mesh,elevations,appearance:options.appearance||null,waterMask:options.waterMask||null,seaLevel,hydrology:options.hydrology||null};
   this.detailLimits=closeUpCameraLimits(surface.siteSpacing);
   this._initializeGL();
@@ -565,8 +566,7 @@ export class Terrain3DViewer{
   // projection as draw() with a portrait viewport in that case.
   if(close&&!camera){
    width=width||390;height=height||700;
-   const pitch=this.pitch??.93,yaw=this.yaw??-.69;
-   const eye=[this.target[0]+this.distance*Math.cos(pitch)*Math.sin(yaw),this.target[1]+this.distance*Math.sin(pitch),this.target[2]+this.distance*Math.cos(pitch)*Math.cos(yaw)];
+   const eye=Number.isFinite(this.pitch)&&Number.isFinite(this.yaw)?this._cameraEye():orbitEye(this.target,this.distance,this.pitch??.93,this.yaw??-.69);
    camera=multiplyMatrices(perspectiveMatrix(.77,width/height,Math.max(.00035,Math.min(.04,this.distance*.045)),100),lookAtMatrix(eye,this.target));
   }
   const tiles=close?planFocusedTerrainTiles(this.surface,{camera,width,height,heightMultiplier:this.heightMultiplier??1,
@@ -669,7 +669,8 @@ export class Terrain3DViewer{
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,patch.indices,gl.STATIC_DRAW);
   gl.bindVertexArray(null);
   this.detailPatches.set(id,{vao,vbo,materialVBO,ibo,count:patch.indices.length,subdivisions:patch.subdivisions,
-   bytes:patch.vertexData.byteLength+patch.indices.byteLength+(patch.materialColors?.byteLength||0),phase:0,morphTime:null,visible:false});
+   bytes:patch.vertexData.byteLength+patch.indices.byteLength+(patch.materialColors?.byteLength||0),
+   vertexData:patch.vertexData,indices:patch.indices,x0:patch.x0,y0:patch.y0,x1:patch.x1,y1:patch.y1,phase:0,morphTime:null,visible:false});
  }
  // A cached lower-resolution patch can remain visible during an upgrade.
  // A higher-resolution patch must not exceed the new plan's budget: fall back
@@ -715,86 +716,164 @@ export class Terrain3DViewer{
  applyHeightSteps(){
   if(this.disposed)return;
   const next=Math.pow(1.05,this.heightSteps||0);
-  if(!(next>0)&&next!==Infinity)return;
+  if(!Number.isFinite(next)||next<=0)return;
   const previous=this.heightMultiplier||1;
   this.heightMultiplier=next;
   // Preserve an existing local terrain focus when its Y position changes.
   if(this.target) this.target[1]*=next/previous;
+  if(this.fitActive)this._fitCamera();
   this.lastDrawStatus='';
   this.drawSoon();
  }
+ _fitCamera(){
+  const rect=this.canvas?.getBoundingClientRect?.();
+  const fitted=fitTerrainCamera(this.surface,this.pitch,this.yaw,(rect?.width||390)/(rect?.height||650),this.heightMultiplier||1);
+  this.target=fitted.target;this.distance=fitted.distance;
+ }
  resetCamera(){
-  this.pitch=.94;this.yaw=-.72;this.target=[0,0,0];this.tileLodHistory?.clear();
-  const span=Math.max(this.surface?.planeWidth||4.8,this.surface?.planeDepth||3.5);
-  this.distance=span*1.78;
-  this.drawSoon();
+  this.pitch=.94;this.yaw=-.72;this.fitActive=true;this.tileLodHistory?.clear();
+  this._fitCamera();this.drawSoon();
  }
  setMode(mode){this.mode=mode==='pan'?'pan':'orbit';}
+ _heightAt(x,z){
+  const s=this.surface;if(!s)return null;
+  const base=surfaceHeightAt(s,x,z);
+  const lake=this.lakeHeightAt?.(x,z)??null;
+  if(base===null&&lake===null)return null;
+  let h=base??-Infinity;
+  const gx=(x/s.planeWidth+.5)*s.cols,gz=(z/s.planeDepth+.5)*s.rows;
+  // Active refined grids use the same diagonal and blend as the GPU.
+  if(base!==null)for(const id of this.detailPatches?.keys()||[]){
+   const patch=this._activeFocusedPatch(id);
+   if(!patch?.vertexData||gx<patch.x0||gz<patch.y0||gx>patch.x1||gz>patch.y1)continue;
+   const n=patch.subdivisions;
+   const fine=gridTriangleHeight(patch.vertexData,(patch.x1-patch.x0)*n,(patch.y1-patch.y0)*n,(gx-patch.x0)*n,(gz-patch.y0)*n);
+   if(fine!==null){
+    const weight=this.morphTextures?morphWeight(patch.phase??1):1;
+    h=h+(fine-h)*weight;
+   }
+  }
+  const sea=(s.seaLevel||0)*(s.heightScale??0);
+  return Math.max(h,sea,lake??-Infinity)*(this.heightMultiplier||1);
+ }
+ _cameraEye(){
+  const eye=orbitEye(this.target,this.distance,this.pitch,this.yaw);
+  if(!this.surface||this.distance>.65||!this.surface.vertexData)return eye;
+  const spacing=Math.min(this.surface.planeWidth/this.surface.cols,this.surface.planeDepth/this.surface.rows);
+  const s=this.surface,toGrid=p=>[(p[0]/s.planeWidth+.5)*s.cols,(p[2]/s.planeDepth+.5)*s.rows];
+  const a=toGrid(this.target),b=toGrid(eye),crossings=gridCrossingTimes(a,b,s.cols,s.rows);
+  let detail=1;
+  for(const id of this.detailPatches?.keys()||[]){
+   const patch=this._activeFocusedPatch(id);if(!patch?.vertexData)continue;
+   const n=patch.subdivisions,toLocal=p=>[(p[0]-patch.x0)*n,(p[1]-patch.y0)*n];
+   detail=Math.max(detail,n);
+   crossings.push(...gridCrossingTimes(toLocal(a),toLocal(b),(patch.x1-patch.x0)*n,(patch.y1-patch.y0)*n));
+  }
+  return clearTerrainEye(eye,this.target,(x,z)=>this._heightAt(x,z),spacing/detail,Math.max(.0004,this.distance*.025),crossings);
+ }
+ _maximumDistance(){
+  const rect=this.canvas?.getBoundingClientRect?.();
+  return Math.max(32,this.distance||0,fitTerrainCamera(this.surface,this.pitch,this.yaw,(rect?.width||390)/(rect?.height||650),this.heightMultiplier||1).distance);
+ }
  _followTerrain(){
   if(!this.surface||this.distance>.65)return;
-  const ground=surfaceHeightAt(this.surface,this.target[0],this.target[2]);
-  if(ground===null)return;
-  const sea=(this.surface.seaLevel||0)*(this.surface.heightScale??0);
-  this.target[1]=Math.max(ground,sea)*(this.heightMultiplier||1);
+  const ground=this._heightAt(this.target[0],this.target[2]);
+  if(ground!==null)this.target[1]=ground;
  }
- zoom(factor){this.distance=clamp(this.distance*factor,this.detailLimits?.minimumDistance||.008,32);
-  this._followTerrain();this.drawSoon();}
- pan(dx,dy){
-  const span=this.distance*.0017;
-  const right=[Math.cos(this.yaw),-Math.sin(this.yaw)];
-  const up=[-Math.sin(this.yaw),-Math.cos(this.yaw)];
-  this.target[0]=clamp(this.target[0]-dx*right[0]*span+dy*up[0]*span,-(this.surface?.planeWidth||4.8)*.7,(this.surface?.planeWidth||4.8)*.7);
-  this.target[2]=clamp(this.target[2]-dx*right[1]*span+dy*up[1]*span,-(this.surface?.planeDepth||4.8)*.7,(this.surface?.planeDepth||4.8)*.7);
+ _planePoint(point,planeY){
+  const rect=this.canvas?.getBoundingClientRect?.();if(!rect||!(rect.height>0&&rect.width>0))return null;
+  const eye=this._cameraEye(),ray=cameraRay(eye,this.target,point.x-(rect.left||0),point.y-(rect.top||0),rect.width,rect.height);
+  if(!ray||ray[1]>=-.035)return null;
+  const t=(planeY-eye[1])/ray[1];
+  if(t<0||t>this.distance*8)return null;
+  return [eye[0]+ray[0]*t,eye[2]+ray[2]*t];
+ }
+ _translateTarget(dx,dz){
+  this.target[0]=clamp(this.target[0]+dx,-(this.surface?.planeWidth||4.8)*.7,(this.surface?.planeWidth||4.8)*.7);
+  this.target[2]=clamp(this.target[2]+dz,-(this.surface?.planeDepth||4.8)*.7,(this.surface?.planeDepth||4.8)*.7);
+ }
+ zoom(factor,anchor=null){
+  if(!Number.isFinite(factor)||factor<=0||factor===1)return;
+  this.fitActive=false;
+  const plane=this.target[1],before=anchor&&this._planePoint(anchor,plane);
+  this.distance=clamp(this.distance*factor,this.detailLimits?.minimumDistance||.008,this._maximumDistance());
+  const after=before&&this._planePoint(anchor,plane);
+  if(after)this._translateTarget(before[0]-after[0],before[1]-after[1]);
   this._followTerrain();this.drawSoon();
  }
+ pan(dx,dy,previous=null,next=null){
+  if(dx===0&&dy===0)return;
+  this.fitActive=false;
+  const before=previous&&this._planePoint(previous,this.target[1]),after=next&&this._planePoint(next,this.target[1]);
+  if(before&&after)this._translateTarget(before[0]-after[0],before[1]-after[1]);
+  else{
+   const height=this.canvas?.getBoundingClientRect?.().height||460;
+   const span=2*this.distance*Math.tan(.77/2)/height;
+   const right=[Math.cos(this.yaw),-Math.sin(this.yaw)],up=[-Math.sin(this.yaw),-Math.cos(this.yaw)];
+   this._translateTarget(-dx*right[0]*span+dy*up[0]*span,-dx*right[1]*span+dy*up[1]*span);
+  }
+  this._followTerrain();this.drawSoon();
+ }
+ _pinchState(){
+  if(this.pointers.size!==2)return null;
+  const [a,b]=[...this.pointers.values()];
+  return {distance:Math.hypot(a.x-b.x,a.y-b.y),middle:{x:(a.x+b.x)/2,y:(a.y+b.y)/2}};
+ }
  pointerDown(e){
-  if(this.disposed)return;
+  if(this.disposed||(e.pointerType==='mouse'&&e.button!=null&&e.button!==0))return;
   e.preventDefault();this.canvas.setPointerCapture?.(e.pointerId);
   if(this.pointers.size===0)this.tapStart={x:e.clientX,y:e.clientY,time:performance.now(),type:e.pointerType,moved:false};
   else{this.tapStart=null;this.lastTap=null;}
-  this.pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});this.gesture=null;
+  this.pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});this.gesture=this._pinchState();
  }
  pointerMove(e){
   const previous=this.pointers.get(e.pointerId);if(!previous||this.disposed)return;
   const next={x:e.clientX,y:e.clientY};this.pointers.set(e.pointerId,next);
-  if(this.tapStart&&Math.hypot(e.clientX-this.tapStart.x,e.clientY-this.tapStart.y)>8){this.tapStart.moved=true;this.lastTap=null;}
+  if(this.tapStart&&!this.tapStart.moved){
+   if(Math.hypot(e.clientX-this.tapStart.x,e.clientY-this.tapStart.y)>8){this.tapStart.moved=true;this.lastTap=null;}
+   else if(this.tapStart.type!=='mouse')return;
+  }
+  if(next.x===previous.x&&next.y===previous.y)return;
   if(this.pointers.size===1){
    const dx=next.x-previous.x,dy=next.y-previous.y;
-   if(this.mode==='pan')this.pan(dx,dy);
-   else{this.yaw-=dx*.009;this.pitch=clamp(this.pitch+dy*.006,.14,1.48);this.drawSoon();}
+   if(this.mode==='pan')this.pan(dx,dy,previous,next);
+   else{this.fitActive=false;this.yaw-=dx*.009;this.pitch=clamp(this.pitch+dy*.006,.14,1.48);this.drawSoon();}
   }else if(this.pointers.size===2){
-   const [a,b]=[...this.pointers.values()],distance=Math.hypot(a.x-b.x,a.y-b.y),middle={x:(a.x+b.x)/2,y:(a.y+b.y)/2};
+   const {distance,middle}=this._pinchState();
    if(this.gesture){
-    if(this.gesture.distance>0)this.zoom(clamp(this.gesture.distance/Math.max(1,distance),.65,1.5));
-    this.pan(middle.x-this.gesture.middle.x,middle.y-this.gesture.middle.y);
+    if(this.gesture.distance>0)this.zoom(clamp(this.gesture.distance/Math.max(1,distance),.65,1.5),this.gesture.middle);
+    this.pan(middle.x-this.gesture.middle.x,middle.y-this.gesture.middle.y,this.gesture.middle,middle);
    }
    this.gesture={distance,middle};
   }
  }
  pointerUp(e){
-  if(e.type!=='pointercancel'&&this.pointers.size===1&&this.tapStart&&!this.tapStart.moved&&
+  if(!this.pointers.has(e.pointerId))return;
+  const cancelled=e.type==='pointercancel'||e.type==='lostpointercapture';
+  if(cancelled)this.lastTap=null;
+  if(!cancelled&&this.pointers.size===1&&this.tapStart&&!this.tapStart.moved&&
      performance.now()-this.tapStart.time<400&&this.tapStart.type!=='mouse'){
    const now=performance.now(),prior=this.lastTap;
    if(prior&&now-prior.time<340&&Math.hypot(e.clientX-prior.x,e.clientY-prior.y)<28){
     this.focusAt(e.clientX,e.clientY);this.lastTap=null;
    }else this.lastTap={x:e.clientX,y:e.clientY,time:now};
   }
-  this.pointers.delete(e.pointerId);this.gesture=null;this.tapStart=null;
+  this.pointers.delete(e.pointerId);this.gesture=this._pinchState();this.tapStart=null;
   if(this.canvas.hasPointerCapture?.(e.pointerId))this.canvas.releasePointerCapture(e.pointerId);
  }
  /** Focus on the first visible terrain surface under a double-tap/click. */
  focusAt(clientX,clientY){
-  if(!this.surface||this.disposed)return false;
-  const now=performance.now();if(now-this.lastFocusTime<140)return false;
+  if(!this.surface||this.disposed||this.lost)return false;
+  const now=performance.now();if(this.lastFocusTime>0&&now-this.lastFocusTime<140)return false;
   const rect=this.canvas.getBoundingClientRect();
   const x=clientX-rect.left,y=clientY-rect.top;
-  if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>rect.width||y>rect.height)return false;
-  const cp=Math.cos(this.pitch),sp=Math.sin(this.pitch),sy=Math.sin(this.yaw),cy=Math.cos(this.yaw);
-  const eye=[this.target[0]+this.distance*cp*sy,this.target[1]+this.distance*sp,this.target[2]+this.distance*cp*cy];
-  const ray=cameraRay(eye,this.target,x,y,rect.width,rect.height);
-  const point=ray&&pickTerrainRay(this.surface,eye,ray,this.heightMultiplier||1);
+  if(!(rect.width>0&&rect.height>0)||!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>rect.width||y>rect.height)return false;
+  const frame=this.renderedFrame,eye=frame?.eye||this._cameraEye(),target=frame?.target||this.target;
+  const aspect=frame?.aspect||rect.width/rect.height;
+  const ray=cameraRay(eye,target,x/rect.width*aspect,y/rect.height,aspect,1);
+  const point=ray&&(frame?pickRenderedRay(this.surface,frame,eye,ray):pickTerrainRay(this.surface,eye,ray,this.heightMultiplier||1));
   if(!point)return false;
-  this.target=point;this.distance=clamp(this.distance*.78,this.detailLimits?.minimumDistance||.008,32);
+  this.fitActive=false;this.target=point;this.distance=clamp(this.distance*.78,this.detailLimits?.minimumDistance||.008,this._maximumDistance());
   this.lastFocusTime=now;this.drawSoon();return true;
  }
 
@@ -810,10 +889,14 @@ export class Terrain3DViewer{
   if(this.canvas.width!==width||this.canvas.height!==height){this.canvas.width=width;this.canvas.height=height;}
   gl.viewport(0,0,width,height);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-  const cp=Math.cos(this.pitch),sp=Math.sin(this.pitch),sy=Math.sin(this.yaw),cy=Math.cos(this.yaw);
-  const eye=[this.target[0]+this.distance*cp*sy,this.target[1]+this.distance*sp,this.target[2]+this.distance*cp*cy];
+  const eye=this._cameraEye();
   const near=Math.max(.00035,Math.min(.04,this.distance*.045));
-  const projection=perspectiveMatrix(.77,width/height,near,100);
+  const far=Math.max(100,Math.hypot(...eye)+Math.max(s.planeWidth,s.planeDepth,Math.abs(s.minY||0)*(this.heightMultiplier||1),Math.abs(s.maxY||0)*(this.heightMultiplier||1))*3);
+  const projection=perspectiveMatrix(.77,width/height,near,far);
+  // Store lightweight references to exactly the draws in this frame. The
+  // buffers are immutable; a picking gesture never needs GPU readback.
+  const frame={eye,target:this.target.slice(),multiplier:this.heightMultiplier||1,terrain:[],aspect:width/height,near,far};
+  const record=(level,start,count,morph=null)=>{if(level?.indices)frame.terrain.push({indices:level.indices,start,count,morph});};
   const view=lookAtMatrix(eye,this.target),camera=multiplyMatrices(projection,view);
   gl.useProgram(this.program);gl.uniformMatrix4fv(this.cameraLocation,false,camera);gl.uniform3fv(this.eyeLocation,new Float32Array(eye));
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
@@ -868,6 +951,7 @@ export class Terrain3DViewer{
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,uniform.buffer);
     gl.drawElements(gl.TRIANGLES,uniform.count,gl.UNSIGNED_INT,0);
     selectedTriangles=uniform.count/3;
+    record((this.morphTextures?s.levels:s.uniformLevels)?.find(l=>l.step===finest),0,uniform.count);
    }else{
     let currentStep=0;
     for(let i=0;i<baseline.tiles.length;i++){
@@ -886,6 +970,7 @@ export class Terrain3DViewer{
      if(currentStep!==step){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);currentStep=step;}
      gl.drawElements(gl.TRIANGLES,range.count,gl.UNSIGNED_INT,range.offset*4);
      selectedTriangles+=range.count/3;
+     record(s.levels?.find(l=>l.step===step),range.offset,range.count,m&&m.from!==m.to?{mode:1,from:Math.log2(m.from),to:Math.log2(m.to),weight:morphWeight(m.phase)}:null);
     }
    }
   }else{
@@ -893,6 +978,7 @@ export class Terrain3DViewer{
    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,level.buffer);
    gl.drawElements(gl.TRIANGLES,level.count,gl.UNSIGNED_INT,0);
    selectedTriangles=level.count/3;finest=coarsest=level.step;
+   record(s.levels?.find(l=>l.step===level.step),0,level.count);
   }
   if(hasFocused){
    for(const patch of activePatches){
@@ -900,6 +986,7 @@ export class Terrain3DViewer{
     gl.bindVertexArray(patch.vao);
     gl.drawElements(gl.TRIANGLES,patch.count,gl.UNSIGNED_INT,0);
     selectedTriangles+=patch.count/3;
+    if(patch.vertexData&&patch.indices)frame.terrain.push({vertexData:patch.vertexData,indices:patch.indices,count:patch.count,morph:this.morphTextures&&patch.phase<1?{mode:2,weight:morphWeight(patch.phase)}:null});
    }
   }
   // Coplanar decals use a depth-buffer bias, not a physical height offset.
@@ -923,6 +1010,7 @@ export class Terrain3DViewer{
    gl.bindVertexArray(water.vao);gl.drawArrays(gl.TRIANGLES,0,water.count);
   }
   gl.depthMask(true);gl.disable(gl.BLEND);gl.bindVertexArray(null);
+  this.renderedFrame=frame;
   const detail=finest===coarsest?`LOD ${finest}`:`Adaptive LOD ${finest}–${coarsest}`;
   const subdivisions=activePatches.map(p=>p.subdivisions);
   const detailRange=hasFocused?(Math.min(...subdivisions)===Math.max(...subdivisions)?`${subdivisions[0]}×`:`${Math.min(...subdivisions)}–${Math.max(...subdivisions)}×`):'';
@@ -946,7 +1034,8 @@ export class Terrain3DViewer{
   const c=this.canvas;
   c.removeEventListener('webglcontextlost',this.onLost);c.removeEventListener('webglcontextrestored',this.onRestored);
   c.removeEventListener('pointerdown',this.onPointerDown);c.removeEventListener('pointermove',this.onPointerMove);
-  c.removeEventListener('pointerup',this.onPointerUp);c.removeEventListener('pointercancel',this.onPointerUp);
+  c.removeEventListener('pointerup',this.onPointerUp);c.removeEventListener('pointercancel',this.onPointerUp);c.removeEventListener('lostpointercapture',this.onPointerUp);
+  this.renderedFrame=null;this.lakeHeightAt=null;this.pointers?.clear();
   c.removeEventListener('wheel',this.onWheel);c.removeEventListener('dblclick',this.onDoubleTap);
   const gl=this.gl;
   if(gl&&!this.lost){

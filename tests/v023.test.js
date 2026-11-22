@@ -141,9 +141,12 @@ test('3D draw path uses a single call for uniform LOD and tile draws only when m
   globalThis.window={devicePixelRatio:1};
   viewer.distance=25;viewer.draw();assert.equal(calls.length,1,'far overview should use one uniform draw');
   assert.equal(calls[0].count,s.uniformLevels[3].indices.length);
+  assert.equal(viewer.renderedFrame.terrain.length,1);
+  assert.equal(viewer.renderedFrame.terrain[0].indices,s.uniformLevels[3].indices);
   calls.length=0;
   viewer.distance=5.5;viewer.draw();
   assert.ok(calls.length>1,'mixed nearby and distant tiles should use multiple stitched draws');
   assert.ok(calls.every(call=>call.count>0&&call.count%3===0));
+  assert.deepEqual(viewer.renderedFrame.terrain.map(d=>[d.count,d.start*4]),calls.map(c=>[c.count,c.offset]));
  }finally{if(oldWindow===undefined)delete globalThis.window;else globalThis.window=oldWindow;}
 });
