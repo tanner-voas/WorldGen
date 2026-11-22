@@ -1,3 +1,4 @@
+import {geographicParameterScale} from './geographic-units.js';
 /** Physical interpretation of the legacy, dimensionless elevation encoding.
  * Schema v2 intentionally retains existing numeric values and precision.
  * Climate has used 2.7 km/unit since its introduction; use that convention
@@ -17,8 +18,8 @@ export const sedimentToKm3=volume=>elevationToKm(volume); // encoded height × k
  * absolute height/depth controls are presented and edited in metres. */
 const physicalParameters=new Set(['continentalHeight','lakeDepth']);
 export const isPhysicalHeightParameter=key=>physicalParameters.has(key);
-export const displayParameter=(key,value)=>isPhysicalHeightParameter(key)?elevationToMetres(value):value;
-export const storedParameter=(key,value)=>isPhysicalHeightParameter(key)?metresToElevation(value):value;
+export const displayParameter=(key,value)=>isPhysicalHeightParameter(key)?elevationToMetres(value):value*geographicParameterScale(key);
+export const storedParameter=(key,value)=>isPhysicalHeightParameter(key)?metresToElevation(value):value/geographicParameterScale(key);
 
 /** Preserve the established v0.1.26 display profile independently of physics.
  * The legacy bounded visual scale is NOT the physical elevation conversion.

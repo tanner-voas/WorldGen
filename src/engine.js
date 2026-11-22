@@ -1,5 +1,6 @@
 // The legacy elevation fields remain in encoded units; physical calculations
 // use the shared 2.7 km/unit convention without migrating locked worlds.
+import {REFERENCE_DISTANCE_KM,REFERENCE_AREA_KM2,distanceLoss} from './geographic-units.js';
 import {ELEVATION_KM_PER_UNIT,elevationToKm,physicalSlope} from './elevation-units.js';
 export const WORLD_WIDTH=2048, WORLD_HEIGHT=1024, SCHEMA_VERSION=2;
 export const STAGES=[
@@ -222,18 +223,13 @@ export function generateElevation(mesh,plateData,settings){const cells=mesh.cell
   const local=fbm(c.x/90,c.y/90,settings.seed+999,5)*(0.08+settings.roughness*0.25);
   base[i]=continent+macro+local;
  }
- // Multi-source breadth-first distance to nearest boundary. Smoothed uplift
- // spreads a few cells inland instead of producing sharp one-cell ridges.
- const dist=new Int16Array(cells.length);dist.fill(-1);
- for(const i of frontier)dist[i]=0;
- for(let index=0;index<frontier.length;index++){
-  const i=frontier[index];for(const j of cells[i].neighbors)if(dist[j]<0){dist[j]=dist[i]+1;frontier.push(j);}
- }
+ // Follow the nearest plate boundary in physical kilometres. Carry its
+ // signed pressure inland; a denser graph must not narrow mountain belts.
+ const {distance:dist,source}=geographicDistances(cells,frontier);
  const elevations=new Array(cells.length);
  for(let i=0;i<cells.length;i++){
-  const c=cells[i];let pressure=boundary[i];
-  for(const j of c.neighbors)if(Math.abs(boundary[j])>Math.abs(pressure))pressure=boundary[j]*0.72;
-  const ridge=(dist[i]>=0?Math.exp(-dist[i]*0.63):0)*pressure*settings.uplift*0.43;
+  const pressure=source[i]>=0?boundary[source[i]]:0;
+  const ridge=Math.exp(-dist[i]*.63/REFERENCE_DISTANCE_KM)*pressure*settings.uplift*.43;
   elevations[i]=+clamp(base[i]+ridge,-1.8,1.8).toFixed(4);
  }
  return {elevations};
@@ -308,10 +304,9 @@ export function generateCoasts(elevationData,settings,mesh=null){
  if(mesh&&(strength>0||setbackStrength>0)){
   const outline=boundaryPolygon(mesh);
   const {near,touches}=boundaryCells(mesh,outline);
-  const averageCellWidth=Math.sqrt(total/es.length);
   // Prevent the ocean rim from engulfing thin maps or very coarse meshes.
-  edgeWidthKm=Math.min(fade*averageCellWidth,Math.min(mesh.width,mesh.height)*.12);
-  retreatWidthKm=Math.min(setbackWidth*averageCellWidth,Math.min(mesh.width,mesh.height)*.16);
+  edgeWidthKm=Math.min(fade*REFERENCE_DISTANCE_KM,Math.min(mesh.width,mesh.height)*.12);
+  retreatWidthKm=Math.min(setbackWidth*REFERENCE_DISTANCE_KM,Math.min(mesh.width,mesh.height)*.16);
   for(let i=0;i<es.length;i++){
    protectedCells[i]=strength>0&&touches[i];
    const normalized=clamp(1-near[i]/Math.max(.001,edgeWidthKm),0,1);
@@ -436,12 +431,13 @@ function downhillFlow(cells,heights,water){
 export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
  const cells=mesh.cells,n=cells.length,base=landforms.elevations,water=coasts.water,sea=coasts.seaLevel;
  if(!Array.isArray(base)||base.length!==n||water.length!==n)throw Error('Erosion requires matching landforms and coastlines');
- const heights=base.slice(),areas=cells.map(cellArea),areaMean=(mesh.areaKm2||mesh.width*mesh.height)/n;
+ const heights=base.slice(),areas=cells.map(cellArea);
  const rain=clamp(Number(settings.rainfall),0,1.6),hydraulic=clamp(Number(settings.hydraulic),0,1.6);
  const thermal=clamp(Number(settings.thermal),0,1.6),hardness=clamp(Number(settings.hardness),0,1);
  const steps=clamp(Math.round(Number(settings.iterations)||1),1,40),seed=settings.seed|0;
  const removed=new Float64Array(n),deposited=new Float64Array(n);
- const rainAt=cells.map((c,i)=>water[i]?0:rain*(.52+.48*(noise(c.x/240,c.y/240,seed)+1)*.5)*areas[i]/areaMean);
+ const rainDepth=cells.map((c,i)=>water[i]?0:rain*(.52+.48*(noise(c.x/240,c.y/240,seed)+1)*.5));
+ const rainAt=rainDepth.map((r,i)=>r*areas[i]/REFERENCE_AREA_KM2);
  let exported=0;
  for(let step=0;step<steps;step++){
   const {flowTo,slopes}=downhillFlow(cells,heights,water);
@@ -449,8 +445,9 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
   const runoff=Float64Array.from(rainAt),sediment=new Float64Array(n),delta=new Float64Array(n);
   for(const i of order){
    const downstream=flowTo[i],slope=slopes[i],volume=runoff[i];
-   // Normalize by local cell area to avoid over-eroding small polygons.
-   const intensity=Math.sqrt(Math.max(0,volume)*areaMean/Math.max(1,areas[i]));
+   // Accumulated runoff is measured in reference-area equivalents, not
+   // counts of current polygons. Local rainfall retains hillslope erosion.
+   const intensity=Math.sqrt(Math.max(rainDepth[i],volume,0));
    const potential=hydraulic*(1.25-.85*hardness)*.0028*intensity*Math.sqrt(Math.min(2,slope*(95/ELEVATION_KM_PER_UNIT)));
    const cut=Math.min(.018,Math.max(0,heights[i]-sea-.002),potential);
    if(cut>0){delta[i]-=cut;removed[i]+=cut;sediment[i]+=cut*areas[i];}
@@ -461,7 +458,8 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
     exported+=carry;continue;
    }
    if(!water[downstream]){
-    const depositRate=.06+.38*(1-clamp(slope*(95/ELEVATION_KM_PER_UNIT),0,1));
+    const distance=Math.hypot(cells[i].x-cells[downstream].x,cells[i].y-cells[downstream].y);
+    const depositRate=distanceLoss(.06+.38*(1-clamp(slope*(95/ELEVATION_KM_PER_UNIT),0,1)),distance);
     const put=Math.min(carry*depositRate,areas[i]*.009);
     if(put>0){delta[i]+=put/areas[i];deposited[i]+=put/areas[i];carry-=put;}
     sediment[downstream]+=carry;
@@ -507,7 +505,7 @@ export function generateErosion(mesh,coasts,landforms,settings,onProgress=null){
  const deposition=Array.from(deposited,x=>+x.toFixed(5));
  onProgress?.(1);
  return {elevations,erosionDepth,deposition,flowTo,discharge:discharge.map(v=>+v.toFixed(4)),channels,
-  summary:{channels:channels.length,exportedSediment:+exported.toFixed(2),meanErosion:+(erosionDepth.reduce((a,b)=>a+b,0)/n).toFixed(4),
+  summary:{channels:channels.length,exportedSediment:+exported.toFixed(2),meanErosion:+(erosionDepth.reduce((sum,depth,i)=>sum+depth*areas[i],0)/Math.max(1e-12,areas.reduce((a,b)=>a+b,0))).toFixed(4),
    maxDischarge:+Math.max(0,...discharge).toFixed(2)}};
 }
 /** Deterministic first-pass climate on the existing Voronoi graph. This is a
@@ -527,14 +525,9 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
  const maritime=clamp(Number(settings.maritime),0,1.5);
  const angle=clamp(Number(settings.windDirection),-180,180)*Math.PI/180;
  const wx=Math.cos(angle),wy=-Math.sin(angle),seed=settings.seed|0;
- // Ocean adjacency dampens seasonal variability over ~5 cell widths.
- const steps=new Int16Array(n);steps.fill(1000);
- const queue=[];
- for(let i=0;i<n;i++)if(water[i]){steps[i]=0;queue.push(i);}
- for(let k=0;k<queue.length;k++){
-  const i=queue[k];if(steps[i]>=12)continue;
-  for(const j of cells[i].neighbors)if(steps[j]>steps[i]+1){steps[j]=steps[i]+1;queue.push(j);}
- }
+ // Maritime moderation decays over a fixed geographic distance. Ocean
+ // sites seed a weighted shortest-path traversal of the Voronoi graph.
+ const {distance:seaDistance}=geographicDistances(cells,water.flatMap((w,i)=>w?[i]:[]));
  onProgress?.(.12);
  const meanTemp=new Array(n),seasonalRange=new Array(n),latitudes=new Array(n),precipitation=new Array(n);
  const janTemp=new Array(n),julTemp=new Array(n),janRain=new Array(n),julRain=new Array(n);
@@ -546,7 +539,7 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
   latitudes[i]=+lat.toFixed(2);
   const at=Math.abs(lat)*Math.PI/180;
   const altitude=water[i]?0:Math.max(0,elevationToKm(heights[i],coasts.seaLevel));
-  const oceanEffect=clamp(1-steps[i]/6,0,1)*maritime;
+  const oceanEffect=clamp(1-seaDistance[i]/(6*REFERENCE_DISTANCE_KM),0,1)*maritime;
   const landSwing=clamp(2.5+Math.pow(Math.abs(lat)/90,1.3)*22+(water[i]?0:6*(1-oceanEffect*.65))*(.15+Math.abs(lat)/90),0,33);
   const swing=tilt/23.5*landSwing;
   const noiseTemp=fbm(c.x/360,c.y/360,seed+71,3)*1.8;
@@ -567,18 +560,24 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
  for(const {i} of projection){
   const c=cells[i];
   if(water[i]){airMoisture[i]=1;continue;}
-  let supply=0,weight=0,uphill=0;
+  let supply=0,weight=0;
   for(const j of c.neighbors){
    const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;
    if(d<=1e-6)continue;
    const w=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);
-   supply+=airMoisture[j]*w;weight+=w;
-   uphill+=Math.max(0,elevationToKm(heights[i],heights[j]))*w;
+   // Background exchange scales with travel distance; orographic loss
+   // scales with total ascent, not the number of graph edges crossed.
+   const mixing=-Math.log(.91)*d/REFERENCE_DISTANCE_KM;
+   const rise=Math.max(0,elevationToKm(heights[i],heights[j]));
+   const loss=mixing+shadow*rise*1.9/ELEVATION_KM_PER_UNIT;
+   // Exact exponential exchange on a constant-slope edge: subdividing
+   // that edge leaves the atmospheric moisture at its endpoint unchanged.
+   const equilibrium=(.06/.09)*mixing/loss;
+   const incoming=airMoisture[j]+(equilibrium-airMoisture[j])*(-Math.expm1(-loss));
+   supply+=incoming*w;
+   weight+=w;
   }
-  const incoming=weight>0?supply/weight:.43;
-  const rise=weight>0?uphill/weight:0;
-  const depletion=shadow*clamp(rise*(1.9/ELEVATION_KM_PER_UNIT),0,.76);
-  airMoisture[i]=clamp(incoming*(.91-depletion)+.06,0,1.3);
+  airMoisture[i]=clamp(weight>0?supply/weight:.43,0,1.3);
  }
  onProgress?.(.60);
  let totalRain=0,totalTemp=0,totalArea=0,minTemp=Infinity,maxTemp=-Infinity;
@@ -586,7 +585,7 @@ export function generateClimate(mesh,coasts,erosion,settings,onProgress=null){
   const c=cells[i],at=Math.abs(latitudes[i]),w=water[i];
   const tropics=1+.92*Math.exp(-(((at)/16)**2))-.67*Math.exp(-(((at-28)/14)**2))+.32*Math.exp(-(((at-55)/14)**2));
   let ascent=0,weight=0;
-  for(const j of c.neighbors){const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;if(d<=0)continue;const ww=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);ascent+=Math.max(0,elevationToKm(heights[i],heights[j]))*ww;weight+=ww;}
+  for(const j of c.neighbors){const d=(c.x-cells[j].x)*wx+(c.y-cells[j].y)*wy;if(d<=0)continue;const ww=d/(Math.hypot(c.x-cells[j].x,c.y-cells[j].y)||1);ascent+=Math.max(0,elevationToKm(heights[i],heights[j]))*REFERENCE_DISTANCE_KM/Math.max(.001,Math.hypot(c.x-cells[j].x,c.y-cells[j].y))*ww;weight+=ww;}
   const rise=weight?ascent/weight:0;
   const relative=clamp(tropics*(.18+airMoisture[i]*1.12)*(1+shadow*Math.min(1.3,rise*(2.3/ELEVATION_KM_PER_UNIT)))*(.85+.25*noise(c.x/300,c.y/300,seed+3)),.015,4.4);
   const mm=clamp(baseRain*relative,8,12000);
@@ -618,6 +617,22 @@ class MinHeap {
  push(height,index){const a=this.a;let i=a.length;a.push([height,index]);while(i>0){const j=(i-1)>>1;if(a[j][0]<height||(a[j][0]===height&&a[j][1]<=index))break;a[i]=a[j];i=j;}a[i]=[height,index];}
  pop(){const a=this.a,top=a[0],last=a.pop();if(a.length){let i=0;while(2*i+1<a.length){let j=2*i+1;if(j+1<a.length&&(a[j+1][0]<a[j][0]||(a[j+1][0]===a[j][0]&&a[j+1][1]<a[j][1])))j++;if(last[0]<a[j][0]||(last[0]===a[j][0]&&last[1]<=a[j][1]))break;a[i]=a[j];i=j;}a[i]=last;}return top;}
  get length(){return this.a.length;}
+}
+/** Multi-source Dijkstra over geographic edges, with optional traversal
+ * mask. Unreachable sites remain Infinity and have no source. */
+export function geographicDistances(cells,sources,allowed=()=>true){
+ const distance=new Float64Array(cells.length).fill(Infinity);
+ const source=new Int32Array(cells.length).fill(-1),heap=new MinHeap();
+ for(const i of sources)if(allowed(i)&&distance[i]!==0){distance[i]=0;source[i]=i;heap.push(0,i);}
+ while(heap.length){
+  const [d,i]=heap.pop();if(d!==distance[i])continue;
+  const c=cells[i];for(const j of c.neighbors){
+   if(!allowed(j))continue;
+   const next=d+Math.hypot(c.x-cells[j].x,c.y-cells[j].y);
+   if(next<distance[j]){distance[j]=next;source[j]=source[i];heap.push(next,j);}
+  }
+ }
+ return {distance,source};
 }
 export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgress=null){
  const cells=mesh?.cells,n=cells?.length||0;
@@ -665,11 +680,11 @@ export function generateHydrology(mesh,coasts,erosion,climate,settings,onProgres
   discharge[j]+=discharge[i];catchmentArea[j]+=catchmentArea[i];
  }
  onProgress?.(.60);
- const meanArea=areas.reduce((sum,a)=>sum+a,0)/n;
+ const thresholdArea=riverThreshold*REFERENCE_AREA_KM2;
  const channels=[];let totalRunoff=0,riverCount=0,maxDischarge=0;
  for(let i=0;i<n;i++){
   if(!water[i]){totalRunoff+=localRunoff[i];maxDischarge=Math.max(maxDischarge,discharge[i]);
-   if(flowTo[i]>=0&&catchmentArea[i]>=riverThreshold*meanArea&&discharge[i]>=riverThreshold*meanArea*.00012){channels.push(i);riverCount++;}
+   if(flowTo[i]>=0&&catchmentArea[i]>=thresholdArea&&discharge[i]>=thresholdArea*.00012){channels.push(i);riverCount++;}
   }
  }
  const candidate=new Uint8Array(n),lakeId=new Array(n).fill(-1),lakeDepth=new Array(n).fill(0),lakeLevel=new Array(n).fill(null);
@@ -729,9 +744,9 @@ export function generateSoils(mesh,plates,landforms,coasts,erosion,climate,hydro
   const continental=!!plates.plates[plates.owners[i]]?.continental;
   const volcanic=landforms.classes[i]===7;
   const polar=clamp((-temp+4)/20,0,1),dry=clamp((350-precip)/350,0,1),temperature=clamp((temp+8)/35,0,1);
-  // Empirical relief index, not a physical gradient. Resolution independence
-  // requires a separate recalibration; preserve the existing index here.
-  const slope=clamp(c.neighbors.reduce((sum,j)=>sum+Math.abs(elevationToKm(erosion.elevations[i],erosion.elevations[j])),0)/Math.max(1,c.neighbors.length)*(.95/ELEVATION_KM_PER_UNIT),0,1);
+  // Slope normalized to a fixed reference distance, rather than raw
+  // height difference (which shrinks as polygons become smaller).
+  const slope=clamp(c.neighbors.reduce((sum,j)=>sum+physicalSlope(Math.abs(erosion.elevations[i]-erosion.elevations[j]),Math.max(.001,Math.hypot(c.x-cells[j].x,c.y-cells[j].y))),0)/Math.max(1,c.neighbors.length)*(.95*REFERENCE_DISTANCE_KM/ELEVATION_KM_PER_UNIT),0,1);
   const proximity=clamp(Math.log1p(hydrology.catchmentArea[i])/Math.log1p(maxCatchment),0,1);
   const floodplain=clamp((1-slope)*(1-rough*.7)*(.33+proximity*.67),0,1);
   const deposited=clamp(elevationToKm(erosion.deposition[i])*(9/ELEVATION_KM_PER_UNIT),0,1),stripped=clamp(elevationToKm(erosion.erosionDepth[i])*(5/ELEVATION_KM_PER_UNIT),0,1);
@@ -790,7 +805,6 @@ export function generateBiomes(mesh,coasts,landforms,erosion,climate,hydrology,s
  const alpineLimit=clamp(Number(settings.alpineLimit),0,16),variation=clamp(Number(settings.patchVariation),0,.4),seed=Number(settings.seed)|0;
  const biome=new Array(n),treePotential=new Array(n),productivity=new Array(n),waterStress=new Array(n),growingMonths=new Array(n),ecotone=new Array(n).fill(0);
  const counts=new Array(BIOME_NAMES.length).fill(0),areaKm2ByBiome=new Array(BIOME_NAMES.length).fill(0);
- const averageCellWidth=Math.sqrt((mesh.areaKm2||mesh.width*mesh.height)/n);
  const canopyBase=[0,0,0,.01,.64,.91,.77,.08,.03,0,.23,.98,.80,.16,.01,.12,.55];
  let landArea=0,productSum=0,canopySum=0,monthsSum=0,landCells=0;
  for(let i=0;i<n;i++){
@@ -804,7 +818,7 @@ export function generateBiomes(mesh,coasts,landforms,erosion,climate,hydrology,s
    const rainfall=climate.precipitation[i]*rainFactor;
    // Low-frequency variation shifts regional moisture, avoiding unrelated
    // checkerboard-style biome noise between neighboring Voronoi cells.
-   const patch=1+variation*fbm(c.x/(averageCellWidth*7),c.y/(averageCellWidth*7),seed+191,3);
+   const patch=1+variation*fbm(c.x/(REFERENCE_DISTANCE_KM*7),c.y/(REFERENCE_DISTANCE_KM*7),seed+191,3);
    const pet=Math.max(150,180+Math.max(0,t+5)*44+climate.seasonalRange[i]*9);
    const ratio=rainfall*patch/pet;
    const drought=clamp(1-ratio/forestGate,0,1);
@@ -866,7 +880,7 @@ export function generateBiomes(mesh,coasts,landforms,erosion,climate,hydrology,s
 /** Voronoi-scale potential vegetation: a static landscape snapshot, not a
  * time-stepped growth model. Earlier environmental suitability is immutable.
  * Climate, soils, waterways, and biome data are read but never mutated.
- * Neighbor-propagated riparian influence is intentionally local (3 hops),
+ * Neighbor-propagated riparian influence has a fixed geographic reach,
  * and low-frequency patch noise avoids cell-by-cell random speckling.
  */
 export function generateVegetation(mesh,coasts,climate,hydrology,soils,biomes,settings,onProgress=null){
@@ -883,34 +897,24 @@ export function generateVegetation(mesh,coasts,climate,hydrology,soils,biomes,se
  const riparianStrength=clamp(Number(settings.riparianStrength),0,1.5);
  const patchiness=clamp(Number(settings.patchiness),0,.45);
  const seed=Number(settings.seed)|0;
- const influence=new Array(n).fill(0);
- // Rivers and shores are sources; propagate a decaying local influence.
- // Propagation never crosses oceans or jumps across non-neighbor polygons.
- for(const i of hydrology.channels)if(i>=0&&i<n&&!coasts.water[i]&&hydrology.lakeId[i]<0)influence[i]=1;
- for(let i=0;i<n;i++)if(!coasts.water[i]&&hydrology.lakeId[i]<0
-   &&cells[i].neighbors.some(j=>hydrology.lakeId[j]>=0))influence[i]=1;
- for(let step=0;step<3;step++){
-  const next=influence.slice();
-  for(let i=0;i<n;i++)if(!coasts.water[i]&&hydrology.lakeId[i]<0){
-   for(const j of cells[i].neighbors)if(!coasts.water[j]&&hydrology.lakeId[j]<0)
-    next[i]=Math.max(next[i],influence[j]*.53);
-  }
-  for(let i=0;i<n;i++)influence[i]=next[i];
- }
+ const isLand=i=>!coasts.water[i]&&hydrology.lakeId[i]<0;
+ const sources=new Set(hydrology.channels.filter(i=>i>=0&&i<n&&isLand(i)));
+ for(let i=0;i<n;i++)if(isLand(i)&&cells[i].neighbors.some(j=>hydrology.lakeId[j]>=0))sources.add(i);
+ const {distance}=geographicDistances(cells,sources,isLand);
+ const influence=Array.from(distance,d=>d<=3*REFERENCE_DISTANCE_KM?Math.pow(.53,d/REFERENCE_DISTANCE_KM):0);
  onProgress?.(.12);
  const coverClass=new Array(n),canopyCover=new Array(n),groundCover=new Array(n);
  const biomass=new Array(n),heightM=new Array(n),habitatComplexity=new Array(n),riparian=new Array(n);
  const counts=new Array(VEGETATION_NAMES.length).fill(0);
  const areaKm2ByClass=new Array(VEGETATION_NAMES.length).fill(0);
  let landCells=0,landArea=0,canopySum=0,groundSum=0,biomassSum=0,heightSum=0;
- const spacing=Math.sqrt((mesh.areaKm2||mesh.width*mesh.height)/n);
  for(let i=0;i<n;i++){
   const c=cells[i],biome=biomes.biome[i],area=cellArea(c);
   let kind=0,canopy=0,ground=0,mass=0,height=0,rip=0,complexity=0;
   if(coasts.water[i])kind=0;
   else if(hydrology.lakeId[i]>=0)kind=1;
   else{
-   const patch=1+patchiness*fbm(c.x/(spacing*5),c.y/(spacing*5),seed+219,4);
+   const patch=1+patchiness*fbm(c.x/(REFERENCE_DISTANCE_KM*5),c.y/(REFERENCE_DISTANCE_KM*5),seed+219,4);
    const vigor=clamp(density*patch,0,2);
    rip=clamp(influence[i],0,1);
    const fertile=clamp(.6+.4*soils.fertility[i],0,1);

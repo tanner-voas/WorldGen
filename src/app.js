@@ -1,3 +1,4 @@
+import {REFERENCE_AREA_KM2} from './geographic-units.js';
 import {DEFAULTS,STAGES,IMPLEMENTED,stageUsesSeed,newWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 import {Terrain3DViewer} from './terrain-3d.js';
@@ -8,7 +9,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.1.32',DB_NAME='worldgen-v1';
+const APP_VERSION='0.1.33',DB_NAME='worldgen-v1';
 let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
@@ -39,11 +40,11 @@ const OPTIONS={
  ],
  3:[['plates','Plates','range',3,50,1,'linear'],['continental','Continental ratio','range',0.1,0.9,0.05,'linear'],['motion','Plate motion','range',0,2,0.05,'linear']],
  4:[['uplift','Uplift strength','range',0,1.6,0.05,'linear'],['roughness','Surface roughness','range',0,1.4,0.05,'linear'],['continentalHeight','Crust elevation (m)','range',0.05,0.8,0.025,'linear']],
- 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (cell widths)','range',0.5,5,0.25,'linear'],['setbackStrength','Continental setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Continental setback width (cells)','range',2,18,0.5,'linear']],
+ 5:[['land','Land coverage target','range',0.1,0.85,0.01,'linear'],['edgeOcean','Edge ocean bias','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (km)','range',0.5,5,0.25,'linear'],['setbackStrength','Continental setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Continental setback width (km)','range',2,18,0.5,'linear']],
  6:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
  7:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
  8:[['equatorTemp','Equatorial temperature (°C)','range',10,40,0.5,'linear'],['latitudeCenter','Central latitude (°)','range',-70,70,2,'linear'],['latitudeSpan','Latitude span (°)','range',20,180,5,'linear'],['axialTilt','Axial tilt (°)','range',0,45,0.5,'linear'],['rainfall','Annual rainfall baseline (mm)','range',100,4000,50,'linear'],['windDirection','Wind direction (°)','range',-180,180,5,'linear'],['rainShadow','Mountain rain shadow','range',0,2,0.05,'linear'],['maritime','Ocean moderation','range',0,1.5,0.05,'linear']],
- 9:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (cell areas)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth (m)','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
+ 9:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (km²)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth (m)','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
  10:[['weathering','Mineral weathering','range',0,2,0.1,'linear'],['organicInput','Organic accumulation','range',0,2,0.1,'linear'],['alluvialInput','Alluvial deposition','range',0,2,0.1,'linear'],['permeabilityBias','Permeability factor','range',0.25,2,0.05,'linear'],['groundwaterRecharge','Groundwater recharge potential','range',0,2,0.1,'linear']],
  11:[['temperatureShift','Biome temperature shift (°C)','range',-12,12,0.5,'linear'],['rainfallResponse','Effective precipitation','range',0.4,1.8,0.05,'linear'],['forestThreshold','Forest moisture threshold','range',0.45,1.8,0.05,'linear'],['wetlandThreshold','Wetland groundwater threshold','range',0.4,0.95,0.025,'linear'],['alpineLimit','Alpine summer threshold (°C)','range',0,16,0.5,'linear'],['patchVariation','Regional biome variation','range',0,0.4,0.025,'linear']],
  12:[['vegetationDensity','Vegetation density','range',0.2,1.8,0.05,'linear'],['maturity','Landscape maturity','range',0,1,0.05,'linear'],['disturbance','Disturbance pressure','range',0,1,0.05,'linear'],['riparianStrength','Riparian boost','range',0,1.5,0.05,'linear'],['patchiness','Vegetation patchiness','range',0,0.45,0.025,'linear']]
@@ -67,9 +68,9 @@ const PARAM_HELP={
  continentalHeight:['Crust elevation','Starting crust-height parameter in metres, before coastline sea-level selection. Higher values increase continental/oceanic crust contrast; lower values flatten it.'],
  land:['Land coverage target','Desired share of the world surface ABOVE sea level by geographic area. Higher values expose more land; lower values flood more land. It is approximate at the resolution of individual cells. An enabled edge-ocean buffer takes priority if the outermost cells already exceed the water target.'],
  edgeOcean:['Edge ocean bias','Strength of the ocean-promoting effect at the outer world boundary. Higher values lower near-edge terrain relative to sea level, making a broader water margin without changing distant inland heights. When greater than zero, polygons touching the world boundary are guaranteed to be water. Zero disables this feature.'],
- edgeFade:['Edge falloff width','Width of the narrow ocean rim in typical cell widths. The outermost polygon stays underwater if Edge ocean bias is enabled. This narrow rim does not by itself move whole continents inward; use Continental setback for that.'],
+ edgeFade:['Edge falloff width','Width of the narrow ocean bias in kilometres, independent of mesh density. The reach is capped at 12% of the shorter world dimension. The outermost polygon stays underwater if Edge ocean bias is enabled. This narrow rim does not by itself move whole continents inward; use Continental setback for that.'],
  setbackStrength:['Continental setback strength','A broad, smoothly fading downward bias on terrain near the world boundary. Increasing it makes large landmasses less likely to run parallel to the outline. Zero disables the broad effect without disabling the one-cell water rule. It changes only the coast layer, not the locked elevation layer.'],
- setbackWidth:['Continental setback width','How many average Voronoi cell widths the broad continental bias reaches inward. Increasing it creates a more natural expanse of ocean between the continents and the artificial boundary. The reach is limited to 16% of the shorter world dimension so the interior stays unaffected.'],
+ setbackWidth:['Continental setback width','How many kilometres the broad continental bias reaches inward. Increasing it creates a more natural expanse of ocean between the continents and the artificial boundary. The reach is limited to 16% of the shorter world dimension so the interior stays unaffected.'],
  ridge:['Ridge strength','Strength of coherent mountainous ridges during landform refinement. Higher produces stronger belts and peaks; lower makes ridges subtler. Locked coastlines remain fixed.'],
  detail:['Terrain variation','Fine-scale variation added to existing elevations. Higher gives rougher and more diverse local terrain; lower keeps smoother landscapes.'],
  valleys:['Valley incision','How strongly valley-like features cut into the terrain. More produces deeper local valleys; less preserves uplands.'],
@@ -85,11 +86,11 @@ const PARAM_HELP={
  axialTilt:['Axial tilt','Approximate seasonal contrast. Higher tilt produces hotter summers and colder winters away from the equator; zero tilt removes seasonal temperature differences. Climate is a stylized model, not a full astronomy simulation.'],
  windDirection:['Prevailing wind direction','Direction the prevailing wind blows TOWARD, in degrees: 0 east, 90 north, 180 west, and −90 south. Changing it relocates windward rainfall and leeward rain shadows.'],
  rainShadow:['Mountain rain shadow','Strength of moisture loss as air rises over terrain. Increasing it tends to make windward mountains wetter and leeward regions drier. Zero minimizes this orographic effect.'],
- maritime:['Ocean moderation','How strongly adjacent seas moderate seasonal temperature changes. Increasing the value makes coastal climates less extreme. Lower values produce more continental climates.'],
+ maritime:['Ocean moderation','How strongly seas within approximately 252 km along the mesh moderate seasonal temperature changes. Increasing the value makes coastal climates less extreme. Lower values produce more continental climates.'],
  runoffScale:['Runoff multiplier','Scales climate rainfall before calculating available surface runoff. Higher values create fuller streams and more river segments; lower values reduce flow. The original climate precipitation layer stays unchanged.'],
  infiltration:['Ground infiltration','Fraction of incoming precipitation absorbed into the ground. Higher values leave less water for surface rivers; lower values create more overland runoff. Subsurface aquifers are not simulated yet.'],
  evaporation:['Evaporation','Temperature-dependent loss of surface water to the atmosphere and plants. Raising it dries warmer areas and suppresses rivers; lowering it leaves more runoff. This is an approximate annual water balance.'],
- riverThreshold:['River threshold','A river is drawn only after collecting runoff from a catchment at least this many average Voronoi cell areas, with sufficient flow. Smaller values generate more tributaries, while larger values retain only major channels. The actual area depends on mesh density.'],
+ riverThreshold:['River threshold','A river is drawn only after collecting runoff from a catchment at least this many square kilometres, with sufficient flow. Smaller values generate more tributaries, while larger values retain only major channels. This threshold is independent of mesh density.'],
  lakeDepth:['Minimum lake depth','Minimum local elevation difference between a topographic basin and its spill point for a cell to qualify as a lake. Lower values include shallow depressions; higher values retain only deeper basins. The control is in physical metres; saved values retain their original encoding.'],
  minLakeCells:['Minimum lake size','Minimum number of adjoining qualifying polygons required to create a visible lake. One allows small cell-sized lakes; higher values omit small or fragmented water bodies.'],
  weathering:['Mineral weathering','Scales the rate of modeled regolith formation. Increasing it produces deeper soils in warm and moist regions; exposed high slopes remain thinner. This is an indicative soil formation model, not a simulation of geological time.'],
@@ -106,7 +107,7 @@ const PARAM_HELP={
  vegetationDensity:['Vegetation density','Multiplies realized plant cover within the envelope allowed by the locked biome and soil layers. Higher values give more foliage and canopy; lower values keep the same biome but make vegetation sparser.'],
  maturity:['Landscape maturity','Represents how developed the potential vegetation is in this static snapshot. Higher values support taller, denser vegetation and more woody biomass. This does not simulate years of growth.'],
  disturbance:['Disturbance pressure','Approximate ecological disturbance such as fire, storms, and grazing. Increasing it reduces canopy and biomass, without modifying climate, soils, or simulated history.'],
- riparianStrength:['Riparian boost','Additional vegetation supported near existing river channels and lake shores. Increasing it enhances short-distance riverside greenery; decreasing it removes the additional boost. It never changes the water network.'],
+ riparianStrength:['Riparian boost','Additional vegetation supported near existing river channels and lake shores. Increasing it enhances riverside greenery within 126 km of connected land in newly generated layers; decreasing it removes the additional boost. It never changes the water network.'],
  patchiness:['Vegetation patchiness','Amount of broad, spatially correlated variation in vegetation density. Higher values create landscape-scale mosaics of cover; zero removes this extra variation. Individual cells are not randomized independently.'],
  seed:['Random seed','An integer that controls repeatable randomness in this layer. The same seed with the same inputs creates the same result. Reroll chooses a different seed.']
 };
@@ -490,7 +491,7 @@ function colorForCell(i,stage,display){
   }
   if(display==='catchment'){
    if(coasts.water[i])return '#234e66';
-   const avg=(mesh.areaKm2||mesh.width*mesh.height)/mesh.cells.length;
+   const avg=REFERENCE_AREA_KM2;
    return gradient(Math.log1p(hydrology.catchmentArea[i]/avg)/Math.log1p(100),[[0,[164,158,119]],[.32,[139,172,137]],[.64,[80,162,166]],[1,[35,90,150]]]);
   }
   if(display==='hydrology'||display==='auto'){
@@ -543,7 +544,7 @@ function updateLegend(){
  else if(actual==='canopyCover')el.innerHTML='<strong>Estimated canopy cover</strong><p>Tan = sparse trees, deep green = dense tree cover. This is a generated static estimate, not the biome suitability field.</p>';
  else if(actual==='groundCover')el.innerHTML='<strong>Ground vegetation cover</strong><p>Brown = bare ground, green = herbaceous and low woody cover. Tree canopy is displayed separately.</p>';
  else if(actual==='biomass')el.innerHTML='<strong>Relative biomass index</strong><p>Tan = sparse, green = greater potential standing plant material. Not tonnes, carbon storage or a time-series.</p>';
- else if(actual==='riparian')el.innerHTML='<strong>Riparian influence</strong><p>Gray = little local water influence; blue = near rivers and lake margins within a few polygon connections.</p>';
+ else if(actual==='riparian')el.innerHTML='<strong>Riparian influence</strong><p>Gray = little local water influence; blue = near rivers and lake margins. Newly generated influence decays over 126 km of connected land.</p>';
  else if(actual==='biomes')el.innerHTML='<strong>Potential natural biomes</strong>'+BIOME_NAMES.map((name,i)=>`<span><i style="background:${biomeColors[i]}"></i>${name}</span>`).join('');
  else if(actual==='productivity')el.innerHTML='<strong>Ecological productivity potential</strong><p>Tan = low, green = high potential given climate and soil. Not a simulated biomass or yield measurement.</p>';
  else if(actual==='treePotential')el.innerHTML='<strong>Tree-cover potential</strong><p>Tan = sparse woodland potential; green = canopy-supporting conditions. Actual trees are not simulated.</p>';

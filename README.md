@@ -1,4 +1,4 @@
-# WorldGen v0.1.32
+# WorldGen v0.1.33
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -13,7 +13,7 @@ Run `npm test` and `python3 package.py` to validate/build both targets; `npm run
 2. **Voronoi geometry** — now controlled by **target average polygon area in km²** rather than an arbitrary count. The implied number of sites is `round(world area / target area)`, bounded to 100–5,000. Limits of the logarithmic area slider adapt to world area. Site placement, jitter, relaxation and seed remain adjustable. Circular/elliptical polygons are clipped at the shaped world boundary.
 3. **Tectonic plates** — plate territories, crust type and motion.
 4. **Elevation** — terrain noise, tectonic uplift and relief.
-5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. The original *edge ocean bias* keeps the outermost ring of polygons underwater with its narrow 1.5-cell-width taper. An independent *continental setback* (default strength 1.15, width 10 cell widths; capped to 16% of the shorter world dimension) gently depresses a much broader band, discouraging continents from following the world outline. Both effects fade smoothly, the interior elevation layer stays unchanged, and sea level is recalculated to preserve the desired land-area percentage. Border-touching polygons remain water while edge ocean bias is enabled. Existing locked heights and older saved coastlines remain unchanged.
+5. **Oceans and coastlines** — sea level chosen by true polygon area, not site count. The original *edge ocean bias* keeps the outermost ring of polygons underwater with its narrow 63 km default taper (capped at 12% of the shorter world dimension). An independent *continental setback* (default strength 1.15, default width 420 km; capped to 16% of the shorter world dimension) gently depresses a much broader band, discouraging continents from following the world outline. Both effects fade smoothly, the interior elevation layer stays unchanged, and sea level is recalculated to preserve the desired land-area percentage. Border-touching polygons remain water while edge ocean bias is enabled. Existing locked heights and older saved coastlines remain unchanged.
 6. **Landforms** — ridges, valleys, ruggedness, volcanoes; preserves the locked coast mask.
 7. **Erosion** — preliminary rainfall/runoff, sediment transfer, slope weathering, drainage channels; preserves earlier layers and locked coastlines.
 
@@ -57,7 +57,7 @@ Automatic caching and named checkpoints preserve all generated layers, parameter
 
 ## Deployment
 
-Apply the single v0.1.10 → v0.1.11 `git am` patch to the existing WorldGen repository, then run:
+Apply the single release `git am` patch to the existing WorldGen repository, then run:
 
 ```bash
 npm test
@@ -241,3 +241,7 @@ The interactive WebGL2 terrain viewer is the only Render mode, available from la
 ## v0.1.32 — Physical elevation
 
 Schema v2 retains its existing encoded elevations: **1 unit = 2.7 km = 2,700 m**, matching the original climate lapse-rate convention. Layer 4 uses provisional zero, layers 5–12 use the selected coastline sea level as the physical datum. Absolute elevation, erosion/deposition thickness, lake depth and surface altitude are shown in metres; crust elevation and minimum lake depth controls accept metres while converting back to the unchanged stored settings. The erosion sediment summary is expressed as an estimated equivalent volume in km³. The shared conversion also defines physical terrain gradients, atmospheric ascent and lake-depth comparisons while preserving the historical empirical calibration. The 3D relief baseline remains visually identical to v0.1.31, explicitly separated from the physical scale: the collapsed control still starts at 1.00×, and its expanded panel displays total exaggeration relative to physical height. Relief never changes simulation or saved data. Existing worlds and checkpoints require no migration. See `RELEASE_v0.1.32.md`.
+
+## v0.1.33 — Geographic resolution independence
+
+New generation uses a fixed 42 km reference distance (1,764 km² reference area) rather than the current average polygon size. Layer 4 propagates signed tectonic pressure by geographic graph distance; layer 5 accepts kilometre-based coastal fade and setback widths, subject to existing world-size caps. Layer 7 integrates preliminary runoff by physical area and scales sediment deposition by travel distance. Layer 8 uses a 252 km maritime reach and distance/ascent-dependent atmospheric moisture transport. Layer 9 uses an absolute catchment threshold (default 7,056 km², plus minimum discharge), layer 10 uses distance-normalized soil gradients, and layers 11–12 use fixed geographic patch scales and a 126 km land-connected riparian reach. The guaranteed boundary-water rule and minimum lake polygon count remain deliberately mesh-dependent. Existing stored parameter keys and numeric encodings are retained; revised settings apply to newly generated results, not historical terrain or water data. Different Voronoi meshes remain approximations, not identical landscapes. See `RELEASE_v0.1.33.md`.
