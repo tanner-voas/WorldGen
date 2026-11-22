@@ -38,6 +38,7 @@ layout(location=1) in vec3 aNormal;
 layout(location=2) in float aElevation;
 layout(location=3) in vec3 aMaterial;
 uniform mat4 uCamera;
+uniform highp int uWater;
 uniform float uHeightMultiplier;
 uniform int uMorphMode;
 uniform int uMorphFrom;
@@ -69,7 +70,8 @@ void main(){
  vNormal=normalize(vec3(aNormal.x*uHeightMultiplier,aNormal.y,aNormal.z*uHeightMultiplier));
  vMaterial=aMaterial;
  vPosition=position;
- vElevation=aElevation;
+ // Water carries its unexaggerated elevation for optical depth.
+ vElevation=uWater!=0&&uBaseHeightScale>0.0?aPosition.y/uBaseHeightScale:aElevation;
  if(uMorphMode!=0){
   vec2 grid=(aPosition.xz/uPlane+.5)*vec2(textureSize(uTerrainFields,0).xy-ivec2(1));
   vec4 sourceField,destField;
@@ -101,13 +103,15 @@ in vec3 vNormal;
 in vec3 vMaterial;
 in vec3 vPosition;
 in float vElevation;
-uniform int uWater;
+uniform highp int uWater;
 uniform vec3 uEye;
 uniform float uSeaLevel;
 uniform float uMaterialStrength;
 uniform vec2 uPlane;
 uniform float uWorldScale;
 uniform highp sampler2DArray uSurfaceMaterials;
+uniform highp sampler2DArray uTerrainFields;
+uniform int uHasDepthField;
 out vec4 fragColor;
 vec3 colorRamp(float h){
  if(h<-.28)return mix(vec3(.12,.26,.28),vec3(.25,.42,.39),smoothstep(-1.5,-.28,h));
@@ -141,27 +145,83 @@ float canopyPattern(vec2 p){
  }
  return crown-.18;
 }
+// The base terrain texture already contains the unscaled elevation field.
+// Use the same triangle diagonal as the mesh rather than averaging four
+// corners. Local refinement can differ away from protected shorelines.
+float bedElevation(){
+ ivec2 size=textureSize(uTerrainFields,0).xy;
+ vec2 grid=clamp(vPosition.xz/uPlane+.5,0.0,1.0)*vec2(size-1);
+ ivec2 cell=clamp(ivec2(floor(grid)),ivec2(0),size-2);
+ vec2 f=clamp(grid-vec2(cell),0.0,1.0);
+ float a=texelFetch(uTerrainFields,ivec3(cell,0),0).x;
+ float b=texelFetch(uTerrainFields,ivec3(cell+ivec2(1,0),0),0).x;
+ float c=texelFetch(uTerrainFields,ivec3(cell+ivec2(0,1),0),0).x;
+ float d=texelFetch(uTerrainFields,ivec3(cell+ivec2(1,1),0),0).x;
+ return f.x+f.y<=1.0?a+(b-a)*f.x+(c-a)*f.y:d+(c-d)*(1.0-f.x)+(b-d)*(1.0-f.y);
+}
+// Restrained distance haze, strongest at grazing angles. Scene-space
+// distances keep the overview readable even for very large worlds.
+vec3 atmosphere(vec3 color,vec3 view,float distanceToEye){
+ float horizon=1.0-smoothstep(.12,.85,abs(view.y));
+ float haze=smoothstep(.35,7.0,distanceToEye)*(.10+.26*horizon);
+ return mix(color,vec3(.48,.58,.64),haze);
+}
+float specularLight(vec3 n,vec3 sun,vec3 view,float roughness){
+ vec3 halfVector=sun+view;
+ float halfLength=length(halfVector);
+ float alignment=halfLength>0.0001?max(dot(n,halfVector/halfLength),0.0):0.0;
+ float exponent=mix(110.0,5.0,roughness*roughness);
+ return pow(alignment,exponent)*max(dot(n,sun),0.0);
+}
+vec3 shadeWater(int kind,vec3 sun,vec3 view){
+ bool river=kind==2;
+ // Optical depth is based on stored elevations, never the relief slider.
+ // Rivers are decals, so use a small representative optical depth rather
+ // than measuring the zero distance between a ribbon and its terrain.
+ float depth=river?.002:(kind==1?.22:.018);
+ if(!river&&uHasDepthField!=0)depth=max(0.0,vElevation-bedElevation());
+ float absorption=1.0-exp(-depth*(kind==1?5.0:22.0));
+ vec3 shallow=kind==1?vec3(.24,.57,.56):vec3(.23,.50,.45);
+ vec3 deep=kind==1?vec3(.045,.19,.30):vec3(.065,.26,.33);
+ vec3 body=mix(shallow,deep,absorption);
+ if(river)body=vec3(.18,.48,.56);
+ // Filter small static ripples in physical horizontal coordinates. No
+ // animated simulation or continuous redraw is needed for a still camera.
+ vec2 p=vPosition.xz/max(uWorldScale,1e-8);
+ float footprint=max(length(dFdx(p)),length(dFdy(p)));
+ float fade=1.0-smoothstep(.1,.65,footprint*.65);
+ vec3 n=vec3(0.0,1.0,0.0);
+ if(fade>.001){
+  float a=sin(dot(p,vec2(.58,.37))*6.2831853);
+  float b=sin(dot(p,vec2(-.23,.71))*6.2831853);
+  n=normalize(vec3(a*.065*fade,1.0,b*.05*fade));
+ }
+ float facing=clamp(dot(n,view),0.0,1.0);
+ float fresnel=.045+.55*pow(1.0-facing,5.0);
+ float glint=specularLight(n,sun,view,river?.47:.31)*.22;
+ vec3 reflectedSky=vec3(.47,.61,.70);
+ return mix(body,reflectedSky,fresnel)+glint*vec3(1.0,.94,.82);
+}
 void main(){
  vec3 sun=normalize(vec3(-.52,.80,.32));
+ vec3 eyeDelta=uEye-vPosition;
+ float distanceToEye=length(eyeDelta);
+ vec3 view=eyeDelta/max(distanceToEye,.0001);
+ // Solid water avoids visibility depending on draw order or background
+ // color. Depth tint simulates absorption rather than alpha blending.
  if(uWater==2){
-  vec3 sunlit=vec3(.12,.64,.76);
-  fragColor=vec4(sunlit,1.0);
+  fragColor=vec4(atmosphere(shadeWater(2,sun,view),view,distanceToEye),1.0);
   return;
  }
  if(uWater==3){
-  vec3 sunlit=vec3(.12,.43,.58);
-  fragColor=vec4(sunlit,.94);
+  fragColor=vec4(atmosphere(shadeWater(3,sun,view),view,distanceToEye),1.0);
   return;
  }
  if(uWater==1){
-  vec3 view=normalize(uEye-vPosition);
-  float glint=pow(max(dot(reflect(-sun,vec3(0.0,1.0,0.0)),view),0.0),46.0);
-  float shallow=.06*sin(vPosition.x*7.0+vPosition.z*3.0);
-  fragColor=vec4(vec3(.10,.31,.43)+vec3(shallow*.15,shallow*.20,shallow*.22)+glint*vec3(.30,.36,.36),.82);
+  fragColor=vec4(atmosphere(shadeWater(1,sun,view),view,distanceToEye),1.0);
   return;
  }
  vec3 n=normalize(vNormal);
- float shade=.54+.46*max(dot(n,sun),0.0);
  // Steeper faces reveal more rock; heights stay a continuous scalar field.
  float relativeHeight=vElevation-uSeaLevel;
  vec3 albedo=mix(colorRamp(relativeHeight),vMaterial,uMaterialStrength);
@@ -232,8 +292,19 @@ void main(){
  // Damp and snow surfaces are deliberately smoother; forest canopy and
  // coarse rock retain more contrast. Submerged terrain stays neutral.
  albedo*=clamp(1.0+detail,.70,1.30);
- float ambient=clamp(.88+.12*n.y,.73,1.0);
- fragColor=vec4(albedo*shade*ambient,1.0);
+ // Material-dependent roughness: moist soil and wetlands reflect more
+ // light than dry soil, grass, or forest. Keep highlights subtle at map scale.
+ float roughness=rock*.76+sand*.86+soil*.89+grass*.91+forest*.93+snow*.64+wetland*.42+cover.w*.78;
+ roughness=clamp(roughness,.38,.96);
+ float diffuse=max(dot(n,sun),0.0);
+ float sky=smoothstep(-.15,1.0,n.y);
+ // Work in an approximate linear-light space; avoid excessively dark
+ // shadowed slopes, and separate the cool sky from warmer direct sunlight.
+ vec3 irradiance=mix(vec3(.29,.28,.26),vec3(.46,.51,.58),sky)
+                 +diffuse*vec3(.66,.60,.51);
+ float spec=specularLight(n,sun,view,roughness)*mix(.015,.075,1.0-roughness);
+ vec3 lit=sqrt(clamp(albedo*albedo*irradiance+spec*vec3(1.0,.94,.83),0.0,1.0));
+ fragColor=vec4(atmosphere(lit,view,distanceToEye),1.0);
 }`;
 
 function compile(gl,kind,source){
@@ -342,6 +413,7 @@ export class Terrain3DViewer{
   this.heightLocation=gl.getUniformLocation(this.program,'uHeightMultiplier');
   this.surfaceMaterialLocation=gl.getUniformLocation(this.program,'uSurfaceMaterials');
   this.worldScaleLocation=gl.getUniformLocation(this.program,'uWorldScale');
+  this.depthFieldLocation=gl.getUniformLocation(this.program,'uHasDepthField');
   this.surfacePlaneLocation=gl.getUniformLocation(this.program,'uPlane');
   this.morphLocations=Object.fromEntries(['Mode','From','To','Weight','BaseHeightScale','Plane','TerrainFields','MaterialFields'].map(name=>[name,gl.getUniformLocation(this.program,`u${name.startsWith('Base')||name==='Plane'||name.endsWith('Fields')?name:'Morph'+name}`)]));
   this.morphTextures=null;this.globalMorphs=new Map();this.detailDraining=false;
@@ -752,6 +824,7 @@ export class Terrain3DViewer{
    gl.uniform1f(this.worldScaleLocation,s.worldScale);
    gl.uniform2f(this.surfacePlaneLocation,s.planeWidth,s.planeDepth);
   }
+  gl.uniform1i(this.depthFieldLocation,this.morphTextures?1:0);
   const now=performance.now();let animating=false;
   if(this.morphTextures){
    const l=this.morphLocations;
@@ -832,7 +905,9 @@ export class Terrain3DViewer{
   // Coplanar decals use a depth-buffer bias, not a physical height offset.
   // Draw water afterward so it covers submerged portions of lake outlets.
   this._setMorph(0);
-  gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);
+  // All water is opaque with optical depth shading. Write depth so near
+  // water correctly occludes more distant water and river surfaces.
+  gl.disable(gl.BLEND);gl.depthMask(true);
   for(const water of this.hydroGeometry||[]){
    if(water.kind!==2)continue;
    gl.uniform1i(this.waterLocation,2);

@@ -1,0 +1,7 @@
+# WorldGen v0.1.42 — Lighting and water
+
+- Terrain lighting separates warm directional sunlight from cool sky illumination, with material-dependent roughness and restrained highlights. Distance haze is shared by terrain and water and is strongest at grazing angles.
+- Oceans and lakes derive an approximate optical depth from the saved water level and the existing base-triangle elevation texture. Their colors become deeper with increasing depth, independently of the relief multiplier. River ribbons use a representative shallow-water material rather than a fictitious measured channel depth.
+- Water uses angle-dependent sky reflection and restrained, geographically anchored ripple normals, filtered by screen footprint. Water is now opaque with depth writes, avoiding order-dependent transparent overlap. The existing river polygon depth bias is retained.
+- No new geometry, texture allocations, renderer settings, continuous animation, generation changes, or save migration. The depth estimate intentionally uses the stable base terrain; it is a stylized water material, not a fluid simulation or exact underwater rendering.
+- Added three regression tests and an optional Linux/Mesa OpenGL ES 3 shader smoke test (Node and NumPy), including real pixel tests for water depth, relief invariance, terrain shading, atmospheric haze and material coverage. Native iPhone Safari appearance and performance remain unverified.
