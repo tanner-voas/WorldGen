@@ -5,6 +5,7 @@
 import {insideGeometry} from './engine.js';
 import {terrainVerticalScales} from './elevation-units.js';
 import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './terrain-sampler.js';
+import {createCoastlineConstraint} from './terrain-coastline.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 
@@ -48,8 +49,18 @@ export function terrainGridSize(geometry,cellCount){
  return {segmentsX,segmentsY};
 }
 
-/** Compact-support interpolant. Source elevations remain untouched and no
- * tessellation edges are ever used as a color or height discontinuity. */
+/** Prepare the shared height sampler with the historical coastline, if any. */
+export function createSurfaceSampler(mesh,elevations,{waterMask=null,seaLevel=0}={}){
+ const sampler=createTerrainSampler(mesh,.72);
+ sampler.coastline=createCoastlineConstraint(mesh,elevations,waterMask,seaLevel);
+ return sampler;
+}
+function constrainedHeight(coast,side,sum,weight,elevations,sampler,x,y){
+ if(!coast)return weight>1e-15?sum/weight:Number(elevations[nearestTerrainSite(sampler,x,y)]);
+ const magnitude=weight>1e-15?sum/weight:coast.depth[side.nearest];
+ return coast.seaLevel+(side.wet?-1:1)*magnitude*side.fade;
+}
+/** Compact-support interpolant. The saved elevation field is never modified. */
 export function sampleElevation(sampler,elevations,x,y){
  let total=0,weighted=0;
  // The legacy interpolant used inverse-distance weights (1/r²) and placed
@@ -57,15 +68,15 @@ export function sampleElevation(sampler,elevations,x,y){
  // kernel has bounded derivatives at its centre and smoothly tapers out at
  // its search radius. It intentionally smooths the source field, without
  // changing any stored elevation values.
- const radius=sampler.radius;
- const found=visitTerrainSites(sampler,x,y,i=>{
+ const radius=sampler.radius,coast=sampler.coastline,side=coast?.at(x,y);
+ visitTerrainSites(sampler,x,y,i=>{
+  if(coast&&coast.mask[i]!==side.wet)return;
   const site=sampler.mesh.cells[i],distance=Math.hypot(site.x-x,site.y-y);
   const t=clamp(distance/radius,0,1),u=1-t;
   const weight=u*u*u*u*(1+4*t);
-  total+=weight;weighted+=Number(elevations[i])*weight;
+  total+=weight;weighted+=(coast?coast.depth[i]:Number(elevations[i]))*weight;
  });
- if(found>0&&total>1e-15)return weighted/total;
- return Number(elevations[nearestTerrainSite(sampler,x,y)]);
+ return constrainedHeight(coast,side,weighted,total,elevations,sampler,x,y);
 }
 
 /** Material-equipped meshes need two differently weighted properties at
@@ -74,22 +85,19 @@ export function sampleElevation(sampler,elevations,x,y){
  * Earlier elevation-only stages still use the cheaper height-only path. */
 export function sampleTerrainFields(sampler,elevations,siteColors,x,y){
  let heightSum=0,heightWeight=0,colorWeight=0,r=0,g=0,b=0;
- const radius=sampler.radius;
+ const radius=sampler.radius,coast=sampler.coastline,side=coast?.at(x,y);
  visitTerrainSites(sampler,x,y,(i,colorW)=>{
   const site=sampler.mesh.cells[i];
   const t=clamp(Math.hypot(site.x-x,site.y-y)/radius,0,1),u=1-t;
   const heightW=u*u*u*u*(1+4*t);
-  heightSum+=Number(elevations[i])*heightW;heightWeight+=heightW;
+  if(!coast||coast.mask[i]===side.wet){heightSum+=(coast?coast.depth[i]:Number(elevations[i]))*heightW;heightWeight+=heightW;}
   const k=i*3,color=colorW;
   colorWeight+=color;r+=siteColors[k]*color;g+=siteColors[k+1]*color;b+=siteColors[k+2]*color;
  });
- if(heightWeight>1e-15&&colorWeight>1e-15)return {
-  height:heightSum/heightWeight,color:[r/colorWeight,g/colorWeight,b/colorWeight]
- };
+ const height=constrainedHeight(coast,side,heightSum,heightWeight,elevations,sampler,x,y);
+ if(colorWeight>1e-15)return {height,color:[r/colorWeight,g/colorWeight,b/colorWeight]};
  const nearest=nearestTerrainSite(sampler,x,y),k=nearest*3;
- return {height:heightWeight>1e-15?heightSum/heightWeight:Number(elevations[nearest]),
-  color:colorWeight>1e-15?[r/colorWeight,g/colorWeight,b/colorWeight]:
-   [siteColors[k],siteColors[k+1],siteColors[k+2]]};
+ return {height,color:[siteColors[k],siteColors[k+1],siteColors[k+2]]};
 }
 
 /** A high-resolution local tile that exactly stitches into the coarse mesh.
@@ -115,7 +123,7 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
  const sourceColors=options.sourceColors===undefined?
   buildTerrainSiteColors(mesh,options.appearance||null):options.sourceColors;
  const materialColors=sourceColors?new Float32Array(count*3):null;
- const sampler=options.sampler||createTerrainSampler(mesh,.72);
+ const sampler=options.sampler||createSurfaceSampler(mesh,elevations,options);
  // Cache coarse grid corners; the patch can contain more than 65,000
  // vertices but has only a few hundred coarse-grid anchors.
  const anchors=new Float32Array((x1-x0+1)*(y1-y0+1));
@@ -129,12 +137,13 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const xx=(gx/cols-.5)*planeWidth,zz=(gy/rows-.5)*planeDepth;
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const fx=gx-ax,fy=gy-ay;
-  const coarse=(anchorAt(ax,ay)*(1-fx)+anchorAt(ax+1,ay)*fx)*(1-fy)+
-               (anchorAt(ax,ay+1)*(1-fx)+anchorAt(ax+1,ay+1)*fx)*fy;
+  const a=anchorAt(ax,ay),b=anchorAt(ax+1,ay),c=anchorAt(ax,ay+1),d=anchorAt(ax+1,ay+1);
+  const coarse=sampler.coastline?(fx+fy<=1?a+(b-a)*fx+(c-a)*fy:d+(c-d)*(1-fx)+(b-d)*(1-fy)):
+   (a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy;
   const sampled=materialColors?sampleTerrainFields(sampler,elevations,sourceColors,wx,wy):null;
   const accurate=sampled?sampled.height:sampleElevation(sampler,elevations,wx,wy);
   const border=Math.min(gx-x0,x1-gx,gy-y0, y1-gy);
-  const fade=smoothstep(0,1.5,border);
+  const fade=smoothstep(0,sampler.coastline ? .5 : 1.5,border);
   const id=j*stride+i,offset=id*7;
   raw[id]=coarse+(accurate-coarse)*fade;
   vertexData[offset]=xx;vertexData[offset+1]=raw[id]*heightScale;
@@ -168,7 +177,7 @@ export function buildFocusedTerrainPatch(geometry,mesh,elevations,grid,area,opti
   const ax=Math.min(x1-1,Math.floor(gx)),ay=Math.min(y1-1,Math.floor(gy));
   const tx=gx-ax,ty=gy-ay,coarseStride=x1-x0+1;
   const base=(xx,yy,dim)=>normalAnchors[((yy-y0)*coarseStride+xx-x0)*3+dim];
-  const fade=smoothstep(0,1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy));
+  const fade=smoothstep(0,sampler.coastline ? .5 : 1.5,Math.min(gx-x0,x1-gx,gy-y0,y1-gy));
   const blended=[];
   for(let c=0;c<3;c++){
    const anchor=(base(ax,ay,c)*(1-tx)+base(ax+1,ay,c)*tx)*(1-ty)+
@@ -202,7 +211,7 @@ export function buildHydrologySurface(geometry,mesh,elevations,hydrology,options
  }
  const scale=Number(options.worldScale)||4.8/Math.max(geometry.width,geometry.height);
  const sx=geometry.width*scale,sz=geometry.height*scale;
- const sampler=createTerrainSampler(mesh,.72),rivers=[],lakes=[];
+ const sampler=options.sampler||createSurfaceSampler(mesh,elevations,options),rivers=[],lakes=[];
  const maxDischarge=Math.max(.001,Number(hydrology.summary?.maxDischarge)||.001);
  const pixelSpacing=Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/n)*scale;
  const toX=x=>(x/geometry.width-.5)*sx,toZ=z=>(z/geometry.height-.5)*sz;
@@ -292,7 +301,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
  // Position(3) + normal(3) + elevation(1), interleaved for one GPU buffer.
  const raw=new Float32Array(count),inside=new Uint8Array(count);
  let minY=Infinity,maxY=-Infinity;
- const sampler=createTerrainSampler(mesh,.72);
+ const sampler=createSurfaceSampler(mesh,elevations,{...options,seaLevel});
  const sourceColors=buildTerrainSiteColors(mesh,options.appearance||null);
  const materialColors=sourceColors?new Float32Array(count*3):null;
  const planeWidth=geometry.width*worldScale,planeDepth=geometry.height*worldScale;
@@ -326,7 +335,8 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   vertexData[offset+4]=1/size;
   vertexData[offset+5]=-ddz/size;
  }
- const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth);
+ const coastMask=sampler.coastline?Uint8Array.from(raw,h=>h<seaLevel?1:0):null;
+ const levels=buildAdaptiveTerrainLevels(cols,rows,inside,planeWidth,planeDepth,{coastMask});
  // Per-tile height bounds enable safe frustum culling of mixed-detail terrain
  // without using the global mountain range for every otherwise-flat tile.
  for(const tile of levels[0].tiles){
@@ -337,8 +347,8 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
   }
   tile.minY=min-.06;tile.maxY=max+.06;
  }
- const uniformLevels=buildUniformTerrainLevels(cols,rows,inside);
- const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,heightScale,waterMask:options.waterMask});
+ const uniformLevels=buildUniformTerrainLevels(cols,rows,inside,{coastMask});
+ const hydrology=buildHydrologySurface(geometry,mesh,elevations,options.hydrology,{worldScale,heightScale,waterMask:options.waterMask,seaLevel,sampler});
  const seaY=seaLevel*heightScale;
  const ocean=new Float32Array(geometry.shape==='rectangle'?
   [-planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,-planeDepth/2,planeWidth/2,seaY,planeDepth/2,

@@ -205,7 +205,7 @@ export class Terrain3DViewer{
   });
   if(this.disposed)return;
   this.surface=surface;
-  this.detailSource={geometry,mesh,elevations,appearance:options.appearance||null};
+  this.detailSource={geometry,mesh,elevations,appearance:options.appearance||null,waterMask:options.waterMask||null,seaLevel};
   this.detailLimits=closeUpCameraLimits(surface.siteSpacing);
   this._initializeGL();
   this._uploadSurface();

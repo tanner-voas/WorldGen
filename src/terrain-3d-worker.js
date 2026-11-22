@@ -1,5 +1,4 @@
-import {buildElevationSurface,buildFocusedTerrainPatch} from './terrain-3d-model.js';
-import {createTerrainSampler} from './terrain-sampler.js';
+import {buildElevationSurface,buildFocusedTerrainPatch,createSurfaceSampler} from './terrain-3d-model.js';
 import {buildTerrainSiteColors} from './terrain-3d-material.js';
 
 // A close-up worker owns one immutable copy of the world. Camera movement only
@@ -9,9 +8,9 @@ let detailContext=null;
 self.onmessage=({data})=>{
  try{
   if(data.kind==='init-detail'){
-   const {geometry,mesh,elevations,appearance,grid}=data;
+   const {geometry,mesh,elevations,appearance,grid,waterMask,seaLevel}=data;
    detailContext={geometry,mesh,elevations,appearance,grid,
-    sampler:createTerrainSampler(mesh,.72),
+    sampler:createSurfaceSampler(mesh,elevations,{waterMask,seaLevel}),
     sourceColors:buildTerrainSiteColors(mesh,appearance||null)};
    self.postMessage({kind:'detail-ready'});
    return;

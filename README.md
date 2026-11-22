@@ -1,4 +1,4 @@
-# WorldGen v0.1.34
+# WorldGen v0.1.35
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -249,3 +249,7 @@ New generation uses a fixed 42 km reference distance (1,764 km² reference area)
 ## v0.1.34 — Generation constraints
 
 Extreme world aspect ratios now receive an advisory in layer 1. The layer 2 mesh reports the geographic area that could remain land with the protected boundary rim enabled; layer 5 displays the requested and attainable land coverage, actual generated land area, and any world-size limits on coastline widths. The rim remains mandatory whenever Edge ocean bias is positive. Sea-level selection considers all attainable area-weighted thresholds, including the endpoints, and never splits equal-height groups. Historical worlds remain unchanged. See `RELEASE_v0.1.34.md`.
+
+## v0.1.35 — Coastline preservation
+
+From layer 5 onward, the 3D heightfield preserves the locked Voronoi land/ocean mask by separating land elevations and seabed depths and tapering both to sea level where nearest land and water distances meet. Global and adaptive LODs keep shoreline-crossing triangles at base resolution and stitch adjacent coarse blocks. The focused worker and river-height sampler use the same constraint. This changes only derived render geometry; layer 4 and saved generation data remain unchanged. Fine shoreline placement is still limited by the terrain tessellation. See `RELEASE_v0.1.35.md`.
