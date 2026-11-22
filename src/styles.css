@@ -331,3 +331,19 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
  }
  .wg-shell.wg-map-short .wg-overlays{top:109px;max-width:calc(100% - 20px);max-height:max(0px,calc(100% - 120px))}
 }
+
+/* v0.2.5: guided presets sit below the generation pipeline before fine controls. */
+.wg-preset-picker{display:flex;flex-direction:column;gap:7px;max-width:760px;margin:17px 0 14px}
+.wg-preset-picker label{font-size:13px;font-weight:700;color:#d4eadb}
+.wg-preset-picker select{min-height:45px;width:100%;padding:8px 12px;border:1px solid #63877b;background:#203d37;color:#e8f5e8;border-radius:9px;font-size:14px}
+.wg-preset-description{font-size:12px;color:#a6c8b8;line-height:1.5;margin:0;max-width:660px}
+.wg-3d-height-panel input[type=number]{min-height:38px;width:92px;min-width:64px;max-width:130px;flex:1 1 78px;border-radius:8px;background:#122e2a;color:#ecf8e6;text-align:center;border:1px solid #719889;font-size:14px;font-variant-numeric:tabular-nums;font-weight:700;padding:6px}
+.wg-3d-height-unit{font-size:14px;color:#cce8d1;margin-left:-5px}
+.wg-3d-height-panel input[type=number]:focus{outline:2px solid #bae3ad;outline-offset:1px}
+
+.wg-preset-view{max-width:760px;font-size:12px;line-height:1.45;color:#a4c8b7;margin:3px 0 11px}
+.wg-preset-view strong{color:#cce2d1}
+.wg-fine-tune{max-width:760px;border:1px solid #365f52;border-radius:11px;background:#1a332d;margin:12px 0 13px;overflow:visible}
+.wg-fine-tune>summary{padding:13px 14px;color:#e3f1e7;cursor:pointer;min-height:44px;font-weight:680;font-size:13px;touch-action:manipulation}
+.wg-fine-tune[open]>summary{border-bottom:1px solid #365f52}
+.wg-fine-tune>.wg-controls{margin:0;padding:15px 13px 19px;box-sizing:border-box}

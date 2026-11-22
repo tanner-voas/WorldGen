@@ -84,5 +84,6 @@ test('height panel is collapsed initially and includes persistent 5% buttons and
  assert.match(ui,/data-action="3d-height-up"/);
  assert.match(ui,/data-action="3d-height-down"/);
  assert.match(ui,/case '3d-height-up':case '3d-height-down'/);
- assert.match(ui,/World-aware baseline/);
+ assert.match(ui,/id="wg-3d-height-value" type="number"/);
+ assert.match(ui,/readReliefPreference/);
 });

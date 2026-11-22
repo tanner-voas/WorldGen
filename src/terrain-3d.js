@@ -326,7 +326,7 @@ function program(gl){
 }
 
 export class Terrain3DViewer{
- constructor(canvas,{onStatus=()=>{}}={}){
+ constructor(canvas,{onStatus=()=>{},initialHeightMultiplier=1}={}){
   this.canvas=canvas;
   this.onStatus=onStatus;
   this.disposed=false;this.lost=false;this.worker=null;this.gl=null;this.surface=null;this.label='Elevation';
@@ -334,7 +334,10 @@ export class Terrain3DViewer{
   this.pointers=new Map();this.gesture=null;this.pendingFrame=0;this.tileLodHistory=new Map();
   this.tapStart=null;this.lastTap=null;this.lastFocusTime=-Infinity;this.fitActive=false;this.renderedFrame=null;
   // Height control is viewer-only. Saved elevation and GPU buffers stay unchanged.
-  this.heightSteps=0;this.heightMultiplier=1;this.heightTimer=null;this.heightStateCallback=null;
+  const initial=Number(initialHeightMultiplier);
+  this.heightMultiplier=Number.isFinite(initial)?Math.max(.01,Math.min(1000,initial)):1;
+  this.heightSteps=Math.log(this.heightMultiplier)/Math.log(1.05);
+  this.heightTimer=null;this.heightStateCallback=null;
   this.detailWorker=null;this.detailState=null;this.detailSignature='';this.detailPatches=new Map();this.activeDetailIds=new Set();this.detailSource=null;this.detailFailure=null;
   this.onLost=e=>{e.preventDefault();if(this.disposed)return;this.lost=true;this.renderedFrame=null;this.clearanceCache=null;
    if(this.pendingFrame){cancelAnimationFrame(this.pendingFrame);this.pendingFrame=0;}
@@ -717,7 +720,9 @@ export class Terrain3DViewer{
   */
  queueHeightStep(direction,onState=()=>{}){
   if(this.disposed||![1,-1].includes(direction))return;
-  this.heightSteps=(this.heightSteps||0)+direction;
+  const candidate=(this.heightSteps||0)+direction;
+  const proposed=Math.pow(1.05,candidate);
+  this.heightSteps=proposed<.01?Math.log(.01)/Math.log(1.05):proposed>1000?Math.log(1000)/Math.log(1.05):candidate;
   this.heightStateCallback=onState;
   if(this.heightTimer!==null)clearTimeout(this.heightTimer);
   onState(this.heightSteps,true);
@@ -727,6 +732,15 @@ export class Terrain3DViewer{
    this.applyHeightSteps();
    this.heightStateCallback?.(this.heightSteps,false);
   },2000);
+ }
+ /** Apply an exact typed multiplier without changing the saved terrain data. */
+ setHeightMultiplier(value){
+  if(this.disposed)return;
+  const parsed=Number(value);
+  if(!Number.isFinite(parsed)||parsed<.01||parsed>1000)throw Error('Relief multiplier out of range');
+  if(this.heightTimer!==null){clearTimeout(this.heightTimer);this.heightTimer=null;}
+  this.heightSteps=Math.log(parsed)/Math.log(1.05);
+  this.applyHeightSteps();
  }
  applyHeightSteps(){
   if(this.disposed)return;

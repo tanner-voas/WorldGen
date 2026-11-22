@@ -1,4 +1,6 @@
 import {geometryConstraintReport,meshConstraintReport} from './generation-constraints.js';
+import {stagePresets,matchingPreset,applyStagePreset} from './presets.js';
+import {readReliefPreference,writeReliefPreference,formatRelief,clampRelief} from './relief-setting.js';
 import {REFERENCE_AREA_KM2} from './geographic-units.js';
 import {DEFAULTS,STAGES,IMPLEMENTED,stageUsesSeed,newWorld,prepareWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
@@ -10,9 +12,10 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.4',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.5',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
+let reliefMultiplier=readReliefPreference();
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -44,7 +47,7 @@ const OPTIONS={
  5:[['oceanOffset','Ocean elevation offset (m)','range',-1.8,1.8,0.01,'linear']],
  6:[['edgeOcean','Edge lowering','range',0,1.5,0.05,'linear'],['edgeFade','Edge falloff (km)','range',0.5,5,0.25,'linear'],['setbackStrength','Coastal setback strength','range',0,1.8,0.05,'linear'],['setbackWidth','Coastal setback width (km)','range',2,18,0.5,'linear']],
  7:[['ridge','Ridge strength','range',0,1.6,0.05,'linear'],['detail','Terrain variation','range',0,1.6,0.05,'linear'],['valleys','Valley incision','range',0,1.6,0.05,'linear'],['volcanism','Volcanic activity','range',0,1,0.025,'linear']],
- 8:[['rainfall','Approx. rainfall','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
+ 8:[['rainfall','Erosion water input','range',0,1.6,0.05,'linear'],['hydraulic','Water erosion','range',0,1.6,0.05,'linear'],['thermal','Slope weathering','range',0,1.6,0.05,'linear'],['hardness','Rock resistance','range',0,1,0.05,'linear'],['iterations','Erosion passes','range',1,40,1,'linear']],
  9:[['equatorTemp','Equatorial temperature (°C)','range',10,40,0.5,'linear'],['latitudeCenter','Central latitude (°)','range',-70,70,2,'linear'],['latitudeSpan','Latitude span (°)','range',20,180,5,'linear'],['axialTilt','Axial tilt (°)','range',0,45,0.5,'linear'],['rainfall','Annual rainfall baseline (mm)','range',100,4000,50,'linear'],['windDirection','Wind direction (°)','range',-180,180,5,'linear'],['rainShadow','Mountain rain shadow','range',0,2,0.05,'linear'],['maritime','Ocean moderation','range',0,1.5,0.05,'linear']],
  10:[['runoffScale','Runoff multiplier','range',0.1,2.5,0.1,'linear'],['infiltration','Ground infiltration','range',0,0.95,0.05,'linear'],['evaporation','Evaporation','range',0,1.5,0.05,'linear'],['riverThreshold','River threshold (km²)','range',2,120,1,'linear'],['lakeDepth','Minimum lake depth (m)','range',0.002,0.3,0.002,'linear'],['minLakeCells','Minimum lake size (cells)','range',1,15,1,'linear']],
  11:[['weathering','Mineral weathering','range',0,2,0.1,'linear'],['organicInput','Organic accumulation','range',0,2,0.1,'linear'],['alluvialInput','Alluvial deposition','range',0,2,0.1,'linear'],['permeabilityBias','Permeability factor','range',0.25,2,0.05,'linear'],['groundwaterRecharge','Groundwater recharge potential','range',0,2,0.1,'linear']],
@@ -76,7 +79,7 @@ const PARAM_HELP={
  detail:['Terrain variation','Fine-scale variation added to existing elevations. Higher gives rougher and more diverse local terrain; lower keeps smoother landscapes.'],
  valleys:['Valley incision','How strongly valley-like features cut into the terrain. More produces deeper local valleys; less preserves uplands.'],
  volcanism:['Volcanic activity','Likelihood of volcanic landforms near suitable plate boundaries. Increasing it produces more volcanic cells; decreasing it reduces them.'],
- rainfall:['Rainfall','At layer 7: preliminary runoff input for erosion, increasing drainage and sediment transport. At layer 8: baseline annual rainfall in mm, which scales the climate rainfall field without changing earlier erosion.'],
+ rainfall:['Rainfall or erosion water input','In the erosion stage this controls preliminary water-driven erosion and sediment transport, not the eventual climate. In the climate stage it sets annual rainfall in millimetres; it does not retroactively change locked erosion.'],
  hydraulic:['Water erosion','How strongly downhill flowing water cuts into the terrain. More carves deeper flow routes and increases sediment transport; less leaves landforms closer to their input.'],
  thermal:['Slope weathering','Movement of material from steep slopes to nearby lower cells. More smooths and redistributes slopes; less preserves sharp terrain changes.'],
  hardness:['Rock resistance','How resistant material is to erosion and weathering. Higher values reduce removal rates; lower values allow stronger erosion.'],
@@ -132,6 +135,8 @@ let firstFit=true,movePointers=new Map(),gesture=null,panMoved=false;
 let geometryCache={mesh:null,paths:null,bounds:null,spatial:null},colorCache={mesh:null,record:null,stage:0,mode:null,colors:null};
 let measureMode=false,measurePoints=[];
 let drawerDrag=null,suppressHandleClick=false,unlocking=false;
+const expandedFineTuneStages=new Set();
+const PRESET_PREVIEWS={7:'Landforms and 3D terrain',8:'Erosion / deposition and drainage flow',9:'Temperature, precipitation and seasonal maps',10:'Rivers, lakes, catchments and watersheds',11:'Soil types, depth, fertility and groundwater',12:'Biomes, ecological productivity and tree potential',13:'Vegetation cover, canopy, ground cover and biomass'};
 function db(){
  if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
   if(!('indexedDB' in globalThis)){reject(Error('IndexedDB unavailable'));return;}
@@ -320,7 +325,11 @@ function rebuildUI(){
  let html=`<div class="wg-stage-title"><div><span class="wg-layer-label">LAYER ${String(stage).padStart(2,'0')} ${editable?'· WORKING':stage<=workspace.locked.length?'· LOCKED':'· NOT AVAILABLE'}</span><h2>${escapeHTML(stageText(stage))}</h2><p>${escapeHTML(STAGES[stage]?.[1]||'')}</p></div><button class="wg-panel-lock wg-layer-toggle" data-action="lock-or-unlock" aria-label="Lock or unlock this layer" ${!available||(!editable&&stage>workspace.locked.length)?'hidden':''}>Lock</button></div>`;
  if(!available){html+='<p class="wg-hint">This generation layer is planned for a future release.</p>';}
  else if(editable){
+  const presets=stagePresets(stage,geometryData()),selectedPreset=matchingPreset(stage,settings,geometryData());
+  html+=`<div class="wg-preset-picker"><label for="wg-preset">Starting preset</label><select id="wg-preset" aria-label="Choose preset for ${escapeHTML(stageText(stage))}"><option value="" ${!selectedPreset?'selected':''}>Custom settings</option>${presets.map(p=>`<option value="${p.id}" ${selectedPreset?.id===p.id?'selected':''}>${escapeHTML(p.label)}</option>`).join('')}</select><p id="wg-preset-description" class="wg-preset-description">${escapeHTML(selectedPreset?.description||'Your current manually adjusted settings. Choose a preset to replace the layer parameters without changing its random seed.')}</p></div>`;
+  if(stage>=7){html+=`<p class="wg-preset-view"><strong>Preview changes in:</strong> ${escapeHTML(PRESET_PREVIEWS[stage])}</p><details class="wg-fine-tune" data-fine-tune-stage="${stage}" ${expandedFineTuneStages.has(stage)?'open':''}><summary>Fine-tune parameters (${OPTIONS[stage].length}${stageUsesSeed(stage)?' + seed':''})</summary>`;}
   html+=`<div class="wg-controls">${OPTIONS[stage].filter(option=>(stage!==2||option[0]!=='jitter'||settings.distribution==='jittered')&&(stage!==1||((settings.shape==='rectangle'&&!['radius','radiusX','radiusY'].includes(option[0]))||(settings.shape==='circle'&&!['width','height','radiusX','radiusY'].includes(option[0]))||(settings.shape==='ellipse'&&!['width','height','radius'].includes(option[0]))))).map(settingRow).join('')}${!stageUsesSeed(stage)?'':`<div class="wg-seed-row"><label for="wg-seed">Random seed</label><button type="button" class="wg-info" data-info="seed" aria-label="About random seed">i</button><div class="wg-seed-input"><input id="wg-seed" type="number" inputmode="numeric" value="${settings.seed}" min="0" max="4294967295"><button type="button" data-action="reroll" aria-label="Reroll random seed" title="Reroll random seed">↻</button></div></div>`}</div>`;
+  if(stage>=7)html+='</details>';
   if(stage===1||stage===2||stage===5||stage===6)html+='<div id="wg-constraints" hidden></div>';
   if(stage===4)html+='<p class="wg-hint">Elevation is entirely independent of ocean and continental ratios. White represents zero altitude, red positive altitude, and blue negative altitude.</p>';
   if(stage===5)html+='<p class="wg-hint">Ocean flooding uses an exact zero-level threshold after the elevation offset. No target land percentage is imposed.</p>';
@@ -397,6 +406,7 @@ function applyParameter(key,raw,rebuild=false){
  }
  if(workspace.working.settings[key]===value)return;
  workspace.working.settings[key]=value;
+ updatePresetSelection();
  dirty=true;void persist();showBusy(generating);
  if(currentStage()===1){
   // Shape/dimensions can invalidate the viewport and every dependent map.
@@ -404,6 +414,13 @@ function applyParameter(key,raw,rebuild=false){
  }else if(rebuild)rebuildUI();else syncControl(key);
  updateConstraintReport();
  scheduleGeneration(row[2]==='select'?50:row[2]==='area'?650:380);
+}
+function updatePresetSelection(){
+ const select=root.querySelector('#wg-preset'),description=root.querySelector('#wg-preset-description');
+ if(!select||!description)return;
+ const current=matchingPreset(currentStage(),activeSettings(),geometryData());
+ select.value=current?.id||'';
+ description.textContent=current?.description||'Your current manually adjusted settings. Choose a preset to replace the layer parameters without changing its random seed.';
 }
 function syncControl(key){
  const value=workspace.working.settings[key],row=OPTIONS[currentStage()]?.find(r=>r[0]===key);
@@ -898,18 +915,20 @@ function showTerrain3D(){
    <button data-action="3d-fit">Fit</button>
    <button data-action="3d-zoom-in" aria-label="Zoom in">+</button>
   </div>
-  <button class="wg-3d-height-toggle" data-action="3d-height-toggle" aria-expanded="false" aria-controls="wg-3d-height-panel">Relief · <span id="wg-3d-height-summary">1.00×</span><span aria-hidden="true">⌄</span></button>
+  <button class="wg-3d-height-toggle" data-action="3d-height-toggle" aria-expanded="false" aria-controls="wg-3d-height-panel">Relief · <span id="wg-3d-height-summary">${formatRelief(reliefMultiplier)}</span><span aria-hidden="true">⌄</span></button>
   <div id="wg-3d-height-panel" class="wg-3d-height-panel" hidden>
    <span class="wg-3d-height-title">Vertical relief</span>
    <button data-action="3d-height-down" aria-label="Decrease vertical relief by 5%">−</button>
-   <output id="wg-3d-height-value" aria-live="polite">1.00×</output>
+   <label class="wg-screen-reader-only" for="wg-3d-height-value">Vertical relief multiplier</label>
+   <input id="wg-3d-height-value" type="number" inputmode="decimal" min="0.01" max="1000" step="any" value="${reliefMultiplier}" aria-label="Vertical relief multiplier" />
+   <span class="wg-3d-height-unit">×</span>
    <button data-action="3d-height-up" aria-label="Increase vertical relief by 5%">+</button>
-   <span class="wg-3d-height-state" id="wg-3d-height-state">World-aware baseline · ${baseExaggeration.toFixed(2)}× physical height</span>
+   <span class="wg-3d-height-state" id="wg-3d-height-state">Applied · ${(baseExaggeration*reliefMultiplier).toPrecision(3)}× physical height</span>
   </div>
   <div class="wg-3d-foot"><span id="wg-3d-status">Preparing surface…</span><span>Drag to orbit · pinch to zoom / pan · double-tap to focus</span></div>
  </div>`,'wg-3d-modal');
  const canvasEl=root.querySelector('#wg-3d-canvas'),message=root.querySelector('#wg-3d-status');
- const viewer=new Terrain3DViewer(canvasEl,{onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
+ const viewer=new Terrain3DViewer(canvasEl,{initialHeightMultiplier:reliefMultiplier,onStatus:text=>{if(terrainViewer!==viewer)return;if(message)message.textContent=text;}});
  terrainViewer=viewer;
  viewer.initialize(geometry,mesh,terrain.elevations,{seaLevel:terrain.seaLevel,showOcean:terrain.hasCoast,label:selected>=9?`${terrain.label} + ${terrainAppearanceName(selected).toLowerCase()}`:terrain.label,hydrology:selected>=10?latestData(10):null,waterMask:selected>=6?latestData(6)?.water:selected>=5?latestData(5)?.water:null,appearance}).then(()=>{
   if(viewer.disposed)return;
@@ -927,6 +946,14 @@ function releaseTerrainViewer(){
 function closeModal(){releaseTerrainViewer();root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
 function changeWorld(world){if(!startupReady)return;const next=prepareWorld(world);requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=next;resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());prepareWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
+function renderReliefState(value,pending=false){
+ reliefMultiplier=clampRelief(value);
+ writeReliefPreference(reliefMultiplier);
+ const number=root.querySelector('#wg-3d-height-value'),summary=root.querySelector('#wg-3d-height-summary'),state=root.querySelector('#wg-3d-height-state');
+ if(number&&document.activeElement!==number)number.value=String(Number(reliefMultiplier.toPrecision(7)));
+ if(summary)summary.textContent=formatRelief(reliefMultiplier);
+ if(state)state.textContent=`${pending?'Applying after 2 seconds…':'Applied'} · ${(terrainVerticalScales(geometryData()).baseExaggeration*reliefMultiplier).toPrecision(3)}× physical height`;
+}
 async function handleAction(action,button){
  switch(action){
   case 'home':{if(host?.returnToLauncher){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))host.returnToLauncher();}else showLibrary();break;}
@@ -961,16 +988,7 @@ async function handleAction(action,button){
    if(!terrainViewer)break;
    terrainViewer.queueHeightStep(action==='3d-height-up'?1:-1,(steps,pending)=>{
     if(terrainViewer?.disposed)return;
-    const multiplier=Math.pow(1.05,steps);
-    const formatted=Number.isFinite(multiplier)?
-     `${multiplier>=.01&&multiplier<100?multiplier.toFixed(2):multiplier.toPrecision(3)}×`:
-     'Extremely high ×';
-    const value=root.querySelector('#wg-3d-height-value');
-    const summary=root.querySelector('#wg-3d-height-summary');
-    const state=root.querySelector('#wg-3d-height-state');
-    if(value)value.textContent=formatted;
-    if(summary)summary.textContent=formatted;
-    if(state){const exaggeration=terrainVerticalScales(geometryData()).baseExaggeration*multiplier;state.textContent=`${pending?'Applying after 2 seconds…':'Applied'} · ${Number.isFinite(exaggeration)?exaggeration.toPrecision(3):'Extreme'}× physical height`;}
+    renderReliefState(Math.pow(1.05,steps),pending);
    });
    break;
   }
@@ -992,6 +1010,13 @@ async function handleAction(action,button){
  }
 }
 function bindEvents(){
+ root.addEventListener('toggle',event=>{
+  const details=event.target;
+  if(!details.matches?.('[data-fine-tune-stage]'))return;
+  const stage=Number(details.dataset.fineTuneStage);
+  if(details.open)expandedFineTuneStages.add(stage);
+  else expandedFineTuneStages.delete(stage);
+ },true);
  root.addEventListener('click',event=>{
   if(suppressHandleClick&&event.target.closest('.wg-console-handle')){suppressHandleClick=false;event.preventDefault();return;}
   const stageBtn=event.target.closest('[data-stage]');if(stageBtn&&!stageBtn.disabled){workspace.viewStage=Number(stageBtn.dataset.stage);selectedId=null;persist('preferences');rebuildUI();return;}
@@ -1012,8 +1037,27 @@ function bindEvents(){
  });
  root.addEventListener('change',event=>{
   const el=event.target;
+  if(el.id==='wg-3d-height-value'){
+   const parsed=Number(el.value);
+   if(!el.value.trim()||!Number.isFinite(parsed)||parsed<.01||parsed>1000){
+    notice('Vertical relief must be from 0.01 to 1,000×',true);
+    el.value=String(reliefMultiplier);return;
+   }
+   terrainViewer?.setHeightMultiplier(parsed);
+   renderReliefState(parsed);
+   el.value=String(Number(reliefMultiplier.toPrecision(7)));
+   return;
+  }
   if(el.dataset?.number){const key=el.dataset.number;applyParameter(key,el.value.trim()===''?'':storedParameter(key,Number(el.value)),true);return;}
   if(el.dataset?.setting){applyParameter(el.dataset.setting,el.value,true);return;}
+  if(el.id==='wg-preset'){
+   if(!el.value)return;
+   const stage=currentStage();
+   if(viewStage()!==stage||stage>IMPLEMENTED)return;
+   workspace.working.settings=applyStagePreset(stage,activeSettings(),geometryData(),el.value);
+   dirty=true;void persist();rebuildUI();scheduleGeneration(stage===2?300:75);
+   return;
+  }
   if(el.id==='wg-map-layer-select'){workspace.viewStage=Number(el.value);selectedId=null;persist('preferences');rebuildUI();return;}
   if(el.id==='wg-edges'){workspace.showEdges=el.checked;persist('preferences');schedulePaint();}
   if(el.id==='wg-plate-borders'){workspace.showPlateBorders=el.checked;persist('preferences');schedulePaint();}

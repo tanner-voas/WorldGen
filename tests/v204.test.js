@@ -42,8 +42,8 @@ test('v0.2.4 map layout can calculate the header in both standalone and launcher
  assert.equal(safeArea.classes.get('wg-map-compact'),false);
 });
 
-test('v0.2.4 keeps v0.2.3 world storage and labels this release correctly',()=>{
- assert.match(source,/APP_VERSION='0\.2\.4',DB_NAME='worldgen-dev-023'/);
+test('v0.2.5 keeps the current world storage and labels this release correctly',()=>{
+ assert.match(source,/APP_VERSION='0\.2\.5',DB_NAME='worldgen-dev-023'/);
  const packageInfo=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
- assert.equal(packageInfo.version,'0.2.4');
+ assert.equal(packageInfo.version,'0.2.5');
 });

@@ -1,4 +1,24 @@
-# WorldGen v0.2.3
+# WorldGen v0.2.5
+
+
+## v0.2.5 presets and advanced settings
+
+Every editable generation layer offers a **Starting preset** with a description. Presets
+are alternative sets of ordinary editable values, **not** separate generators; the
+random seed is retained when a preset changes. Cell count and distance-oriented
+presets adapt to the physical map area. The complete settings for stages 7–13
+remain available in the expandable **Fine-tune parameters** section, and their
+map-view previews identify where the resulting differences can be inspected.
+
+The 3D terrain viewer's **Vertical relief** multiplier accepts direct numeric entry
+(0.01–1,000×) as well as the existing 5% buttons. This is an in-session
+view preference and never alters stored elevations or world snapshots.
+
+For browser UI smoke tests in restricted runners, execute
+`python3 tests/browser-smoke.py` with Python Playwright and Chromium installed.
+The test loads source modules into Chromium without network navigation and
+uses in-memory Worker/IndexedDB shims; final Safari/WebGL2 validation still
+requires a browser capable of those features.
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
