@@ -1,4 +1,4 @@
-# WorldGen v0.1.28
+# WorldGen v0.1.29
 
 An offline-capable, progressively generated landscape explorer with interactive 2D maps and a WebGL2 3D terrain viewer. Build targets:
 
@@ -217,3 +217,7 @@ The 3D viewer now selects terrain mesh detail **per geographical tile**, instead
 
 Use `npm test` and `python3 package.py` to validate this release. Browser-driven
 GPU screenshots remain unverified here; real iPhone Safari validation is needed.
+
+## v0.1.29 — Safe startup and recovery
+
+WorldGen now pauses generation and automatic saving when the stored world or checkpoint library cannot be safely loaded. Retry, export the original record or a checkpoint, or explicitly restore a checkpoint/start a replacement world from the recovery screen. Replacement is enabled only after storage can be read and its transaction commits; the existing world is not automatically overwritten on a failed load. See `RELEASE_v0.1.29.md`.

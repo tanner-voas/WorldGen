@@ -1,12 +1,14 @@
-import {DEFAULTS,STAGES,IMPLEMENTED,SCHEMA_VERSION,newWorld,validateWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
+import {DEFAULTS,STAGES,IMPLEMENTED,newWorld,upgradeWorld,snapshotThroughStage,LANDFORM_NAMES,SOIL_NAMES,BIOME_NAMES,VEGETATION_NAMES,cellArea,landAreaFraction,generateGeometry,insideGeometry,meshTargetCount,MAX_CELLS} from './engine.js';
 import {buildCellIndex,cellsInBounds,cellAtPoint} from './spatial.js';
 import {MIN_RENDER_STAGE,RENDER_SIZE_OPTIONS,defaultRenderSettings,renderModeOptions,renderOptionSupport,outputDimensions,detailPreset,renderInsideGeometry,rasterDimensions,comparisonStages,elevationsAt,distanceScale,createTerrainSampler,riverShorePoint} from './render.js';
 import {rasterize} from './raster.js';
 import {Terrain3DViewer} from './terrain-3d.js';
 import {ELEVATION_RENDER_STAGE,selectTerrainSource} from './terrain-3d-model.js';
 import {selectTerrainAppearance,terrainAppearanceName} from './terrain-3d-material.js';
+import {WORKSPACE_KEY,createStartupStorage,readRecoveryCheckpoint} from './startup-storage.js';
 
-const APP_VERSION='0.1.28',DB_NAME='worldgen-v1',KEY='workspace';
+const APP_VERSION='0.1.29',DB_NAME='worldgen-v1',KEY=WORKSPACE_KEY;
+let startupReady=false;
 let terrainViewer=null;
 const host=globalThis.__APP_LAUNCHER__;
 const root=document.querySelector('#app');
@@ -135,22 +137,52 @@ function db(){
   if(!('indexedDB' in globalThis)){reject(Error('IndexedDB unavailable'));return;}
   const req=indexedDB.open(DB_NAME,1);
   req.onupgradeneeded=()=>{const database=req.result;if(!database.objectStoreNames.contains('data'))database.createObjectStore('data');};
-  req.onerror=()=>reject(req.error||Error('Storage unavailable'));req.onsuccess=()=>resolve(req.result);
-  req.onblocked=()=>reject(Error('Local storage is blocked by another tab'));
+  let blocked=false;
+  req.onerror=()=>reject(req.error||Error('Storage unavailable'));
+  req.onsuccess=()=>{
+   const database=req.result;
+   if(blocked){database.close();return;}
+   database.onversionchange=()=>{database.close();dbPromise=null;};
+   database.onclose=()=>{dbPromise=null;};
+   resolve(database);
+  };
+  req.onblocked=()=>{blocked=true;reject(Error('Local storage is blocked by another tab'));};
  }).catch(error=>{
   // A temporary open failure must not permanently poison future saves.
   dbPromise=null;throw error;
  });
  return dbPromise;
 }
-async function storeGet(key){const database=await db();return new Promise((resolve,reject)=>{const req=database.transaction('data').objectStore('data').get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
+async function storeGet(key){
+ const database=await db();return new Promise((resolve,reject)=>{
+  const tx=database.transaction('data'),store=tx.objectStore('data'),req=store.get(key);let value,invalid=false;
+  req.onsuccess=()=>{
+   value=req.result;
+   // IndexedDB returns undefined for both an absent key and a stored undefined.
+   // Treat the latter as unreadable instead of permitting a fresh autosave.
+   if(value===undefined){const exists=store.count(key);exists.onsuccess=()=>{invalid=exists.result!==0;};}
+  };
+  tx.oncomplete=()=>invalid?reject(Error(`Stored record ${key} is undefined`)):resolve(value);
+  tx.onerror=tx.onabort=()=>reject(tx.error||Error(`Could not read ${key}`));
+ });
+}
+async function commitStartupChanges(changes){
+ const database=await db();return new Promise((resolve,reject)=>{
+  const tx=database.transaction('data','readwrite'),store=tx.objectStore('data');
+  tx.oncomplete=resolve;tx.onerror=tx.onabort=()=>reject(tx.error||Error('Startup storage transaction failed'));
+  try{for(const change of changes){if(change.delete)store.delete(change.key);else store.put(change.value,change.key);}}
+  catch(error){try{tx.abort();}catch{}reject(error);}
+ });
+}
 async function storePut(key,value){const database=await db();return new Promise((resolve,reject)=>{const tx=database.transaction('data','readwrite');tx.objectStore('data').put(value,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
 function persist(){
+ if(!startupReady)return;
  clearTimeout(persistTimer);
  persistTimer=setTimeout(()=>{persistTimer=null;void flushPersist();},260);
 }
 function flushPersist(){
  clearTimeout(persistTimer);persistTimer=null;
+ if(!startupReady)return Promise.resolve();
  workspace.updated=new Date().toISOString();
  const copy=structuredClone(workspace);
  writeQueue=writeQueue.catch(()=>{}).then(()=>storePut(KEY,copy)).then(()=>{
@@ -333,8 +365,9 @@ function describeStage(stage,data){if(!data)return 'No preview generated yet.';s
 }}
 function nextSeed(){return Math.floor(Math.random()*0xffffffff);}
 function stopWorker(){if(worker){worker.terminate();worker=null;}if(cancelPending){const cancel=cancelPending;cancelPending=null;cancel();}}
-function scheduleGeneration(ms=230){clearTimeout(rebuildTimer);rebuildTimer=setTimeout(()=>void generateCurrent(),ms);}
+function scheduleGeneration(ms=230){if(!startupReady)return;clearTimeout(rebuildTimer);rebuildTimer=setTimeout(()=>void generateCurrent(),ms);}
 async function generateCurrent(){
+ if(!startupReady)return;
  const stage=currentStage();if(stage>IMPLEMENTED)return;
  stopWorker();
  const id=++requestId;progressPercent=0;const settings=structuredClone(workspace.working.settings);const settingsStamp=JSON.stringify(settings);const locked=workspace.locked.map(({stage,data})=>({stage,data}));
@@ -1125,7 +1158,7 @@ function releaseRender(){
  if(renderOutputCanvas){renderOutputCanvas.width=renderOutputCanvas.height=1;renderOutputCanvas=null;}
 }
 function closeModal(){releaseRender();root.querySelector('#wg-modal-host').innerHTML='';activeModal=false;}
-function changeWorld(world){requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);renderDraft=null;resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
+function changeWorld(world){if(!startupReady)return;requestId++;stopWorker();clearTimeout(rebuildTimer);generating=false;measurePoints=[];measureMode=false;workspace=upgradeWorld(world);renderDraft=null;resetBorderCache();dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));selectedId=null;firstFit=!workspace.viewport;void persist();closeModal();rebuildUI();requestAnimationFrame(()=>{resizeCanvas();if(firstFit)fitMap();else restoreViewport();});if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(150);}
 async function handleImport(file){if(!file)return;try{if(file.size>60*1024*1024)throw Error('Files over 60 MB are not supported');const parsed=JSON.parse(await file.text());upgradeWorld(parsed);if(!confirm(`Load '${parsed.name}'? Your current working state will be replaced. Export or save a checkpoint first to preserve it.`))return;changeWorld(parsed);notice('Complete world imported');}catch(error){notice(`Import failed: ${error.message}`,true);}finally{root.querySelector('#wg-import').value='';}}
 async function handleAction(action,button){
  switch(action){
@@ -1257,37 +1290,55 @@ function bindEvents(){
  if('ResizeObserver' in globalThis)new ResizeObserver(resizeCanvas).observe(canvas);
  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushViewport();void flushPersist();}});
 }
-async function initialize(){
- // Keep the loaded value available after the storage try/catch. Previously,
- // `stored` was block-scoped inside try but referenced below it, causing a
- // ReferenceError in Safari before WorldGen could open inside AppLauncher.
- let stored=null;
- try{
-  const [saved,index,legacy,indexMigrated]=await Promise.all([storeGet(KEY),storeGet('checkpoint-index'),storeGet('snapshots'),storeGet('checkpoint-index-v2')]);
-  if(saved){workspace=upgradeWorld(saved);stored=saved;}
-  if(Array.isArray(index)){
-   snapshots=index.filter(s=>s?.id&&s?.stage&&s?.name);
-   if(!indexMigrated){
-    // Index entries only contain metadata, so migrate their stage labels
-    // cheaply. Each actual checkpoint is upgraded when opened/exported.
-    snapshots=snapshots.map(s=>({...s,stage:Math.min(IMPLEMENTED,s.stage+1)}));
-    await storePut('checkpoint-index',snapshots);
-    await storePut('checkpoint-index-v2',true);
-   }
-  }
-  else if(Array.isArray(legacy)){
-   // One-time, non-destructive migration from v0.1.0's giant snapshots array.
-   const valid=legacy.filter(s=>s?.id&&[1,SCHEMA_VERSION].includes(s?.world?.schema));
-   for(const s of valid)await storePut(`checkpoint:${s.id}`,upgradeWorld(s.world));
-   snapshots=valid.map(({id,name,created,stage})=>({id,name,created,stage:stage+1}));
-   await storePut('checkpoint-index',snapshots);
-   await storePut('checkpoint-index-v2',true);
-   await storeDelete('snapshots');
-  }
- }catch(error){console.warn('WorldGen startup storage:',error);storageHealthy=false;}
+const startupStorage=createStartupStorage({read:storeGet,commit:commitStartupChanges});
+function openReadyWorld(result){
+ workspace=result.world;snapshots=result.snapshots;storageHealthy=true;storageWarned=false;
  dirty=!!(workspace.working.data&&workspace.working.dataSettings&&JSON.stringify(workspace.working.settings)!==JSON.stringify(workspace.working.dataSettings));
- if(workspace.viewport&&Number.isFinite(workspace.viewport.scale)&&Number.isFinite(workspace.viewport.centerX)&&Number.isFinite(workspace.viewport.centerY))firstFit=false;
+ firstFit=!(workspace.viewport&&Number.isFinite(workspace.viewport.scale)&&Number.isFinite(workspace.viewport.centerX)&&Number.isFinite(workspace.viewport.centerY));
  workspace.viewStage=clamp(Math.round(Number(workspace.viewStage)||1),1,Math.min(IMPLEMENTED,workspace.working.stage));
- buildShell();if(stored?.schema===1)void flushPersist();if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(100);
+ startupReady=true;buildShell();
+ if(currentStage()<=IMPLEMENTED&&(!workspace.working.data||dirty))scheduleGeneration(100);
+}
+function showStartupRecovery(state){
+ startupReady=false;storageHealthy=false;
+ console.warn('WorldGen startup storage:',state.errors.join('; '));
+ const entries=state.library?.snapshots||[];
+ root.innerHTML=`<div id="worldgen-root" class="wg-recovery-shell"><main class="wg-recovery" aria-labelledby="wg-recovery-title">
+  <div class="wg-eyebrow">WORLDGEN <span>v${APP_VERSION}</span></div>
+  <h1 id="wg-recovery-title">World recovery</h1>
+  <p>Your saved world could not be opened safely. Generation and automatic saving are paused. Nothing has been replaced.</p>
+  <div class="wg-recovery-errors" role="alert">${state.errors.map(error=>`<p>${escapeHTML(error)}</p>`).join('')}</div>
+  <button class="wg-primary" data-recovery="retry">Retry storage load</button>
+  ${state.rawAvailable?'<button class="wg-secondary" data-recovery="export-raw">Export original working record</button>':''}
+  <h2>Saved checkpoints</h2>
+  ${state.library?entries.length?`<div class="wg-snapshot-list">${entries.map((s,i)=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>Layer ${s.stage}</small></div><div><button data-recovery="restore" data-index="${i}">Restore</button><button data-recovery="export" data-index="${i}">Export</button></div></div>`).join('')}</div>`:'<p>No named checkpoints were found.</p>':'<p>The checkpoint library is unavailable. Retry to read it; it has not been reset.</p>'}
+  <p class="wg-modal-caption">Restoring a checkpoint or creating a new world replaces the working record only after storage can be read and the replacement has been saved successfully. Export your original record first if available.</p>
+  <button class="wg-secondary" data-recovery="new">Start a new world…</button>
+  ${host?.returnToLauncher?'<button class="wg-secondary" data-recovery="home">Return to launcher</button>':''}
+  <p class="wg-recovery-status" role="status" aria-live="polite"></p>
+ </main></div>`;
+ const panel=root.querySelector('.wg-recovery'),status=panel.querySelector('.wg-recovery-status');
+ let busy=false;
+ async function act(button){
+  if(busy)return;
+  const action=button.dataset.recovery,entry=entries[Number(button.dataset.index)];
+  if(action==='home'){host.returnToLauncher();return;}
+  if(action==='new'&&!confirm('Replace the current working world with a new world? Named checkpoints will be preserved. Export the original record first if needed.'))return;
+  if(action==='restore'&&(!entry||!confirm(`Restore checkpoint '${entry.name}'? This replaces the current working record.`)))return;
+  busy=true;for(const control of panel.querySelectorAll('button'))control.disabled=true;
+  status.textContent='Working…';
+  try{
+   if(action==='export-raw'){downloadText(JSON.stringify(state.raw,null,2),'worldgen-recovery-original.json');status.textContent='Original record exported.';return;}
+   if(action==='export'){const world=await readRecoveryCheckpoint(storeGet,state,entry.id);exportWorld(world,entry.stage);status.textContent='Checkpoint exported.';return;}
+   const result=action==='retry'?await startupStorage.load():await startupStorage.replace(action==='new'?{kind:'new',confirmed:true}:{kind:'checkpoint',id:entry.id,confirmed:true});
+   if(result.kind==='ready')openReadyWorld(result);else showStartupRecovery(result);
+  }catch(error){status.textContent=`Recovery could not finish: ${error?.message||error}.`;}
+  finally{busy=false;for(const control of panel.querySelectorAll('button'))control.disabled=false;}
+ }
+ for(const button of panel.querySelectorAll('[data-recovery]'))button.addEventListener('click',()=>void act(button));
+}
+async function initialize(){
+ const result=await startupStorage.load();
+ if(result.kind==='ready')openReadyWorld(result);else showStartupRecovery(result);
 }
 await initialize();
