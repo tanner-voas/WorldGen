@@ -8,6 +8,7 @@ import {createTerrainSampler,visitTerrainSites,nearestTerrainSite} from './terra
 import {createCoastlineConstraint} from './terrain-coastline.js';
 import {createLakeConstraint} from './terrain-lakes.js';
 import {buildRiverDecals,riverDetailFade} from './terrain-rivers.js';
+import {buildSurfaceMaterialField} from './terrain-surface-materials.js';
 import {buildTerrainSiteColors,terrainAppearanceName} from './terrain-3d-material.js';
 import {buildAdaptiveTerrainLevels,buildUniformTerrainLevels} from './terrain-3d-lod.js';
 import {createFocusedOutline,appendFocusedOutlineIndices} from './terrain-3d-outline.js';
@@ -355,6 +356,7 @@ export function buildElevationSurface(geometry,mesh,elevations,onProgress=()=>{}
    return arr;
   })());
  onProgress(1);
- return {vertexData,insideMask:inside,outline:geometry,materialColors,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
+ const surfaceMaterials=buildSurfaceMaterialField(sampler,options.appearance||null,cols,rows,options.hydrology?.lakeId);
+ return {vertexData,insideMask:inside,outline:geometry,materialColors,surfaceMaterials,materialName:terrainAppearanceName(options.appearance?.stage||4),levels,uniformLevels,ocean,hydrology,seaLevel,cols,rows,planeWidth,planeDepth,worldScale,vertexCount:count,
   minY:Math.min(minY,seaY)-.05,maxY:Math.max(maxY,seaY)+.05,heightScale,physicalHeightScale,baseExaggeration,siteSpacing:Math.sqrt((mesh.areaKm2||geometry.width*geometry.height)/mesh.cells.length)*worldScale};
 }

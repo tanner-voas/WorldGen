@@ -105,6 +105,9 @@ uniform int uWater;
 uniform vec3 uEye;
 uniform float uSeaLevel;
 uniform float uMaterialStrength;
+uniform vec2 uPlane;
+uniform float uWorldScale;
+uniform highp sampler2DArray uSurfaceMaterials;
 out vec4 fragColor;
 vec3 colorRamp(float h){
  if(h<-.28)return mix(vec3(.12,.26,.28),vec3(.25,.42,.39),smoothstep(-1.5,-.28,h));
@@ -122,6 +125,21 @@ float surfaceNoise(vec2 p){
  f=f*f*(3.0-2.0*f);
  return mix(mix(surfaceHash(i),surfaceHash(i+vec2(1.0,0.0)),f.x),
             mix(surfaceHash(i+vec2(0.0,1.0)),surfaceHash(i+vec2(1.0,1.0)),f.x),f.y);
+}
+// Soft irregular crown clusters, not individual trees or generated vegetation.
+// Four neighboring centers are sufficient because each lobe has compact
+// support and its jitter is bounded away from the lattice edge.
+float canopyPattern(vec2 p){
+ vec2 base=floor(p-.5);
+ float crown=0.0;
+ for(int y=0;y<2;y++)for(int x=0;x<2;x++){
+  vec2 cell=base+vec2(float(x),float(y));
+  vec2 jitter=vec2(surfaceHash(cell),surfaceHash(cell+vec2(19.0,37.0)))-.5;
+  vec2 delta=p-(cell+vec2(.5)+jitter*.20);
+  float radius=.28+.08*surfaceHash(cell+vec2(7.0,13.0));
+  crown=max(crown,1.0-smoothstep(radius*.45,radius,length(delta)));
+ }
+ return crown-.18;
 }
 void main(){
  vec3 sun=normalize(vec3(-.52,.80,.32));
@@ -149,18 +167,71 @@ void main(){
  vec3 albedo=mix(colorRamp(relativeHeight),vMaterial,uMaterialStrength);
  float exposed=(1.0-smoothstep(.30,.80,n.y))*smoothstep(.02,.7,relativeHeight);
  albedo=mix(albedo,vec3(.48,.46,.42),exposed*.34);
- // Sub-vertex detail is a stable surface *material* variation, not new
- // geographic height. Screen-space footprint suppresses high frequencies
- // when zoomed out, avoiding shimmering on mobile GPUs.
- vec2 position=vPosition.xz;
+ // The coverage field is independent of global/local mesh topology. Its
+ // texel centers correspond exactly to geographic grid sample positions.
+ vec4 substrate,cover;
+ if(uMaterialStrength>0.0){
+  vec2 size=vec2(textureSize(uSurfaceMaterials,0).xy);
+  vec2 uv=((vPosition.xz/uPlane+.5)*(size-1.0)+.5)/size;
+  substrate=texture(uSurfaceMaterials,vec3(uv,0.0));
+  cover=texture(uSurfaceMaterials,vec3(uv,1.0));
+ }else{
+  // Before climate, classify only from the available terrain height/slope.
+  float snow=smoothstep(.82,1.40,relativeHeight);
+  float rock=max(exposed,smoothstep(.35,.9,relativeHeight))*(1.0-snow);
+  float sand=(1.0-smoothstep(.015,.16,relativeHeight))*(1.0-snow)*(1.0-rock);
+  float soil=(1.0-snow-rock-sand)*.55;
+  substrate=vec4(rock,sand,soil,max(0.0,1.0-snow-rock-sand-soil));
+  cover=vec4(0.0,snow,0.0,0.0);
+  float submerged=1.0-smoothstep(-.02,0.0,relativeHeight);
+  substrate*=1.0-submerged;cover=mix(cover,vec4(0.0,0.0,0.0,1.0),submerged);
+ }
+ // Each environment has a distinct color/texture response. These patterns
+ // are decorative surface materials, NOT newly generated landforms.
+ // Use physical horizontal coordinates so changing relief or LOD cannot
+ // stretch textures or cause them to swim across the terrain.
+ vec2 position=vPosition.xz/uWorldScale;
  float footprint=max(length(dFdx(position)),length(dFdy(position)));
- float broad=(1.0-smoothstep(.35,1.0,footprint*28.0));
- float fine=(1.0-smoothstep(.35,1.0,footprint*105.0));
- float grain=0.0;
- if(broad>.001)grain+=(surfaceNoise(position*28.0)-.5)*broad*.75;
- if(fine>.001)grain+=(surfaceNoise(position*105.0)-.5)*fine*.35;
- float roughness=.65+.65*clamp(1.0-n.y,0.0,1.0);
- albedo*=clamp(1.0+grain*.21*roughness,.80,1.19);
+ float broad=1.0-smoothstep(.22,.78,footprint*.16);
+ float fine=1.0-smoothstep(.22,.78,footprint*.75);
+ float rippleFade=1.0-smoothstep(.17,.50,footprint*.41);
+ float micro=1.0-smoothstep(.22,.78,footprint*2.8);
+ float crownFade=1.0-smoothstep(.18,.55,footprint*1.4);
+ float rock=substrate.x,sand=substrate.y,soil=substrate.z,grass=substrate.w;
+ float forest=cover.x,snow=cover.y,wetland=cover.z;
+ vec3 tint=rock*vec3(.51,.49,.46)+sand*vec3(.82,.73,.54)+soil*vec3(.59,.48,.35)+grass*vec3(.55,.64,.33)
+           +forest*vec3(.24,.43,.26)+snow*vec3(.91,.94,.94)+wetland*vec3(.35,.47,.35);
+ float terrestrial=max(0.0,1.0-cover.w);
+ if(terrestrial>.0001)albedo=mix(albedo,tint/terrestrial,.23*terrestrial);
+ float detail=0.0;
+ if(broad>.001){
+  float hills=surfaceNoise(position*.16)-.5;
+  // Crown clusters, irregular damp patches, and long broken rock strata.
+  float crowns=smoothstep(.27,.73,hills+.5)-.5;
+  float damp=smoothstep(.37,.63,hills+.5)-.5;
+  float strata=surfaceNoise(vec2(position.x*.09+position.y*.045,position.y*.31))-.5;
+  detail+=broad*(rock*strata*.30+sand*hills*.10+soil*hills*.18+grass*hills*.23+forest*crowns*.40+snow*hills*.07+wetland*damp*.32);
+ }
+ if(fine>.001){
+  float grains=surfaceNoise(position*.75)-.5;
+  float canopy=smoothstep(.28,.72,grains+.5)-.5;
+  detail+=fine*(rock*grains*.24+sand*grains*.10+soil*grains*.25+grass*grains*.28+forest*canopy*.30+snow*grains*.045+wetland*grains*.13);
+ }
+ if(rippleFade>.001){
+  float ripple=sin((position.x*.15+position.y*.38)*6.2831853+surfaceNoise(position*.035)*2.5);
+  detail+=sand*ripple*.075*rippleFade;
+ }
+ if(crownFade>.001&&forest>.005){
+  detail+=forest*canopyPattern(position*1.4)*.27*crownFade;
+ }
+ if(micro>.001){
+  float flecks=surfaceNoise(position*2.8)-.5;
+  float blades=surfaceNoise(vec2(position.x*2.8+position.y*.4,position.y*1.3))-.5;
+  detail+=micro*(rock*flecks*.15+sand*flecks*.11+soil*flecks*.20+grass*blades*.23+forest*flecks*.09+snow*flecks*.025+wetland*flecks*.07);
+ }
+ // Damp and snow surfaces are deliberately smoother; forest canopy and
+ // coarse rock retain more contrast. Submerged terrain stays neutral.
+ albedo*=clamp(1.0+detail,.70,1.30);
  float ambient=clamp(.88+.12*n.y,.73,1.0);
  fragColor=vec4(albedo*shade*ambient,1.0);
 }`;
@@ -269,6 +340,9 @@ export class Terrain3DViewer{
   this.seaLocation=gl.getUniformLocation(this.program,'uSeaLevel');
   this.materialLocation=gl.getUniformLocation(this.program,'uMaterialStrength');
   this.heightLocation=gl.getUniformLocation(this.program,'uHeightMultiplier');
+  this.surfaceMaterialLocation=gl.getUniformLocation(this.program,'uSurfaceMaterials');
+  this.worldScaleLocation=gl.getUniformLocation(this.program,'uWorldScale');
+  this.surfacePlaneLocation=gl.getUniformLocation(this.program,'uPlane');
   this.morphLocations=Object.fromEntries(['Mode','From','To','Weight','BaseHeightScale','Plane','TerrainFields','MaterialFields'].map(name=>[name,gl.getUniformLocation(this.program,`u${name.startsWith('Base')||name==='Plane'||name.endsWith('Fields')?name:'Morph'+name}`)]));
   this.morphTextures=null;this.globalMorphs=new Map();this.detailDraining=false;
   gl.enable(gl.DEPTH_TEST);
@@ -296,6 +370,7 @@ export class Terrain3DViewer{
    this.levelBuffers.push({buffer,count:level.indices.length,step:level.step,tiles:level.tiles||null});
   }
   this._uploadMorphFields();
+  this._uploadSurfaceMaterials();
   this.uniformLevelBuffers=[];
   for(const level of this.morphTextures?[]:s.uniformLevels||[]){
    const buffer=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buffer);
@@ -323,6 +398,19 @@ export class Terrain3DViewer{
    this.hydroGeometry.push({kind,vao,buffer,count:vertices.length/3});
   }
   gl.bindVertexArray(null);
+ }
+ /** One immutable, linearly filtered RGBA8 array, shared by all meshes. */
+ _uploadSurfaceMaterials(){
+  const gl=this.gl,field=this.surface.surfaceMaterials;
+  const texture=gl.createTexture();this.surfaceMaterialTexture=texture;
+  gl.activeTexture(gl.TEXTURE0+2);gl.bindTexture(gl.TEXTURE_2D_ARRAY,texture);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  // A complete neutral texture is required for the elevation-only shader too.
+  gl.texImage3D(gl.TEXTURE_2D_ARRAY,0,gl.RGBA8,field?.width||1,field?.height||1,2,0,gl.RGBA,gl.UNSIGNED_BYTE,field?.data||new Uint8Array([0,0,0,0,0,0,0,255]));
+  gl.activeTexture(gl.TEXTURE0);
  }
  /** Shared immutable references. No per-frame geometry uploads. */
  _uploadMorphFields(){
@@ -659,6 +747,11 @@ export class Terrain3DViewer{
   gl.uniform1f(this.seaLocation,s.seaLevel||0);
   gl.uniform1f(this.materialLocation,s.materialColors?.length?0.88:0);
   gl.uniform1f(this.heightLocation,this.heightMultiplier??1);
+  if(this.surfaceMaterialTexture){
+   gl.uniform1i(this.surfaceMaterialLocation,2);
+   gl.uniform1f(this.worldScaleLocation,s.worldScale);
+   gl.uniform2f(this.surfacePlaneLocation,s.planeWidth,s.planeDepth);
+  }
   const now=performance.now();let animating=false;
   if(this.morphTextures){
    const l=this.morphLocations;
@@ -791,10 +884,11 @@ export class Terrain3DViewer{
    if(this.terrainVAO)gl.deleteVertexArray(this.terrainVAO);
    if(this.waterVAO)gl.deleteVertexArray(this.waterVAO);
    if(this.morphTextures){gl.deleteTexture(this.morphTextures.terrain);if(this.morphTextures.material)gl.deleteTexture(this.morphTextures.material);}
+   if(this.surfaceMaterialTexture)gl.deleteTexture(this.surfaceMaterialTexture);
    if(this.program)gl.deleteProgram(this.program);
    gl.getExtension?.('WEBGL_lose_context')?.loseContext?.();
   }
-  this.morphTextures=null;this.globalMorphs?.clear();
+  this.surfaceMaterialTexture=null;this.morphTextures=null;this.globalMorphs?.clear();
   this.surface=null;
  }
 }

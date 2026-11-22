@@ -36,6 +36,7 @@ self.onmessage=({data})=>{
    ...result.levels.map(level=>level.indices.buffer),
    ...result.uniformLevels.map(level=>level.indices.buffer)];
   if(result.materialColors)transfer.push(result.materialColors.buffer);
+  if(result.surfaceMaterials)transfer.push(result.surfaceMaterials.data.buffer);
   if(result.morphFields.material)transfer.push(result.morphFields.material.buffer);
   if(result.hydrology.riverMask)transfer.push(result.hydrology.riverMask.buffer);
   self.postMessage({kind:'success',result},transfer);

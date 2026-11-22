@@ -66,8 +66,8 @@ test('viewer double tap focuses without changing generated geometry or requiring
 });
 
 test('terrain shader has stable scale-aware fine detail but leaves water materials untouched',()=>{
- assert.match(TERRAIN_FRAGMENT_SHADER,/surfaceNoise\(position\*28\.0\)/);
- assert.match(TERRAIN_FRAGMENT_SHADER,/surfaceNoise\(position\*105\.0\)/);
+ assert.match(TERRAIN_FRAGMENT_SHADER,/surfaceNoise\(position\*\.16\)/);
+ assert.match(TERRAIN_FRAGMENT_SHADER,/surfaceNoise\(position\*\.75\)/);
  assert.match(TERRAIN_FRAGMENT_SHADER,/fwidth|dFdx/);
  assert.match(TERRAIN_FRAGMENT_SHADER,/if\(uWater==1\)/);
  assert.match(TERRAIN_FRAGMENT_SHADER,/if\(uWater==2\)/);
