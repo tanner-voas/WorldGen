@@ -1,4 +1,6 @@
-# WorldGen v0.2.5
+# WorldGen v0.2.6
+
+**v0.2.6:** Unified hosted Home/standalone Refresh header and safe-area adjustments. See `RELEASE_v0.2.6.md`.
 
 
 ## v0.2.5 presets and advanced settings

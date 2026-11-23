@@ -347,3 +347,12 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 .wg-fine-tune>summary{padding:13px 14px;color:#e3f1e7;cursor:pointer;min-height:44px;font-weight:680;font-size:13px;touch-action:manipulation}
 .wg-fine-tune[open]>summary{border-bottom:1px solid #365f52}
 .wg-fine-tune>.wg-controls{margin:0;padding:15px 13px 19px;box-sizing:border-box}
+
+/* v0.2.6 — one-row header, right-aligned host home / standalone refresh. */
+.wg-header{padding-top:calc(9px + env(safe-area-inset-top));padding-bottom:9px;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+.wg-header-svg{width:21px;height:21px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.wg-home{margin-left:0}
+.wg-header .pwa-updating .wg-header-svg{animation:wg-header-spin .85s linear infinite;transform-origin:center}
+@keyframes wg-header-spin{to{transform:rotate(360deg)}}
+@media(max-width:390px){.wg-header{gap:6px}.wg-icon-button{width:38px;height:40px;border-radius:11px}.wg-world-name{font-size:15px!important}}
+@media(prefers-reduced-motion:reduce){.wg-header .pwa-updating .wg-header-svg{animation-duration:2s}}

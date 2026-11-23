@@ -1,3 +1,4 @@
+import {runUpdateButton as localUpdateButton} from './pwa-update.js';
 import {geometryConstraintReport,meshConstraintReport} from './generation-constraints.js';
 import {stagePresets,matchingPreset,applyStagePreset} from './presets.js';
 import {readReliefPreference,writeReliefPreference,formatRelief,clampRelief} from './relief-setting.js';
@@ -12,11 +13,12 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.5',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.6',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 let reliefMultiplier=readReliefPreference();
 const host=globalThis.__APP_LAUNCHER__;
+const headerIcon={home:'<svg class="wg-header-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M9 21v-8h6v8"/></svg>',refresh:'<svg class="wg-header-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14-5L3 9V3m0 6h6M4 13a8 8 0 0 0 14 5l3-3v6m0-6h-6"/></svg>'};
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
 document.body.classList.add('worldgen-active');
@@ -284,11 +286,11 @@ function bindDrawerDrag(){
 function buildShell(){
  root.innerHTML=`<div id="worldgen-root" class="wg-shell">
    <header class="wg-header">
-    <button class="wg-icon-button wg-home" data-action="home" aria-label="Return to launcher" title="Return to launcher">${host?'⌂':'≡'}</button>
     <div class="wg-headline"><div class="wg-eyebrow">WORLDGEN <span>v${APP_VERSION}</span></div><button class="wg-world-name" data-action="rename" title="Rename world">${escapeHTML(workspace.name)} <span>⌄</span></button></div>
     <button class="wg-icon-button" data-action="save" aria-label="Save checkpoint" title="Save checkpoint">▣</button>
     <button class="wg-icon-button" data-action="render" aria-label="Explore terrain in 3D" title="Explore terrain in 3D">◫</button>
     <button class="wg-icon-button" data-action="library" aria-label="Open world library" title="World library">☰</button>
+    <button class="wg-icon-button wg-home" data-action="${host?.returnToLauncher?'home':'update'}" aria-label="${host?.returnToLauncher?'Return to My Apps':'Check updates and reload WorldGen'}" title="${host?.returnToLauncher?'My Apps':'Refresh WorldGen'}">${headerIcon[host?.returnToLauncher?'home':'refresh']}</button>
    </header>
    <main class="wg-map-area">
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
@@ -956,7 +958,8 @@ function renderReliefState(value,pending=false){
 }
 async function handleAction(action,button){
  switch(action){
-  case 'home':{if(host?.returnToLauncher){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))host.returnToLauncher();}else showLibrary();break;}
+  case 'home':{if(host?.returnToLauncher){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))host.returnToLauncher();}break;}
+  case 'update':{const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Refresh without saving the latest changes?'))await localUpdateButton(button,{onError:message=>notice('Update failed: '+message,true)});break;}
   case 'save':await saveCheckpoint();break;
   case 'library':showLibrary();break;
   case 'render':showTerrain3D();break;
