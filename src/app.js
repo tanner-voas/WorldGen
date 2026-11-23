@@ -13,7 +13,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.6',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.7',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 let reliefMultiplier=readReliefPreference();

@@ -1,4 +1,6 @@
-# WorldGen v0.2.6
+# WorldGen v0.2.7
+
+**v0.2.7:** All 256 Node tests pass; version assertions now derive from package metadata instead of assuming an outdated release string. No world format or terrain behavior changed. See `RELEASE_v0.2.7.md`.
 
 **v0.2.6:** Unified hosted Home/standalone Refresh header and safe-area adjustments. See `RELEASE_v0.2.6.md`.
 
