@@ -1,0 +1,14 @@
+name: Tag main history
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'
+permissions:
+  contents: write
+jobs:
+  tags:
+    uses: tanner-voas/iSH-Scripts/.github/workflows/tag-reusable.yml@v0.1.0
+    with:
+      tool-ref: v0.1.0
