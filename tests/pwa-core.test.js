@@ -17,6 +17,10 @@ test('standalone and launcher package use the exact pinned updater and worker po
  const updater=read('shared/pwa-core/src/pwa-update.js');
  assert.equal(read(`dist/${app}/pwa-update.js`),updater);
  assert.equal(read('dist/standalone/pwa-update.js'),updater);
+ for(const name of ['browser-host.js','browser-files.js']){
+  assert.equal(read(`dist/${app}/${name}`),read(`shared/pwa-core/src/${name}`));
+  assert.equal(read(`dist/standalone/${name}`),read(`shared/pwa-core/src/${name}`));
+ }
  const worker=read('dist/standalone/sw.js');
  const inventory=worker.match(/const ASSETS=(\[.*\]);/)[1];
  const assets=JSON.parse(inventory);

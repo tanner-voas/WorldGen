@@ -8,7 +8,7 @@ test('world header puts the same host home/standalone refresh icon last',()=>{
  assert.ok(block.indexOf('data-action="save"')<block.indexOf('data-action="render"'));
  assert.ok(block.indexOf('data-action="render"')<block.indexOf('data-action="library"'));
  assert.ok(block.indexOf('data-action="library"')<block.indexOf('class="wg-icon-button wg-home"'));
- assert.match(block,/host\?\.returnToLauncher\?'home':'update'/);
+ assert.match(block,/hasLauncherHost\(\)\?'home':'update'/);
  assert.match(src,/await flushPersist\(\).*localUpdateButton/);
  assert.match(css,/\.wg-header-svg\{/);
 });

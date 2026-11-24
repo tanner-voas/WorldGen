@@ -85,6 +85,8 @@ def main():
             shutil.copy2(src, dest)
         # Keep the deployed import URL unchanged; the source adapter is not shipped.
         shutil.copy2(CORE / 'src/pwa-update.js', folder / 'pwa-update.js')
+        for name in ('browser-host.js', 'browser-files.js'):
+            shutil.copy2(CORE / 'src' / name, folder / name)
     for name in ('index.html', 'manifest.webmanifest', 'standalone-boot.js'):
         shutil.copy2(ROOT / name, STANDALONE / name)
     shutil.copytree(ROOT / 'icons', STANDALONE / 'icons')

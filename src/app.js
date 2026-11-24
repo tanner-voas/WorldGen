@@ -1,4 +1,6 @@
 import {runUpdateButton as localUpdateButton} from './pwa-update.js';
+import {hasLauncherHost,returnToLauncher} from './browser-host.js';
+import {downloadBlob,downloadText as deliverText} from './browser-files.js';
 import {geometryConstraintReport,meshConstraintReport} from './generation-constraints.js';
 import {stagePresets,matchingPreset,applyStagePreset} from './presets.js';
 import {readReliefPreference,writeReliefPreference,formatRelief,clampRelief} from './relief-setting.js';
@@ -13,11 +15,10 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.9',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.10',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 let reliefMultiplier=readReliefPreference();
-const host=globalThis.__APP_LAUNCHER__;
 const headerIcon={home:'<svg class="wg-header-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M9 21v-8h6v8"/></svg>',refresh:'<svg class="wg-header-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14-5L3 9V3m0 6h6M4 13a8 8 0 0 0 14 5l3-3v6m0-6h-6"/></svg>'};
 const root=document.querySelector('#app');
 if(!root)throw Error('WorldGen requires an #app element');
@@ -290,7 +291,7 @@ function buildShell(){
     <button class="wg-icon-button" data-action="save" aria-label="Save checkpoint" title="Save checkpoint">▣</button>
     <button class="wg-icon-button" data-action="render" aria-label="Explore terrain in 3D" title="Explore terrain in 3D">◫</button>
     <button class="wg-icon-button" data-action="library" aria-label="Open world library" title="World library">☰</button>
-    <button class="wg-icon-button wg-home" data-action="${host?.returnToLauncher?'home':'update'}" aria-label="${host?.returnToLauncher?'Return to My Apps':'Check updates and reload WorldGen'}" title="${host?.returnToLauncher?'My Apps':'Refresh WorldGen'}">${headerIcon[host?.returnToLauncher?'home':'refresh']}</button>
+    <button class="wg-icon-button wg-home" data-action="${hasLauncherHost()?'home':'update'}" aria-label="${hasLauncherHost()?'Return to My Apps':'Check updates and reload WorldGen'}" title="${hasLauncherHost()?'My Apps':'Refresh WorldGen'}">${headerIcon[hasLauncherHost()?'home':'refresh']}</button>
    </header>
    <main class="wg-map-area">
     <canvas id="wg-map" aria-label="Interactive world map: drag to pan, pinch or scroll to zoom, tap a polygon to inspect" role="img"></canvas>
@@ -852,8 +853,8 @@ function pointerMove(event){if(!movePointers.has(event.pointerId))return;const n
  else if(movePointers.size>=2){const [a,b]=[...movePointers.values()],distance=Math.max(.1,Math.hypot(a.x-b.x,a.y-b.y)),middle={x:(a.x+b.x)/2,y:(a.y+b.y)/2};if(gesture?.kind==='pinch'){const ratio=clamp(distance/Math.max(gesture.dist,.1),.5,2);zoomBy(ratio,gesture.mid.x,gesture.mid.y);view.x+=middle.x-gesture.mid.x;view.y+=middle.y-gesture.mid.y;rememberViewport();gesture={kind:'pinch',dist:distance,mid:middle};}panMoved=true;schedulePaint();}
 }
 function pointerEnd(event){if(!movePointers.has(event.pointerId))return;const position=canvasPoint(event);movePointers.delete(event.pointerId);if(!movePointers.size){if(event.type!=='pointercancel'&&event.type!=='lostpointercapture'&&!panMoved&&gesture?.kind==='pan'){if(measureMode)measureAt(position.x,position.y);else{selectedId=pickCell(position.x,position.y);updateInspector();schedulePaint();}}gesture=null;}else{gesture={kind:'pan',origin:[...movePointers.values()][0]};panMoved=true;}}
-function downloadText(text,name){const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);}
-function screenshot(){canvas.toBlob(blob=>{if(!blob){notice('Unable to capture map',true);return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${effectiveStage()}-map.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),15000);notice('Current map view exported');},'image/png');}
+function downloadText(text,name){deliverText(text,name,{revokeDelay:15000});}
+function screenshot(){canvas.toBlob(blob=>{if(!blob){notice('Unable to capture map',true);return;}downloadBlob(blob,`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${effectiveStage()}-map.png`,{revokeDelay:15000});notice('Current map view exported');},'image/png');}
 function worldThroughStage(stage){
  const target=stageRecord(stage);if(!target?.data)throw Error('This layer has not been generated');
  if(stage===currentStage()&&(generating||dirty))throw Error('Wait until the current layer finishes generating before saving');
@@ -958,7 +959,7 @@ function renderReliefState(value,pending=false){
 }
 async function handleAction(action,button){
  switch(action){
-  case 'home':{if(host?.returnToLauncher){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))host.returnToLauncher();}break;}
+  case 'home':{if(hasLauncherHost()){const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Return to the launcher without saving the latest changes?'))returnToLauncher();}break;}
   case 'update':{const saved=await flushPersist();if(saved||confirm('Automatic saving failed. Refresh without saving the latest changes?'))await localUpdateButton(button,{onError:message=>notice('Update failed: '+message,true)});break;}
   case 'save':await saveCheckpoint();break;
   case 'library':showLibrary();break;
@@ -1111,7 +1112,7 @@ function showStartupRecovery(state){
   ${state.library?entries.length?`<div class="wg-snapshot-list">${entries.map((s,i)=>`<div class="wg-snapshot"><div><strong>${escapeHTML(s.name)}</strong><small>Layer ${s.stage}</small></div><div><button data-recovery="restore" data-index="${i}">Restore</button><button data-recovery="export" data-index="${i}">Export</button></div></div>`).join('')}</div>`:'<p>No named checkpoints were found.</p>':'<p>The checkpoint library is unavailable. Retry to read it; it has not been reset.</p>'}
   <p class="wg-modal-caption">Restoring a checkpoint or creating a new world replaces the working record only after storage can be read and the replacement has been saved successfully. Export your original record first if available.</p>
   <button class="wg-secondary" data-recovery="new">Start a new world…</button>
-  ${host?.returnToLauncher?'<button class="wg-secondary" data-recovery="home">Return to launcher</button>':''}
+  ${hasLauncherHost()?'<button class="wg-secondary" data-recovery="home">Return to launcher</button>':''}
   <p class="wg-recovery-status" role="status" aria-live="polite"></p>
  </main></div>`;
  const panel=root.querySelector('.wg-recovery'),status=panel.querySelector('.wg-recovery-status');
@@ -1119,7 +1120,7 @@ function showStartupRecovery(state){
  async function act(button){
   if(busy)return;
   const action=button.dataset.recovery,entry=entries[Number(button.dataset.index)];
-  if(action==='home'){host.returnToLauncher();return;}
+  if(action==='home'){returnToLauncher();return;}
   if(action==='new'&&!confirm('Replace the current working world with a new world? Named checkpoints will be preserved. Export the original record first if needed.'))return;
   if(action==='restore'&&(!entry||!confirm(`Restore checkpoint '${entry.name}'? This replaces the current working record.`)))return;
   busy=true;for(const control of panel.querySelectorAll('button'))control.disabled=true;
