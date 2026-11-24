@@ -16,12 +16,14 @@ export function waitForActivation(worker, service, milliseconds=20000){
   return new Promise((resolve,reject)=>{
     let finished=false;
     let activationTimer;
+    const onMessage=event=>{if(event.data?.type==='offline-update-blocked')finish(new Error('Close other app windows before installing this update.'));};
     const finish=error=>{
       if(finished)return;
       finished=true;
       clearTimeout(timer);clearTimeout(activationTimer);
       worker.removeEventListener?.('statechange',check);
       service.removeEventListener?.('controllerchange',check);
+      service.removeEventListener?.('message',onMessage);
       error?reject(error):resolve();
     };
     const check=()=>{
@@ -40,6 +42,7 @@ export function waitForActivation(worker, service, milliseconds=20000){
     const timer=setTimeout(()=>finish(new Error('Update installation timed out. Try again.')),milliseconds);
     worker.addEventListener?.('statechange',check);
     service.addEventListener?.('controllerchange',check);
+    service.addEventListener?.('message',onMessage);
     check();
   });
 }
@@ -48,7 +51,7 @@ export async function checkForUpdatesAndReload({
   navigatorRef=globalThis.navigator,
   locationRef=globalThis.location,
   onStatus=()=>{},
-  timeoutMs=25000
+  timeoutMs=120000
 }={}){
   if(navigatorRef?.onLine===false)throw new Error('Connect to the internet to check for updates.');
   const service=navigatorRef?.serviceWorker;

@@ -68,18 +68,16 @@ def main():
 
     # Every copied source module is automatically included in the standalone
     # service worker's cache list, including the terrain viewer and future additions.
-    items = [p for p in sorted(STANDALONE.rglob('*')) if p.is_file()]
-    digest = hashlib.sha256()
-    for item in items:
-        digest.update(
-            item.relative_to(STANDALONE).as_posix().encode()
-            + b'\0' + hashlib.sha256(item.read_bytes()).digest()
-        )
+    assets = []
+    for item in sorted(STANDALONE.rglob('*')):
+        if not item.is_file(): continue
+        data = item.read_bytes()
+        assets.append(dict(path='./'+item.relative_to(STANDALONE).as_posix(),size=len(data),sha256=hashlib.sha256(data).hexdigest(),groups=['shell']))
+    inventory = json.dumps(assets, separators=(',', ':'))
+    template = (ROOT / 'sw.template.js').read_text()
+    digest = hashlib.sha256(inventory.encode()+template.encode())
     ver = json.loads((ROOT / 'package.json').read_text())['version']
-    assets = ['./' + p.relative_to(STANDALONE).as_posix() for p in items]
-    sw = (ROOT / 'sw.template.js').read_text().replace(
-        '__CACHE__', f'worldgen-shell-v{ver}-{digest.hexdigest()[:16]}'
-    ).replace('__ASSETS__', json.dumps(assets))
+    sw = template.replace('__SHELL_CACHE_NAME__', f'worldgen-shell-v{ver}-{digest.hexdigest()[:16]}').replace('__PRECACHE_ASSETS__', inventory)
     (STANDALONE / 'sw.js').write_text(sw)
     print('WorldGen launcher module: dist/worldgen')
     print('WorldGen standalone PWA: dist/standalone')
