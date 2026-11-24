@@ -14,13 +14,15 @@ Requires Python Playwright and a local chromium executable.
 """
 from pathlib import Path
 import os
+import subprocess
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(os.getenv('WORLDGEN_SCREENSHOTS', '/tmp/worldgen-browser-smoke'))
 OUT.mkdir(parents=True, exist_ok=True)
-SOURCES = {p.name:p.read_text() for p in (ROOT/'src').glob('*.js')}
-CSS = (ROOT/'src/styles.css').read_text()
+subprocess.run(['python3', 'package.py'], cwd=ROOT, check=True)
+SOURCES = {p.name:p.read_text() for p in (ROOT/'dist/worldgen').glob('*.js')}
+CSS = (ROOT/'dist/worldgen/styles.css').read_text()
 
 SHIM = r"""(() => {
  const records = new Map();

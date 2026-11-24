@@ -5,10 +5,11 @@ Copy all application JS/CSS modules rather than maintaining a fragile list. Chec
 relative module references before creating the distributions, so a missing
 import fails CI instead of failing after deployment in iOS Safari.
 """
-import hashlib
 import json
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -17,6 +18,28 @@ APP = ROOT / 'dist/worldgen'
 STANDALONE = ROOT / 'dist/standalone'
 REQUIRED = ('app.js', 'engine.js', 'spatial.js', 'compute-worker.js', 'terrain-sampler.js',
             'terrain-3d.js', 'terrain-3d-worker.js', 'terrain-pick-bounds.js', 'terrain-3d-outline.js', 'terrain-3d-morph.js', 'terrain-coastline.js', 'terrain-lakes.js', 'terrain-rivers.js', 'elevation-units.js', 'geographic-units.js', 'generation-constraints.js', 'styles.css')
+
+CORE = ROOT / 'shared' / 'pwa-core'
+
+
+def load_offline_core():
+    # The caller initializes submodules explicitly (CI uses recursive checkout).
+    # Never silently substitute another library revision or fetch browser code.
+    if not (CORE / 'build/offline.py').is_file():
+        raise FileNotFoundError('Missing PWA-Core; run git submodule update --init --recursive')
+    if (ROOT / '.git').exists():
+        status = subprocess.check_output(
+            ['git', 'submodule', 'status', '--', 'shared/pwa-core'], cwd=ROOT, text=True)
+        if not status.startswith(' '):
+            raise RuntimeError('PWA-Core checkout does not match its pinned gitlink')
+        if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'],
+                                   cwd=CORE, text=True).strip():
+            raise RuntimeError('PWA-Core contains uncommitted tracked changes')
+    sys.path.insert(0, str(CORE / 'build'))
+    from offline import asset_record, generate_worker
+    return asset_record, generate_worker
+
+
 # Match static imports, literal dynamic imports, and Worker URLs resolved using
 # import.meta.url. They all refer to files that must exist in the distribution.
 RELATIVE_MODULE = re.compile(
@@ -50,6 +73,7 @@ def validate_module_references(root):
 
 
 def main():
+    asset_record, generate_worker = load_offline_core()
     files = application_files()
     for folder in (APP, STANDALONE):
         if folder.exists():
@@ -59,6 +83,8 @@ def main():
             dest = folder / src.relative_to(SOURCE)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
+        # Keep the deployed import URL unchanged; the source adapter is not shipped.
+        shutil.copy2(CORE / 'src/pwa-update.js', folder / 'pwa-update.js')
     for name in ('index.html', 'manifest.webmanifest', 'standalone-boot.js'):
         shutil.copy2(ROOT / name, STANDALONE / name)
     shutil.copytree(ROOT / 'icons', STANDALONE / 'icons')
@@ -68,17 +94,12 @@ def main():
 
     # Every copied source module is automatically included in the standalone
     # service worker's cache list, including the terrain viewer and future additions.
-    assets = []
-    for item in sorted(STANDALONE.rglob('*')):
-        if not item.is_file(): continue
-        data = item.read_bytes()
-        assets.append(dict(path='./'+item.relative_to(STANDALONE).as_posix(),size=len(data),sha256=hashlib.sha256(data).hexdigest(),groups=['shell']))
-    inventory = json.dumps(assets, separators=(',', ':'))
-    template = (ROOT / 'sw.template.js').read_text()
-    digest = hashlib.sha256(inventory.encode()+template.encode())
+    assets = [asset_record(STANDALONE, item, ['shell'])
+              for item in sorted(STANDALONE.rglob('*')) if item.is_file()]
     ver = json.loads((ROOT / 'package.json').read_text())['version']
-    sw = template.replace('__SHELL_CACHE_NAME__', f'worldgen-shell-v{ver}-{digest.hexdigest()[:16]}').replace('__PRECACHE_ASSETS__', inventory)
-    (STANDALONE / 'sw.js').write_text(sw)
+    _, worker, _ = generate_worker(assets, cache_prefix='worldgen-shell-', version=ver,
+                                   excluded_path_prefixes=('/_profiles/',))
+    (STANDALONE / 'sw.js').write_text(worker, encoding='utf-8')
     print('WorldGen launcher module: dist/worldgen')
     print('WorldGen standalone PWA: dist/standalone')
 

@@ -1,0 +1,3 @@
+[submodule "shared/pwa-core"]
+	path = shared/pwa-core
+	url = https://github.com/tanner-voas/PWA-Core.git

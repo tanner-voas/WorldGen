@@ -1,5 +1,18 @@
 # WorldGen v0.2.7
 
+## Shared PWA-Core (roadmap 7B, v0.2.9)
+
+Initialize the pinned dependencies before building or testing in a development/CI checkout:
+
+```sh
+git submodule update --init --recursive
+npm test
+python3 package.py
+```
+
+The `shared/pwa-core` gitlink pins the independently versioned PWA-Core v0.1.0. The packager verifies the checkout against the gitlink and generates the standalone worker using the shared inventory builder. Existing cache namespaces, service-worker URL, manifest, storage and hosted/standalone behavior remain unchanged. Runtime assets are copied into their existing paths; the source adapters are not bundled. AppLauncher still owns the hosted worker. The existing coordinator recursively initializes dependencies and validates the combined release; no new dispatch secrets or automatic Core pin updates are required. Roll back by reverting the consumer migration and deploying a validated release, not by deleting browser storage.
+
+
 **v0.2.7:** All 256 Node tests pass; version assertions now derive from package metadata instead of assuming an outdated release string. No world format or terrain behavior changed. See `RELEASE_v0.2.7.md`.
 
 **v0.2.6:** Unified hosted Home/standalone Refresh header and safe-area adjustments. See `RELEASE_v0.2.6.md`.
