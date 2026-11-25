@@ -1,6 +1,6 @@
 import {runUpdateButton as localUpdateButton} from './pwa-update.js';
 import {hasLauncherHost,returnToLauncher} from './browser-host.js';
-import {downloadBlob,downloadText as deliverText} from './browser-files.js';
+import {shareBlob,shareText} from './share-files.js';
 import {geometryConstraintReport,meshConstraintReport} from './generation-constraints.js';
 import {stagePresets,matchingPreset,applyStagePreset} from './presets.js';
 import {readReliefPreference,writeReliefPreference,formatRelief,clampRelief} from './relief-setting.js';
@@ -15,7 +15,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.10',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.11',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 let reliefMultiplier=readReliefPreference();
@@ -853,22 +853,22 @@ function pointerMove(event){if(!movePointers.has(event.pointerId))return;const n
  else if(movePointers.size>=2){const [a,b]=[...movePointers.values()],distance=Math.max(.1,Math.hypot(a.x-b.x,a.y-b.y)),middle={x:(a.x+b.x)/2,y:(a.y+b.y)/2};if(gesture?.kind==='pinch'){const ratio=clamp(distance/Math.max(gesture.dist,.1),.5,2);zoomBy(ratio,gesture.mid.x,gesture.mid.y);view.x+=middle.x-gesture.mid.x;view.y+=middle.y-gesture.mid.y;rememberViewport();gesture={kind:'pinch',dist:distance,mid:middle};}panMoved=true;schedulePaint();}
 }
 function pointerEnd(event){if(!movePointers.has(event.pointerId))return;const position=canvasPoint(event);movePointers.delete(event.pointerId);if(!movePointers.size){if(event.type!=='pointercancel'&&event.type!=='lostpointercapture'&&!panMoved&&gesture?.kind==='pan'){if(measureMode)measureAt(position.x,position.y);else{selectedId=pickCell(position.x,position.y);updateInspector();schedulePaint();}}gesture=null;}else{gesture={kind:'pan',origin:[...movePointers.values()][0]};panMoved=true;}}
-function downloadText(text,name){deliverText(text,name,{revokeDelay:15000});}
-function screenshot(){canvas.toBlob(blob=>{if(!blob){notice('Unable to capture map',true);return;}downloadBlob(blob,`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${effectiveStage()}-map.png`,{revokeDelay:15000});notice('Current map view exported');},'image/png');}
+function downloadText(text,name){return shareText(text,name);}
+function screenshot(){canvas.toBlob(async blob=>{if(!blob){notice('Unable to capture map',true);return;}try{await shareBlob(blob,`${workspace.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-layer${effectiveStage()}-map.png`);notice('Current map view shared');}catch(e){if(e.name!=='AbortError')notice(e.message,true);}},'image/png');}
 function worldThroughStage(stage){
  const target=stageRecord(stage);if(!target?.data)throw Error('This layer has not been generated');
  if(stage===currentStage()&&(generating||dirty))throw Error('Wait until the current layer finishes generating before saving');
  return snapshotThroughStage(workspace,stage);
 }
-function exportWorld(world,labelStage){const full=structuredClone(world);full.exportedAt=new Date().toISOString();downloadText(JSON.stringify(full),`${full.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-stage${labelStage}-worldgen.json`);notice('Complete world file exported');}
+async function exportWorld(world,labelStage){const full=structuredClone(world);full.exportedAt=new Date().toISOString();await downloadText(JSON.stringify(full),`${full.name.replace(/[^a-z0-9_-]+/gi,'-').toLowerCase()||'world'}-stage${labelStage}-worldgen.json`);notice('Complete world file shared');}
 async function doExport(){
  const stage=viewStage();
- try{const selected=worldThroughStage(stage);exportWorld(selected,stage);}
+ try{const selected=worldThroughStage(stage);await exportWorld(selected,stage);}
  catch(error){notice(`Export unavailable: ${error.message}`,true);}
 }
 async function exportAll(){
  if(generating||dirty){notice('Wait for the current working layer to finish before exporting everything',true);return;}
- exportWorld(workspace,availableThrough());
+ try{await exportWorld(workspace,availableThrough());}catch(e){if(e.name!=='AbortError')notice(e.message,true); }
 }
 function availableThrough(){return workspace.locked.length+(workspace.working.data?1:0);}
 
@@ -1006,7 +1006,7 @@ async function handleAction(action,button){
   case 'rename':{const name=prompt('World name',workspace.name);if(name!==null&&name.trim()){workspace.name=name.trim().slice(0,80);void persist();rebuildUI();}break;}
   case 'export':await doExport();break;
   case 'export-all':await exportAll();break;
-  case 'export-checkpoint':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(savedWorld){const loaded=prepareWorld(savedWorld);exportWorld(loaded,saved.stage);}else notice('Checkpoint data unavailable',true);}break;}
+  case 'export-checkpoint':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(savedWorld){const loaded=prepareWorld(savedWorld);await exportWorld(loaded,saved.stage);}else notice('Checkpoint data unavailable',true);}break;}
   case 'import':root.querySelector('#wg-import').click();break;
   case 'new-world':if(confirm('Create a new world? Your current working world will be replaced. Save a checkpoint or export it first if needed.'))changeWorld(newWorld());break;
   case 'restore':{const saved=snapshots.find(s=>s.id===button.dataset.id);if(saved&&confirm(`Open checkpoint '${saved.name}'? This replaces your current working world.`)){const savedWorld=await storeGet(`checkpoint:${saved.id}`);if(!savedWorld){notice('Checkpoint data unavailable',true);break;}changeWorld(savedWorld);notice('Checkpoint restored');}break;}
@@ -1126,8 +1126,8 @@ function showStartupRecovery(state){
   busy=true;for(const control of panel.querySelectorAll('button'))control.disabled=true;
   status.textContent='Working…';
   try{
-   if(action==='export-raw'){downloadText(JSON.stringify(state.raw,null,2),'worldgen-recovery-original.json');status.textContent='Original record exported.';return;}
-   if(action==='export'){const world=await readRecoveryCheckpoint(storeGet,state,entry.id);exportWorld(world,entry.stage);status.textContent='Checkpoint exported.';return;}
+   if(action==='export-raw'){await downloadText(JSON.stringify(state.raw,null,2),'worldgen-recovery-original.json');status.textContent='Original record shared.';return;}
+   if(action==='export'){const world=await readRecoveryCheckpoint(storeGet,state,entry.id);await exportWorld(world,entry.stage);status.textContent='Checkpoint shared.';return;}
    const result=action==='retry'?await startupStorage.load():await startupStorage.replace(action==='new'?{kind:'new',confirmed:true}:{kind:'checkpoint',id:entry.id,confirmed:true});
    if(result.kind==='ready')openReadyWorld(result);else showStartupRecovery(result);
   }catch(error){status.textContent=`Recovery could not finish: ${error?.message||error}.`;}

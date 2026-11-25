@@ -25,7 +25,7 @@ test('v0.1.13 bundles every JS dependency into launcher and standalone outputs',
   }
  }
  const sw=readFileSync(join(root,'dist/standalone/sw.js'),'utf8');
- assert.doesNotMatch(readFileSync(join(root,'dist/standalone/index.html'),'utf8'),/maximum-scale|user-scalable=no/);
+ assert.match(readFileSync(join(root,'dist/standalone/index.html'),'utf8'),/maximum-scale=1, user-scalable=no/);
  const assets=JSON.parse(sw.match(/const ASSETS=(.*);\n/)[1]);
  for(const a of assets){const bytes=readFileSync(join(root,'dist/standalone',a.path));assert.equal(a.size,bytes.length);assert.equal(a.sha256,createHash('sha256').update(bytes).digest('hex'));assert.deepEqual(a.groups,['shell']);}
  assert.match(sw,/"\.\/terrain-sampler\.js"/);

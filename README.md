@@ -1,4 +1,4 @@
-# WorldGen v0.2.10
+# WorldGen v0.2.11
 
 ## Shared PWA-Core (roadmap 7C, v0.2.10)
 
