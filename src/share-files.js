@@ -1,10 +1,11 @@
 /** File sharing only. Never navigate to a blob URL or trigger an anchor download.
  * An explicit second tap restores transient user activation after async preparation. */
-export async function shareFile(file,{title=file.name,env=globalThis}={}){
+export async function shareFile(file,{env=globalThis}={}){
  const nav=env.navigator,doc=env.document;
  let supported=false;try{supported=typeof nav?.share==='function'&&typeof nav.canShare==='function'&&nav.canShare({files:[file]});}catch{}
  if(!supported)throw Error('File sharing is unavailable in this browser. Open the app on a device that supports the system share sheet.');
- const share=()=>nav.share({files:[file],title});
+ // A separate title is treated as a second text item by some iOS share targets.
+ const share=()=>nav.share({files:[file]});
  if(nav.userActivation?.isActive){try{await share();return 'shared';}catch(err){if(err.name!=='NotAllowedError')throw err;}}
  return new Promise((resolve,reject)=>{
   const dialog=doc.createElement('dialog');dialog.style.cssText='position:fixed;z-index:2147483647;width:min(340px,90vw);box-sizing:border-box;padding:20px;border:1px solid #b5c4bd;border-radius:18px;background:#fff;color:#173a30;font:16px/1.4 system-ui;';
