@@ -15,7 +15,7 @@ import {createAutosave} from './persistence.js';
 import {commitCheckpoint} from './checkpoint-storage.js';
 import {elevationToMetres,displayParameter,storedParameter,sedimentToKm3,terrainVerticalScales} from './elevation-units.js';
 
-const APP_VERSION='0.2.11',DB_NAME='worldgen-dev-023';
+const APP_VERSION='0.2.12',DB_NAME='worldgen-dev-023';
 let startupReady=false;
 let terrainViewer=null;
 let reliefMultiplier=readReliefPreference();
@@ -1102,8 +1102,8 @@ function showStartupRecovery(state){
  console.warn('WorldGen startup storage:',state.errors.join('; '));
  const entries=state.library?.snapshots||[];
  root.innerHTML=`<div id="worldgen-root" class="wg-recovery-shell"><main class="wg-recovery" aria-labelledby="wg-recovery-title">
-  <div class="wg-eyebrow">WORLDGEN <span>v${APP_VERSION}</span></div>
-  <h1 id="wg-recovery-title">World recovery</h1>
+  <header class="wg-recovery-head"><div class="wg-eyebrow">WORLDGEN <span>v${APP_VERSION}</span></div>
+  <h1 id="wg-recovery-title">World recovery</h1></header>
   <p>Your saved world could not be opened safely. Generation and automatic saving are paused. Nothing has been replaced.</p>
   <div class="wg-recovery-errors" role="alert">${state.errors.map(error=>`<p>${escapeHTML(error)}</p>`).join('')}</div>
   <button class="wg-primary" data-recovery="retry">Retry storage load</button>

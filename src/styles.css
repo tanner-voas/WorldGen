@@ -360,3 +360,9 @@ body.worldgen-active .app-frame,body.worldgen-active #app.worldgen-host{width:10
 /* Browser page lock; custom canvas/map touch-action rules remain intact. */
 html,body{touch-action:manipulation}
 input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea{font-size:16px}
+
+/* UI-01: main scene already stays fixed; preserve its map and full-screen 3D viewer.
+   Keep ordinary sheet close controls and the recovery title visible during scrolling. */
+.wg-modal:not(.wg-3d-modal) .wg-modal-heading{position:sticky;top:0;z-index:2;background:#1c3530;padding:12px 0;margin-top:-12px}
+.wg-recovery-shell{padding-top:0}
+.wg-recovery-head{position:sticky;top:0;z-index:6;background:#13252a;padding:calc(17px + env(safe-area-inset-top)) 0 12px}
